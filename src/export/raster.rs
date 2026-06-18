@@ -150,7 +150,8 @@ impl<'a> FrameSource<'a> {
         }
         let t = self.frame as f64 * self.dt;
         while self.ev_idx < self.rec.events.len() && self.rec.events[self.ev_idx].0 <= t {
-            self.parser.process(self.rec.events[self.ev_idx].1.as_bytes());
+            self.parser
+                .process(self.rec.events[self.ev_idx].1.as_bytes());
             self.ev_idx += 1;
         }
         self.frame += 1;

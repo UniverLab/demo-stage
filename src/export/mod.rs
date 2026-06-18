@@ -1,9 +1,11 @@
 //! `demo export` — compile a score to a target format.
 //!
 //! `cast`/`html` run the score in a PTY and capture text (no external deps).
-//! `gif` rasterizes that capture in pure Rust. `mp4` and browser panes need
-//! ffmpeg/chromium and are reported as unsupported when those are absent.
+//! `gif` rasterizes that capture in pure Rust. `mp4` provisions ffmpeg on first
+//! use. Multi-pane scores (with a `browser` pane) composite via the stage, which
+//! drives Chromium for browser panes.
 
+pub mod browser;
 pub mod cast;
 pub mod composite;
 pub mod gif;
@@ -12,6 +14,7 @@ pub mod mp4;
 pub mod provision;
 pub mod raster;
 pub mod run;
+pub mod stage;
 
 use std::path::{Path, PathBuf};
 
@@ -41,28 +44,52 @@ pub fn export(score: &Score, target: Target, output: Option<PathBuf>) -> Result<
             Ok(path)
         }
         Target::Gif => {
-            let rec = run::run_terminal(score)?;
             let path = resolve_output(score, output, "gif");
-            if let Some(parent) = path.parent() {
-                if !parent.as_os_str().is_empty() {
-                    std::fs::create_dir_all(parent).map_err(|e| Error::io(parent, e))?;
-                }
+            ensure_parent(&path)?;
+            if stage::needs_stage(score) {
+                let (w, h, fps) = canvas_dims(score);
+                gif::encode(&path, w, h, fps, |emit| {
+                    stage::render_stage(score, |f| emit(f))
+                })?;
+            } else {
+                let rec = run::run_terminal(score)?;
+                gif::write_gif(&rec, score, &path)?;
             }
-            gif::write_gif(&rec, score, &path)?;
             Ok(path)
         }
         Target::Mp4 => {
-            let rec = run::run_terminal(score)?;
             let path = resolve_output(score, output, "mp4");
-            if let Some(parent) = path.parent() {
-                if !parent.as_os_str().is_empty() {
-                    std::fs::create_dir_all(parent).map_err(|e| Error::io(parent, e))?;
-                }
+            ensure_parent(&path)?;
+            if stage::needs_stage(score) {
+                let (w, h, fps) = canvas_dims(score);
+                mp4::encode(&path, w, h, fps, |emit| {
+                    stage::render_stage(score, |f| emit(f))
+                })?;
+            } else {
+                let rec = run::run_terminal(score)?;
+                mp4::write_mp4(&rec, score, &path)?;
             }
-            mp4::write_mp4(&rec, score, &path)?;
             Ok(path)
         }
     }
+}
+
+/// Output canvas size for a multi-pane stage render.
+fn canvas_dims(score: &Score) -> (usize, usize, u32) {
+    (
+        score.layout.width as usize,
+        score.layout.height as usize,
+        score.layout.fps.max(1),
+    )
+}
+
+fn ensure_parent(path: &Path) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent).map_err(|e| Error::io(parent, e))?;
+        }
+    }
+    Ok(())
 }
 
 fn resolve_output(score: &Score, output: Option<PathBuf>, ext: &str) -> PathBuf {

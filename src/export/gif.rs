@@ -1,6 +1,6 @@
-//! GIF target (pure Rust): rasterize frames via [`raster`], dedupe identical
-//! consecutive frames (accumulating their delay), and encode with `gif`. No
-//! ffmpeg required.
+//! GIF target (pure Rust): dedupe identical consecutive frames and encode with
+//! `gif`. `encode` is source-agnostic, so both the single-terminal fast path and
+//! the multi-scene stage feed it. No ffmpeg.
 
 use std::path::Path;
 
@@ -9,12 +9,15 @@ use super::run::Recording;
 use crate::error::{Error, Result};
 use crate::model::Score;
 
-/// Run a terminal score and write an animated GIF to `path`.
-pub fn write_gif(rec: &Recording, score: &Score, path: &Path) -> Result<()> {
-    let plan = raster::plan(rec, score);
-    let (w, h) = (plan.width, plan.height);
-    let frame_cs = (100.0 / plan.fps as f64).round().max(2.0) as u16;
-
+/// Encode a GIF at `path` from frames produced by `render` (each `w`×`h` RGBA).
+pub fn encode(
+    path: &Path,
+    w: usize,
+    h: usize,
+    fps: u32,
+    render: impl FnOnce(&mut dyn FnMut(&[u8])) -> Result<()>,
+) -> Result<()> {
+    let frame_cs = (100.0 / fps as f64).round().max(2.0) as u16;
     let file = std::fs::File::create(path).map_err(|e| Error::io(path, e))?;
     let mut encoder = gif::Encoder::new(file, w as u16, h as u16, &[])
         .map_err(|e| Error::Export(format!("gif encoder: {e}")))?;
@@ -22,11 +25,10 @@ pub fn write_gif(rec: &Recording, score: &Score, path: &Path) -> Result<()> {
         .set_repeat(gif::Repeat::Infinite)
         .map_err(|e| Error::Export(format!("gif repeat: {e}")))?;
 
-    // Hold the current distinct frame, accumulating delay until it changes.
     let mut held: Option<(Vec<u8>, u16)> = None;
     let mut err: Option<Error> = None;
 
-    raster::render_frames(rec, score, |rgba| {
+    render(&mut |rgba: &[u8]| {
         if err.is_some() {
             return;
         }
@@ -53,6 +55,14 @@ pub fn write_gif(rec: &Recording, score: &Score, path: &Path) -> Result<()> {
         write_frame(&mut encoder, prev, w, h, delay)?;
     }
     Ok(())
+}
+
+/// Single-terminal fast path: encode a GIF straight from a recording.
+pub fn write_gif(rec: &Recording, score: &Score, path: &Path) -> Result<()> {
+    let plan = raster::plan(rec, score);
+    encode(path, plan.width, plan.height, plan.fps, |emit| {
+        raster::render_frames(rec, score, |f| emit(f)).map(|_| ())
+    })
 }
 
 fn write_frame(

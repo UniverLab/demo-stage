@@ -35,9 +35,16 @@ pub struct Recording {
     pub duration: f64,
 }
 
-/// Run a terminal-only score and capture its output.
+/// Run a single-terminal score (cast/html/gif fast path) — rejects browser panes.
 pub fn run_terminal(score: &Score) -> Result<Recording> {
     let pane = single_terminal_pane(score)?;
+    run_with_pane(score, pane)
+}
+
+/// Run the score's timeline in a PTY sized to `pane`, capturing its output.
+/// Browser steps (focus/scroll on browser panes) are no-ops here; the stage
+/// drives browser panes separately and composites the result.
+pub fn run_with_pane(score: &Score, pane: &crate::model::Pane) -> Result<Recording> {
     let cols = (pane.width / CELL_W).clamp(1, 1000) as u16;
     let rows = (pane.height / CELL_H).clamp(1, 1000) as u16;
 

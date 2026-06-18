@@ -1,0 +1,205 @@
+//! Multi-scene stage (SPEC §4): run the terminal pane in a PTY, capture each
+//! browser pane via headless Chromium, and composite all panes onto the canvas
+//! frame by frame. Terminal capture + compositing are verified; the browser
+//! capture needs Chromium and is verified outside the sandbox.
+
+use super::{browser, composite, raster, run};
+use crate::error::{Error, Result};
+use crate::model::{Pane, PaneKind, Score, Step};
+
+/// True when a score has more than one pane (or any browser pane) and therefore
+/// needs the compositing stage rather than the single-terminal fast path.
+pub fn needs_stage(score: &Score) -> bool {
+    let has_browser = score
+        .layout
+        .panes
+        .iter()
+        .any(|p| p.kind == PaneKind::Browser);
+    let terminals = score
+        .layout
+        .panes
+        .iter()
+        .filter(|p| p.kind == PaneKind::Terminal)
+        .count();
+    has_browser || terminals > 1
+}
+
+/// Render a multi-pane score, emitting each composited canvas frame.
+pub fn render_stage(score: &Score, mut on_frame: impl FnMut(&[u8])) -> Result<()> {
+    let canvas_w = score.layout.width as usize;
+    let canvas_h = score.layout.height as usize;
+    let bg = score
+        .layout
+        .background
+        .as_deref()
+        .and_then(raster::parse_hex)
+        .unwrap_or([11, 15, 20]);
+
+    let term_pane = score
+        .layout
+        .panes
+        .iter()
+        .find(|p| p.kind == PaneKind::Terminal)
+        .ok_or_else(|| Error::Export("a multi-scene stage needs a terminal pane".to_string()))?;
+
+    // Terminal content across the whole timeline.
+    let rec = run::run_with_pane(score, term_pane)?;
+    let mut term_src = raster::FrameSource::new(&rec, score)?;
+    let (tw, th) = term_src.dims();
+    let n = term_src.n_frames();
+
+    // Browser panes captured up front (Chromium).
+    let mut scenes: Vec<(&Pane, browser::Scene)> = Vec::new();
+    for pane in score
+        .layout
+        .panes
+        .iter()
+        .filter(|p| p.kind == PaneKind::Browser)
+    {
+        let scrolls = scroll_keyframes_for(score, &pane.id);
+        scenes.push((pane, browser::capture(pane, scrolls)?));
+    }
+
+    for i in 0..n {
+        let progress = if n > 1 {
+            i as f64 / (n - 1) as f64
+        } else {
+            0.0
+        };
+        let term_frame = term_src.next_frame().unwrap_or_default();
+
+        let mut layers = vec![composite::Layer {
+            x: term_pane.x as usize,
+            y: term_pane.y as usize,
+            w: tw,
+            h: th,
+            rgba: &term_frame,
+        }];
+        for (pane, scene) in &scenes {
+            layers.push(composite::Layer {
+                x: pane.x as usize,
+                y: pane.y as usize,
+                w: scene.width,
+                h: scene.height,
+                rgba: scene.frame_at(progress),
+            });
+        }
+        on_frame(&composite::composite(canvas_w, canvas_h, bg, &layers));
+    }
+    Ok(())
+}
+
+/// How many scroll keyframes to capture for a browser pane — roughly one per
+/// 700 ms of scrolling directed at it (explicitly or via focus), capped.
+fn scroll_keyframes_for(score: &Score, pane_id: &str) -> usize {
+    let mut focused: Option<&str> = None;
+    let mut ms = 0u64;
+    for step in &score.timeline {
+        match step {
+            Step::Focus { pane } => focused = Some(pane.as_str()),
+            Step::Scroll {
+                duration_ms, pane, ..
+            } => {
+                if pane.as_deref().or(focused) == Some(pane_id) {
+                    ms += duration_ms;
+                }
+            }
+            _ => {}
+        }
+    }
+    ((ms / 700) as usize).clamp(0, 16)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn score(toml_str: &str) -> Score {
+        toml::from_str(toml_str).unwrap()
+    }
+
+    #[test]
+    fn detects_when_a_stage_is_needed() {
+        let single = score(
+            r#"
+[demo]
+name = "t"
+[layout]
+width = 100
+height = 100
+  [[layout.panes]]
+  id = "c"
+  type = "terminal"
+  x = 0
+  y = 0
+  width = 100
+  height = 100
+"#,
+        );
+        assert!(!needs_stage(&single));
+
+        let multi = score(
+            r#"
+[demo]
+name = "t"
+[layout]
+width = 200
+height = 100
+  [[layout.panes]]
+  id = "c"
+  type = "terminal"
+  x = 0
+  y = 0
+  width = 100
+  height = 100
+  [[layout.panes]]
+  id = "p"
+  type = "browser"
+  x = 100
+  y = 0
+  width = 100
+  height = 100
+  url = "file:///x.pdf"
+"#,
+        );
+        assert!(needs_stage(&multi));
+    }
+
+    #[test]
+    fn counts_scroll_keyframes_for_the_focused_browser() {
+        let s = score(
+            r#"
+[demo]
+name = "t"
+[layout]
+width = 200
+height = 100
+  [[layout.panes]]
+  id = "c"
+  type = "terminal"
+  x = 0
+  y = 0
+  width = 100
+  height = 100
+  [[layout.panes]]
+  id = "p"
+  type = "browser"
+  x = 100
+  y = 0
+  width = 100
+  height = 100
+  url = "file:///x.pdf"
+[[timeline]]
+action = "focus"
+pane = "p"
+[[timeline]]
+action = "scroll"
+direction = "down"
+duration_ms = 2100
+"#,
+        );
+        // 2100ms / 700 = 3 keyframes for "p", none for "c".
+        assert_eq!(scroll_keyframes_for(&s, "p"), 3);
+        assert_eq!(scroll_keyframes_for(&s, "c"), 0);
+    }
+}
