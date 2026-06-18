@@ -7,6 +7,7 @@
 pub mod cast;
 pub mod gif;
 pub mod html;
+pub mod raster;
 pub mod run;
 
 use std::path::{Path, PathBuf};
