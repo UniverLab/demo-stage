@@ -7,6 +7,8 @@
 pub mod cast;
 pub mod gif;
 pub mod html;
+pub mod mp4;
+pub mod provision;
 pub mod raster;
 pub mod run;
 
@@ -48,10 +50,17 @@ pub fn export(score: &Score, target: Target, output: Option<PathBuf>) -> Result<
             gif::write_gif(&rec, score, &path)?;
             Ok(path)
         }
-        Target::Mp4 => Err(Error::Export(
-            "mp4 export needs ffmpeg, which is not available here; use cast/html for terminal demos"
-                .to_string(),
-        )),
+        Target::Mp4 => {
+            let rec = run::run_terminal(score)?;
+            let path = resolve_output(score, output, "mp4");
+            if let Some(parent) = path.parent() {
+                if !parent.as_os_str().is_empty() {
+                    std::fs::create_dir_all(parent).map_err(|e| Error::io(parent, e))?;
+                }
+            }
+            mp4::write_mp4(&rec, score, &path)?;
+            Ok(path)
+        }
     }
 }
 

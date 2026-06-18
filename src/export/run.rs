@@ -159,7 +159,9 @@ fn single_terminal_pane(score: &Score) -> Result<&crate::model::Pane> {
         .any(|p| p.kind == PaneKind::Browser)
     {
         return Err(Error::Export(
-            "cast/html are text-only; a browser pane needs gif/mp4 (and chromium)".to_string(),
+            "browser panes need a browser renderer (chromium) and aren't supported yet — \
+             terminal panes only for now"
+                .to_string(),
         ));
     }
     let mut terms = score
