@@ -9,6 +9,7 @@ pub mod commands;
 pub mod error;
 pub mod model;
 pub mod normalize;
+pub mod validate;
 
 pub use error::{Error, Result};
 
