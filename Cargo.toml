@@ -25,3 +25,5 @@ vt100 = "0.15"
 fontdue = "0.9"
 gif = "0.13"
 ffmpeg-sidecar = "2"
+headless_chrome = { version = "1", features = ["fetch"] }
+png = "0.17"

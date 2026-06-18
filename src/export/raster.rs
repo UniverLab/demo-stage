@@ -1,8 +1,7 @@
-//! Shared frame rasterizer for the pixel targets (gif, mp4).
-//!
-//! Replays a recording through a vt100 parser at the score's fps and renders
-//! each frame to RGBA with the embedded monospace font. Pure Rust; covers
-//! printable ASCII and ANSI colours. Exotic glyphs are skipped.
+//! Shared frame rasterizer for the pixel targets (gif, mp4, and the multi-scene
+//! stage). Replays a recording through a vt100 parser at the score's fps and
+//! renders each frame to RGBA with the embedded monospace font. Pure Rust;
+//! covers printable ASCII and ANSI colours. Exotic glyphs are skipped.
 
 use std::collections::HashMap;
 
@@ -67,61 +66,117 @@ pub fn plan(rec: &Recording, score: &Score) -> Plan {
     }
 }
 
+/// A stateful, frame-by-frame terminal renderer. Advancing it monotonically
+/// replays the recording at the score's fps — used directly by gif/mp4 and, in
+/// lockstep with other panes, by the multi-scene stage.
+pub struct FrameSource<'a> {
+    rec: &'a Recording,
+    glyphs: HashMap<char, (Metrics, Vec<u8>)>,
+    cols: usize,
+    rows: usize,
+    cell_w: usize,
+    cell_h: usize,
+    ascent: f32,
+    default_bg: [u8; 3],
+    parser: Parser,
+    ev_idx: usize,
+    dt: f64,
+    frame: usize,
+    n_frames: usize,
+}
+
+impl<'a> FrameSource<'a> {
+    pub fn new(rec: &'a Recording, score: &Score) -> Result<Self> {
+        let font = Font::from_bytes(FONT, FontSettings::default())
+            .map_err(|e| Error::Export(format!("font: {e}")))?;
+        let px = score
+            .layout
+            .panes
+            .iter()
+            .find_map(|p| p.font_size)
+            .unwrap_or(16) as f32;
+        let (cell_w, cell_h) = cell_size(score);
+        let default_bg = score
+            .layout
+            .background
+            .as_deref()
+            .and_then(parse_hex)
+            .unwrap_or([11, 15, 20]);
+        let ascent = font
+            .horizontal_line_metrics(px)
+            .map(|m| m.ascent)
+            .unwrap_or(px * 0.8);
+
+        let mut glyphs = HashMap::new();
+        for code in 0x21u8..=0x7e {
+            let ch = code as char;
+            glyphs.insert(ch, font.rasterize(ch, px));
+        }
+
+        let fps = score.layout.fps.max(1) as f64;
+        let dt = 1.0 / fps;
+        let total = rec.duration.max(dt);
+        let n_frames = (total / dt).ceil() as usize + 1;
+
+        Ok(FrameSource {
+            rec,
+            glyphs,
+            cols: rec.cols as usize,
+            rows: rec.rows as usize,
+            cell_w,
+            cell_h,
+            ascent,
+            default_bg,
+            parser: Parser::new(rec.rows, rec.cols, 0),
+            ev_idx: 0,
+            dt,
+            frame: 0,
+            n_frames,
+        })
+    }
+
+    pub fn n_frames(&self) -> usize {
+        self.n_frames
+    }
+
+    pub fn dims(&self) -> (usize, usize) {
+        (self.cols * self.cell_w, self.rows * self.cell_h)
+    }
+
+    /// Render the next frame, or `None` once exhausted.
+    pub fn next_frame(&mut self) -> Option<Vec<u8>> {
+        if self.frame >= self.n_frames {
+            return None;
+        }
+        let t = self.frame as f64 * self.dt;
+        while self.ev_idx < self.rec.events.len() && self.rec.events[self.ev_idx].0 <= t {
+            self.parser.process(self.rec.events[self.ev_idx].1.as_bytes());
+            self.ev_idx += 1;
+        }
+        self.frame += 1;
+        Some(render_cells(
+            &self.parser,
+            &self.glyphs,
+            self.cols,
+            self.rows,
+            self.cell_w,
+            self.cell_h,
+            self.ascent,
+            self.default_bg,
+        ))
+    }
+}
+
 /// Render every frame, invoking `on_frame` with each RGBA buffer in order.
 pub fn render_frames(
     rec: &Recording,
     score: &Score,
     mut on_frame: impl FnMut(&[u8]),
 ) -> Result<Plan> {
-    let font = Font::from_bytes(FONT, FontSettings::default())
-        .map_err(|e| Error::Export(format!("font: {e}")))?;
-
-    let cols = rec.cols as usize;
-    let rows = rec.rows as usize;
-    let px = score
-        .layout
-        .panes
-        .iter()
-        .find_map(|p| p.font_size)
-        .unwrap_or(16) as f32;
-    let (cell_w, cell_h) = cell_size(score);
-
-    let default_bg = score
-        .layout
-        .background
-        .as_deref()
-        .and_then(parse_hex)
-        .unwrap_or([11, 15, 20]);
-    let ascent = font
-        .horizontal_line_metrics(px)
-        .map(|m| m.ascent)
-        .unwrap_or(px * 0.8);
-
-    let mut glyphs: HashMap<char, (Metrics, Vec<u8>)> = HashMap::new();
-    for code in 0x21u8..=0x7e {
-        let ch = code as char;
-        glyphs.insert(ch, font.rasterize(ch, px));
-    }
-
-    let fps = score.layout.fps.max(1) as f64;
-    let dt = 1.0 / fps;
-    let total = rec.duration.max(dt);
-    let n_frames = (total / dt).ceil() as usize + 1;
-
-    let mut parser = Parser::new(rec.rows, rec.cols, 0);
-    let mut ev_idx = 0usize;
-    for f in 0..n_frames {
-        let t = f as f64 * dt;
-        while ev_idx < rec.events.len() && rec.events[ev_idx].0 <= t {
-            parser.process(rec.events[ev_idx].1.as_bytes());
-            ev_idx += 1;
-        }
-        let frame = render_cells(
-            &parser, &glyphs, cols, rows, cell_w, cell_h, ascent, default_bg,
-        );
+    let mut source = FrameSource::new(rec, score)?;
+    while let Some(frame) = source.next_frame() {
         on_frame(&frame);
     }
-
     Ok(plan(rec, score))
 }
 
