@@ -6,17 +6,17 @@ order: 7
 
 # Export targets
 
-`demo export --target <fmt>` compiles a score. Three targets are pure-Rust and
-fully offline; `mp4` auto-provisions its tool on first use; browser panes are not
-supported yet.
+`demo export --target <fmt>` compiles a score. `cast`/`html`/`gif` are pure-Rust
+and offline; `mp4` and multi-scene **browser panes** auto-provision their tool
+(ffmpeg / Chromium) on first use.
 
 | Target | Output | External tool | Best for |
 |---|---|---|---|
 | `cast` | asciinema v2 (text) | — | Sharing/embedding a terminal recording. |
 | `html` | self-contained player page | — | Dropping a demo onto a website. |
-| `gif`  | animated GIF | — | READMEs, chat, anywhere images go. |
+| `gif`  | animated GIF | — (terminal only) | READMEs, chat, anywhere images go. |
 | `mp4`  | H.264 video | ffmpeg — **auto-fetched** | High-fidelity video, social. |
-| browser panes | (planned) | chromium — *planned* | PDF / web scenes beside the terminal. |
+| browser panes | composited into gif/mp4 | Chromium — **auto-fetched** | PDF / web scenes beside the terminal. |
 
 ## cast
 
@@ -43,10 +43,15 @@ isn't on your `PATH`, the first `mp4` export notifies you and downloads a manage
 static build into a cache, then reuses it. No manual install step. If the download
 can't run (offline), you get a clear message and can install ffmpeg yourself.
 
-## browser panes (planned)
+## browser panes (multi-scene)
 
-Multi-scene layouts with a `browser` pane (the PDF viewer / web scene) are declared
-in the DSL and validated by `check`, but the renderer isn't built yet — it needs a
-headless **Chromium** (no pure-Rust option exists) plus a frame compositor. Until
-then, exporting a score with a browser pane reports a clear "not supported yet"
-error; the same auto-provisioning approach as ffmpeg is planned for Chromium.
+A score can place a `browser` pane next to the terminal (the spec's *Stage
+Matrix*) — e.g. a PDF viewer or a live web preview. When exporting such a score to
+`gif`/`mp4`, the **stage** runs the terminal in a PTY, drives a headless
+**Chromium** to capture the `url` (scrolling per the `scroll` steps), and
+composites both panes onto the canvas frame by frame.
+
+Chromium is provisioned the same tectonic-style way as ffmpeg: a system Chrome is
+used if present, otherwise `headless_chrome` downloads a managed build on first
+use. (`cast`/`html` stay text-only and reject browser panes; use `gif`/`mp4` for
+multi-scene.)

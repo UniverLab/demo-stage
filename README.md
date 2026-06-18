@@ -70,12 +70,11 @@ You can also skip record/normalize and **author `demo.toml` by hand**, then
 | `html` | self-contained player page | — (pure Rust) |
 | `gif`  | animated GIF (rasterized) | — (pure Rust, embedded font) |
 | `mp4`  | H.264 video | ffmpeg — **auto-fetched on first use** |
-| browser panes (PDF/web) | (planned) | chromium — *planned* |
+| browser panes (PDF/web) | composited into gif/mp4 | Chromium — **auto-fetched on first use** |
 
-`cast` / `html` / `gif` work fully offline. `mp4` provisions ffmpeg
-**tectonic-style** — the first export downloads a managed static build into a
-cache (a system ffmpeg is used if present). Browser panes are declared and
-validated but not rendered yet.
+`cast` / `html` / `gif` work fully offline. `mp4` and multi-scene **browser
+panes** provision their tool **tectonic-style** — the first export downloads a
+managed ffmpeg / Chromium into a cache (a system install is used if present).
 
 ## Documentation
 
