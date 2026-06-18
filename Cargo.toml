@@ -2,7 +2,19 @@
 name = "demo-stage"
 version = "0.1.0"
 edition = "2021"
-description = ""
+description = "Demos as Code — declarative terminal capture and multi-scene orchestration"
 publish = false
 
+[[bin]]
+name = "demo"
+path = "src/main.rs"
+
+[lib]
+name = "demo_stage"
+path = "src/lib.rs"
+
 [dependencies]
+clap = { version = "4.5", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+thiserror = "2"
