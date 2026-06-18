@@ -122,8 +122,8 @@ mod tests {
 
     #[test]
     fn later_layers_paint_over_earlier() {
-        let red = [255, 0, 0, 255].repeat(1);
-        let blue = [0, 0, 255, 255].repeat(1);
+        let red = [255u8, 0, 0, 255];
+        let blue = [0u8, 0, 255, 255];
         let img = composite(
             1,
             1,
