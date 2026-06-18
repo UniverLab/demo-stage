@@ -121,3 +121,15 @@ fn write(path: &Path, bytes: &[u8]) -> Result<()> {
     }
     std::fs::write(path, bytes).map_err(|e| Error::io(path, e))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::sanitize;
+
+    #[test]
+    fn sanitize_replaces_unsafe_chars() {
+        assert_eq!(sanitize("my demo!"), "my-demo-");
+        assert_eq!(sanitize("ok_name-1"), "ok_name-1");
+        assert_eq!(sanitize("a/b\\c"), "a-b-c");
+    }
+}

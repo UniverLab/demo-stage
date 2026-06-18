@@ -294,4 +294,12 @@ action = "terminate"
         let reparsed: Score = toml::from_str(&rendered).unwrap();
         assert_eq!(original, reparsed);
     }
+
+    #[test]
+    fn typing_has_sane_defaults() {
+        let t = Typing::default();
+        assert_eq!(t.base_ms, 80);
+        assert_eq!(t.salt_ms, 15);
+        assert!(t.seed.is_none());
+    }
 }

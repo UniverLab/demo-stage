@@ -136,3 +136,22 @@ fn png_to_rgba(bytes: &[u8], tw: usize, th: usize) -> Result<Vec<u8>> {
     }
     Ok(out)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::Scene;
+
+    #[test]
+    fn frame_at_picks_the_latest_keyframe() {
+        let scene = Scene {
+            width: 1,
+            height: 1,
+            keyframes: vec![(0.0, vec![1]), (0.5, vec![2]), (0.9, vec![3])],
+        };
+        assert_eq!(scene.frame_at(0.0), &[1]);
+        assert_eq!(scene.frame_at(0.49), &[1]);
+        assert_eq!(scene.frame_at(0.5), &[2]);
+        assert_eq!(scene.frame_at(0.95), &[3]);
+        assert_eq!(scene.frame_at(2.0), &[3]);
+    }
+}

@@ -203,6 +203,27 @@ mod tests {
     }
 
     #[test]
+    fn trims_trailing_idle_to_a_cap() {
+        // Output keeps arriving for 9s after the only command → tail capped.
+        let r = raw(vec![
+            RawEvent::Input {
+                t_ms: 0,
+                bytes: "ls\r".into(),
+            },
+            RawEvent::Output {
+                t_ms: 9000,
+                data: "done".into(),
+            },
+        ]);
+        let score = normalize(&r, "demo", &opts());
+        let last_wait = score.timeline.iter().rev().find_map(|s| match s {
+            Step::Wait { duration_ms } => Some(*duration_ms),
+            _ => None,
+        });
+        assert_eq!(last_wait, Some(MAX_TAIL_MS));
+    }
+
+    #[test]
     fn prunes_typos_end_to_end() {
         let r = raw(vec![RawEvent::Input {
             t_ms: 0,
