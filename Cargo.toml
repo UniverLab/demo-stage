@@ -1,0 +1,8 @@
+[package]
+name = "demo-stage"
+version = "0.1.0"
+edition = "2021"
+description = ""
+publish = false
+
+[dependencies]

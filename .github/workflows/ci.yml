@@ -1,0 +1,8 @@
+name: CI
+
+on:
+  pull_request:
+
+jobs:
+  rust-ci:
+    uses: UniverLab/workflows/.github/workflows/rust-ci.yml@main
