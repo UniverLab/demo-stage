@@ -69,11 +69,13 @@ You can also skip record/normalize and **author `demo.toml` by hand**, then
 | `cast` | asciinema v2 (text) | — (pure Rust) |
 | `html` | self-contained player page | — (pure Rust) |
 | `gif`  | animated GIF (rasterized) | — (pure Rust, embedded font) |
-| `mp4`  | H.264 video | **ffmpeg** |
-| browser panes (PDF/web) | — | **chromium** |
+| `mp4`  | H.264 video | ffmpeg — **auto-fetched on first use** |
+| browser panes (PDF/web) | (planned) | chromium — *planned* |
 
-`cast` / `html` / `gif` work fully offline. `mp4` and `browser` panes report a
-clear error when their external tool is missing.
+`cast` / `html` / `gif` work fully offline. `mp4` provisions ffmpeg
+**tectonic-style** — the first export downloads a managed static build into a
+cache (a system ffmpeg is used if present). Browser panes are declared and
+validated but not rendered yet.
 
 ## Documentation
 
