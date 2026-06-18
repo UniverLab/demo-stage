@@ -5,6 +5,7 @@
 //! ffmpeg/chromium and are reported as unsupported when those are absent.
 
 pub mod cast;
+pub mod gif;
 pub mod html;
 pub mod run;
 
@@ -35,9 +36,17 @@ pub fn export(score: &Score, target: Target, output: Option<PathBuf>) -> Result<
             write(&path, html::to_html(&rec)?.as_bytes())?;
             Ok(path)
         }
-        Target::Gif => Err(Error::Export(
-            "gif export is not implemented yet".to_string(),
-        )),
+        Target::Gif => {
+            let rec = run::run_terminal(score)?;
+            let path = resolve_output(score, output, "gif");
+            if let Some(parent) = path.parent() {
+                if !parent.as_os_str().is_empty() {
+                    std::fs::create_dir_all(parent).map_err(|e| Error::io(parent, e))?;
+                }
+            }
+            gif::write_gif(&rec, score, &path)?;
+            Ok(path)
+        }
         Target::Mp4 => Err(Error::Export(
             "mp4 export needs ffmpeg, which is not available here; use cast/html for terminal demos"
                 .to_string(),
