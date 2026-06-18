@@ -34,6 +34,14 @@ pub enum Error {
     #[error("validation failed:\n{0}")]
     Validation(String),
 
+    /// JSON encoding failed (asciinema cast output).
+    #[error("could not encode JSON: {0}")]
+    Json(#[from] serde_json::Error),
+
+    /// Something went wrong while recording or exporting.
+    #[error("{0}")]
+    Export(String),
+
     /// A command (or part of one) is not implemented yet.
     #[error("not yet implemented: {0}")]
     Unimplemented(&'static str),

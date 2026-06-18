@@ -7,6 +7,7 @@
 pub mod cli;
 pub mod commands;
 pub mod error;
+pub mod export;
 pub mod model;
 pub mod normalize;
 pub mod validate;
