@@ -12,6 +12,8 @@ pub struct Score {
     pub demo: DemoMeta,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub env: Option<Env>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub typing: Option<Typing>,
     pub layout: Layout,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub timeline: Vec<Step>,
@@ -60,6 +62,39 @@ pub struct Env {
     pub setup_script: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub teardown_script: Option<String>,
+}
+
+/// `[typing]` — humanized-typing parameters consumed at export time. Set by
+/// `demo normalize`; controls the per-character jitter for `human_salt` steps.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Typing {
+    /// Base speed, milliseconds per character.
+    #[serde(default = "default_base_ms")]
+    pub base_ms: u64,
+    /// Maximum jitter added/removed per character, in milliseconds.
+    #[serde(default = "default_salt_ms")]
+    pub salt_ms: u64,
+    /// Seed for reproducible jitter (random each run when absent).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seed: Option<u64>,
+}
+
+fn default_base_ms() -> u64 {
+    80
+}
+
+fn default_salt_ms() -> u64 {
+    15
+}
+
+impl Default for Typing {
+    fn default() -> Self {
+        Typing {
+            base_ms: default_base_ms(),
+            salt_ms: default_salt_ms(),
+            seed: None,
+        }
+    }
 }
 
 /// `[layout]` — the global canvas and its panes.
