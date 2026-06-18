@@ -5,6 +5,7 @@
 //! ffmpeg/chromium and are reported as unsupported when those are absent.
 
 pub mod cast;
+pub mod composite;
 pub mod gif;
 pub mod html;
 pub mod mp4;
