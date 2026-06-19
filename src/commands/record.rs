@@ -22,6 +22,37 @@ fn ms(t0: Instant) -> u64 {
     t0.elapsed().as_millis() as u64
 }
 
+/// Track the current terminal line from an output chunk (cleared on newline).
+fn track_line(line: &mut String, text: &str) {
+    for ch in text.chars() {
+        match ch {
+            '\n' | '\r' => line.clear(),
+            c if c.is_control() => {}
+            c => line.push(c),
+        }
+    }
+}
+
+/// Heuristic: does this line look like a program prompting for a secret? Matches
+/// a secret keyword on a line that ends like a prompt (`:` or `?`), so a typed
+/// command that merely mentions "password" is not mistaken for a prompt.
+fn is_secret_prompt(line: &str) -> bool {
+    let lower = line.to_ascii_lowercase();
+    let trimmed = lower.trim_end();
+    if !(trimmed.ends_with(':') || trimmed.ends_with('?')) {
+        return false;
+    }
+    const HINTS: [&str; 6] = [
+        "password",
+        "passphrase",
+        "passcode",
+        "secret",
+        "[sudo]",
+        "verification code",
+    ];
+    HINTS.iter().any(|h| trimmed.contains(h))
+}
+
 pub fn run(args: RecordArgs) -> Result<()> {
     if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
         return Err(Error::Export(
@@ -63,6 +94,9 @@ pub fn run(args: RecordArgs) -> Result<()> {
     let last_activity = Arc::new(Mutex::new(Instant::now()));
     let shell_exited = Arc::new(AtomicBool::new(false));
     let stop = Arc::new(AtomicBool::new(false));
+    // Set while the program is showing a password/passphrase prompt: input typed
+    // during it is forwarded to the PTY but NEVER recorded.
+    let sensitive = Arc::new(AtomicBool::new(false));
     let t0 = Instant::now();
 
     enable_raw_mode().map_err(|e| Error::Export(format!("raw mode: {e}")))?;
@@ -72,9 +106,11 @@ pub fn run(args: RecordArgs) -> Result<()> {
         let events = events.clone();
         let last = last_activity.clone();
         let exited = shell_exited.clone();
+        let sensitive = sensitive.clone();
         thread::spawn(move || {
             let mut buf = [0u8; 4096];
             let mut stdout = std::io::stdout();
+            let mut line = String::new();
             loop {
                 match reader.read(&mut buf) {
                     Ok(0) | Err(_) => break,
@@ -82,9 +118,12 @@ pub fn run(args: RecordArgs) -> Result<()> {
                         let _ = stdout.write_all(&buf[..n]);
                         let _ = stdout.flush();
                         *last.lock().unwrap() = Instant::now();
+                        let text = String::from_utf8_lossy(&buf[..n]).into_owned();
+                        track_line(&mut line, &text);
+                        sensitive.store(is_secret_prompt(&line), Ordering::SeqCst);
                         events.lock().unwrap().push(RawEvent::Output {
                             t_ms: ms(t0),
-                            data: String::from_utf8_lossy(&buf[..n]).into_owned(),
+                            data: text,
                         });
                     }
                 }
@@ -99,6 +138,7 @@ pub fn run(args: RecordArgs) -> Result<()> {
         let events = events.clone();
         let last = last_activity.clone();
         let stop = stop.clone();
+        let sensitive = sensitive.clone();
         thread::spawn(move || {
             let mut buf = [0u8; 1024];
             let mut stdin = std::io::stdin();
@@ -111,6 +151,14 @@ pub fn run(args: RecordArgs) -> Result<()> {
                         }
                         let _ = writer.flush();
                         *last.lock().unwrap() = Instant::now();
+                        // Secret prompt active → forward the keystrokes but do NOT
+                        // record them; clear once the prompt is answered (Enter).
+                        if sensitive.load(Ordering::SeqCst) {
+                            if buf[..n].iter().any(|b| *b == b'\r' || *b == b'\n') {
+                                sensitive.store(false, Ordering::SeqCst);
+                            }
+                            continue;
+                        }
                         events.lock().unwrap().push(RawEvent::Input {
                             t_ms: ms(t0),
                             bytes: String::from_utf8_lossy(&buf[..n]).into_owned(),
@@ -161,4 +209,22 @@ pub fn run(args: RecordArgs) -> Result<()> {
         args.output.display()
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_secret_prompt;
+
+    #[test]
+    fn flags_secret_prompts_only() {
+        assert!(is_secret_prompt(
+            "Enter passphrase for key '/home/u/.ssh/id_ed25519':"
+        ));
+        assert!(is_secret_prompt("Password: "));
+        assert!(is_secret_prompt("[sudo] password for jheison:"));
+        assert!(is_secret_prompt("Vault passphrase?"));
+        // A typed command that mentions the word is NOT a prompt.
+        assert!(!is_secret_prompt("$ echo my secret plan"));
+        assert!(!is_secret_prompt("Cloning into 'repo'..."));
+    }
 }

@@ -21,6 +21,18 @@ demo record [-o macro.raw.toml] [--idle-timeout-ms 3000] [--shell /bin/bash]
 
 Recording ends when the shell exits (`exit` / Ctrl-D) or on idle timeout.
 
+**Secrets are redacted.** When a program shows a password/passphrase prompt (a line
+ending in `:` or `?` that mentions *password*, *passphrase*, *passcode*, *secret*,
+`[sudo]`, …), the keystrokes you type are forwarded to the program but **never
+written to `macro.raw.toml`**. Notes:
+
+- Password prompts disable echo, so the secret isn't in the output either — but the
+  detector is a heuristic, so **review the macro/score before sharing**, and prefer
+  non-interactive bypasses for secret flows (e.g. export `GITHUB_TOKEN` so ghScaff
+  skips its vault passphrase).
+- A program that *prints* a secret to stdout (a token in its output) is not
+  redacted — edit it out of the score.
+
 ## `demo normalize`
 
 Refine a raw macro into a clean score.
