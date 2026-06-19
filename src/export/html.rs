@@ -96,6 +96,7 @@ mod tests {
             rows: 24,
             title: "demo".into(),
             events: vec![(0.1, "hi".into())],
+            captions: vec![],
             duration: 0.6,
         };
         let html = to_html(&rec).unwrap();

@@ -42,11 +42,19 @@ pub fn render_stage(score: &Score, mut on_frame: impl FnMut(&[u8])) -> Result<()
         .find(|p| p.kind == PaneKind::Terminal)
         .ok_or_else(|| Error::Export("a multi-scene stage needs a terminal pane".to_string()))?;
 
-    // Terminal content across the whole timeline.
-    let rec = run::run_with_pane(score, term_pane)?;
+    // Terminal content across the whole timeline. Captions are pulled out so the
+    // terminal sub-frames stay clean; they are drawn on the composited canvas.
+    let mut rec = run::run_with_pane(score, term_pane)?;
+    let captions = std::mem::take(&mut rec.captions);
+    let caption = if captions.is_empty() {
+        None
+    } else {
+        Some(raster::CaptionOverlay::new(captions, 20.0)?)
+    };
     let mut term_src = raster::FrameSource::new(&rec, score)?;
     let (tw, th) = term_src.dims();
     let n = term_src.n_frames();
+    let fps = score.layout.fps.max(1) as f64;
 
     // Browser panes captured up front (Chromium).
     let mut scenes: Vec<(&Pane, browser::Scene)> = Vec::new();
@@ -84,7 +92,11 @@ pub fn render_stage(score: &Score, mut on_frame: impl FnMut(&[u8])) -> Result<()
                 rgba: scene.frame_at(progress),
             });
         }
-        on_frame(&composite::composite(canvas_w, canvas_h, bg, &layers));
+        let mut canvas = composite::composite(canvas_w, canvas_h, bg, &layers);
+        if let Some(caption) = &caption {
+            caption.draw(&mut canvas, canvas_w, canvas_h, i as f64 / fps);
+        }
+        on_frame(&canvas);
     }
     Ok(())
 }

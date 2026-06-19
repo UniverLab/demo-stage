@@ -38,6 +38,7 @@ mod tests {
             rows: 24,
             title: "t".into(),
             events: vec![(0.1, "hi".into()), (0.2, "\r\n".into())],
+            captions: vec![],
             duration: 0.7,
         };
         let cast = to_cast(&rec).unwrap();

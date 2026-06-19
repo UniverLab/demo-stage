@@ -83,6 +83,7 @@ pub struct FrameSource<'a> {
     dt: f64,
     frame: usize,
     n_frames: usize,
+    caption: Option<CaptionOverlay>,
 }
 
 impl<'a> FrameSource<'a> {
@@ -118,6 +119,12 @@ impl<'a> FrameSource<'a> {
         let total = rec.duration.max(dt);
         let n_frames = (total / dt).ceil() as usize + 1;
 
+        let caption = if rec.captions.is_empty() {
+            None
+        } else {
+            Some(CaptionOverlay::new(rec.captions.clone(), 18.0)?)
+        };
+
         Ok(FrameSource {
             rec,
             glyphs,
@@ -132,6 +139,7 @@ impl<'a> FrameSource<'a> {
             dt,
             frame: 0,
             n_frames,
+            caption,
         })
     }
 
@@ -155,7 +163,7 @@ impl<'a> FrameSource<'a> {
             self.ev_idx += 1;
         }
         self.frame += 1;
-        Some(render_cells(
+        let mut img = render_cells(
             &self.parser,
             &self.glyphs,
             self.cols,
@@ -164,7 +172,19 @@ impl<'a> FrameSource<'a> {
             self.cell_h,
             self.ascent,
             self.default_bg,
-        ))
+        );
+        // For a single-terminal score the pane frame is the whole canvas, so the
+        // caption is drawn here. (The stage clears captions from its terminal
+        // source and draws them on the composited canvas instead.)
+        if let Some(caption) = &self.caption {
+            caption.draw(
+                &mut img,
+                self.cols * self.cell_w,
+                self.rows * self.cell_h,
+                t,
+            );
+        }
+        Some(img)
     }
 }
 
@@ -290,6 +310,116 @@ pub fn parse_hex(s: &str) -> Option<[u8; 3]> {
     Some([(n >> 16) as u8, (n >> 8) as u8, n as u8])
 }
 
+/// Alpha-blend one rasterized glyph (`cov` coverage, `m` metrics) in `fg` onto
+/// the RGBA `img` at `(ox, top)`, clipped to the canvas.
+#[allow(clippy::too_many_arguments)]
+fn blit_glyph(
+    img: &mut [u8],
+    w: usize,
+    h: usize,
+    ox: i32,
+    top: i32,
+    m: &Metrics,
+    cov: &[u8],
+    fg: [u8; 3],
+) {
+    for gy in 0..m.height {
+        let py = top + gy as i32;
+        if py < 0 || py as usize >= h {
+            continue;
+        }
+        for gx in 0..m.width {
+            let pxc = ox + gx as i32;
+            if pxc < 0 || pxc as usize >= w {
+                continue;
+            }
+            let a = cov[gy * m.width + gx] as u32;
+            if a == 0 {
+                continue;
+            }
+            let p = (py as usize * w + pxc as usize) * 4;
+            for k in 0..3 {
+                let dst = img[p + k] as u32;
+                img[p + k] = ((fg[k] as u32 * a + dst * (255 - a)) / 255) as u8;
+            }
+        }
+    }
+}
+
+/// An on-canvas caption track: a bottom bar with centered text, switching to the
+/// latest caption that is active at the current time.
+pub struct CaptionOverlay {
+    captions: Vec<(f64, String)>,
+    glyphs: HashMap<char, (Metrics, Vec<u8>)>,
+    px: f32,
+    cell_w: usize,
+}
+
+impl CaptionOverlay {
+    pub fn new(captions: Vec<(f64, String)>, px: f32) -> Result<Self> {
+        let font = Font::from_bytes(FONT, FontSettings::default())
+            .map_err(|e| Error::Export(format!("font: {e}")))?;
+        let mut glyphs = HashMap::new();
+        for code in 0x20u8..=0x7e {
+            let ch = code as char;
+            glyphs.insert(ch, font.rasterize(ch, px));
+        }
+        Ok(CaptionOverlay {
+            captions,
+            glyphs,
+            px,
+            cell_w: (px * 0.6).round().max(1.0) as usize,
+        })
+    }
+
+    /// The caption text active at time `t` (latest with start ≤ t), if non-empty.
+    pub fn active(&self, t: f64) -> Option<&str> {
+        let mut chosen: Option<&str> = None;
+        for (start, text) in &self.captions {
+            if *start <= t {
+                chosen = Some(text.as_str());
+            } else {
+                break;
+            }
+        }
+        chosen.filter(|s| !s.is_empty())
+    }
+
+    /// Draw the active caption onto `img` (`w`×`h` RGBA) at time `t`.
+    pub fn draw(&self, img: &mut [u8], w: usize, h: usize, t: f64) {
+        let Some(text) = self.active(t) else {
+            return;
+        };
+        let bar_h = (self.px * 2.2).round() as usize;
+        if bar_h == 0 || bar_h >= h || w == 0 {
+            return;
+        }
+        let y0 = h - bar_h;
+        // Darken the bar to ~40% so light text reads on top.
+        for y in y0..h {
+            for x in 0..w {
+                let p = (y * w + x) * 4;
+                img[p] = (img[p] as u32 * 2 / 5) as u8;
+                img[p + 1] = (img[p + 1] as u32 * 2 / 5) as u8;
+                img[p + 2] = (img[p + 2] as u32 * 2 / 5) as u8;
+            }
+        }
+        let text_w = text.chars().count() * self.cell_w;
+        let start_x = w.saturating_sub(text_w) / 2;
+        let baseline = y0 + bar_h / 2 + (self.px * 0.35) as usize;
+        let fg = [235u8, 235, 235];
+        let mut cx = start_x;
+        for ch in text.chars() {
+            if let Some((m, cov)) = self.glyphs.get(&ch) {
+                let ox = cx as i32 + ((self.cell_w as i32 - m.width as i32) / 2).max(0);
+                let top = baseline as i32 - (m.height as i32 + m.ymin);
+                blit_glyph(img, w, h, ox, top, m, cov, fg);
+            }
+            cx += self.cell_w;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -313,5 +443,22 @@ mod tests {
         assert_eq!(xterm256(16), [0, 0, 0]);
         assert_eq!(xterm256(231), [255, 255, 255]);
         assert_eq!(xterm256(232), [8, 8, 8]);
+    }
+
+    #[test]
+    fn caption_overlay_picks_latest_nonempty() {
+        let c = CaptionOverlay::new(
+            vec![
+                (0.0, "step 1".into()),
+                (1.0, "step 2".into()),
+                (2.0, String::new()),
+            ],
+            18.0,
+        )
+        .unwrap();
+        assert_eq!(c.active(0.0), Some("step 1"));
+        assert_eq!(c.active(0.9), Some("step 1"));
+        assert_eq!(c.active(1.5), Some("step 2"));
+        assert_eq!(c.active(2.5), None); // cleared by the empty caption
     }
 }

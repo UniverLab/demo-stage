@@ -32,6 +32,8 @@ pub struct Recording {
     pub title: String,
     /// `(seconds_from_start, utf8 chunk)` output events.
     pub events: Vec<(f64, String)>,
+    /// `(seconds_from_start, text)` caption changes (empty text clears).
+    pub captions: Vec<(f64, String)>,
     pub duration: f64,
 }
 
@@ -98,12 +100,16 @@ pub fn run_with_pane(score: &Score, pane: &crate::model::Pane) -> Result<Recordi
     // ── Timed run. ───────────────────────────────────────────────────────
     let t0 = Instant::now();
     let mut events: Vec<(f64, String)> = Vec::new();
+    let mut captions: Vec<(f64, String)> = Vec::new();
     let typing = score.typing.clone().unwrap_or_default();
     let mut rng = Rng::new(typing.seed.unwrap_or(DEFAULT_SEED));
 
     for step in &score.timeline {
         match step {
             Step::Focus { .. } => {}
+            Step::Caption { text } => {
+                captions.push((t0.elapsed().as_secs_f64(), text.clone()));
+            }
             Step::Type { text, human_salt } => {
                 let delays = if *human_salt {
                     humanize_delays(text, typing.base_ms, typing.salt_ms, &mut rng)
@@ -154,6 +160,7 @@ pub fn run_with_pane(score: &Score, pane: &crate::model::Pane) -> Result<Recordi
         rows,
         title: score.demo.name.clone(),
         events,
+        captions,
         duration,
     })
 }

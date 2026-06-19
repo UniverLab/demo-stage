@@ -165,6 +165,10 @@ pub enum Step {
     },
     /// Hold for a fixed duration.
     Wait { duration_ms: u64 },
+    /// Show an on-canvas caption (a step indicator) until the next caption;
+    /// an empty `text` clears it. Rendered on pixel targets (gif/mp4); ignored
+    /// by the text-only `cast`/`html`.
+    Caption { text: String },
     /// Scroll a (browser) pane.
     Scroll {
         direction: ScrollDirection,
