@@ -19,7 +19,7 @@ demo normalize macro.raw.toml -o demo.toml
 demo check demo.toml
 
 # 4. Compile to a self-contained HTML player (great for a website).
-demo export demo.toml --target html
+demo export html demo.toml
 #   → dist/<name>.html
 ```
 
@@ -67,8 +67,8 @@ action = "terminate"
 
 ```sh
 demo check demo.toml
-demo export demo.toml --target gif    # → dist/hello.gif
-demo export demo.toml --target cast   # → dist/hello.cast
+demo export gif demo.toml    # → dist/hello.gif
+demo export cast demo.toml   # → dist/hello.cast
 ```
 
 See [the DSL reference](demo-toml.md) for every field and action.

@@ -67,11 +67,15 @@ a `url`, and every timeline step targets the right kind of pane (e.g. you can't
 Compile a score to a target format.
 
 ```sh
-demo export [demo.toml] --target <cast|html|gif|mp4> [-o PATH]
+demo export <cast|html|gif|mp4> [demo.toml] [-o PATH]
 ```
 
-- `--target` — output format (see [export targets](export-targets.md)).
+- `<target>` — output format, the first argument: `cast`, `html`, `gif` or `mp4`
+  (see [export targets](export-targets.md)).
+- `[input]` — the score to compile; defaults to `demo.toml`.
 - `-o, --output` — output path; defaults to `<output_dir>/<name>.<ext>`.
 
 Export runs the timeline in a real PTY with a clean prompt, capturing the output —
-so the typed commands actually execute.
+so the typed commands actually execute. A demo whose last command leaves a process
+in the foreground (a server, a REPL) is killed after a short grace period rather
+than blocking the export; end such a step with `Ctrl-C` or `terminate` to be clean.

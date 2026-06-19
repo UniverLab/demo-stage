@@ -6,7 +6,7 @@ order: 7
 
 # Export targets
 
-`demo export --target <fmt>` compiles a score. `cast`/`html`/`gif` are pure-Rust
+`demo export <fmt> [score]` compiles a score. `cast`/`html`/`gif` are pure-Rust
 and offline; `mp4` and multi-scene **browser panes** auto-provision their tool
 (ffmpeg / Chromium) on first use.
 

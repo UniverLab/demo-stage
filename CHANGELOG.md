@@ -26,6 +26,11 @@ All notable changes to DemoStage are documented here. Format loosely follows
 - **`[env].requires`**: declare env vars export needs (provided by the runner, not
   stored); `check` fails when one is unset — reproducible secret-gated demos.
 
+### Changed
+- **`demo export` takes the target as its first argument**: `demo export gif [score]`
+  instead of `demo export [score] --target gif`. Reads naturally and is what the
+  `--help` now shows (`<TARGET> [INPUT]`).
+
 ### Fixed
 - **`demo record` no longer cuts off on a pause.** The idle-timeout default was 3 s,
   so any short pause to think ended the capture. It now defaults to `0` (disabled) —

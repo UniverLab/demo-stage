@@ -76,13 +76,13 @@ pub struct CheckArgs {
 
 #[derive(Debug, Args)]
 pub struct ExportArgs {
+    /// Output format: cast, html, gif or mp4.
+    #[arg(value_enum)]
+    pub target: Target,
+
     /// The demo score to compile.
     #[arg(default_value = "demo.toml")]
     pub input: PathBuf,
-
-    /// Output format.
-    #[arg(short, long, value_enum)]
-    pub target: Target,
 
     /// Output file or directory (target-dependent default when omitted).
     #[arg(short, long)]

@@ -47,7 +47,7 @@ demo record  ──>  macro.raw.toml
 demo record                       # record an interactive session (Ctrl-D to stop)
 demo normalize macro.raw.toml     # → demo.toml (clean, declarative)
 demo check demo.toml              # static validation
-demo export demo.toml --target html   # → dist/<name>.html
+demo export html demo.toml            # → dist/<name>.html
 ```
 
 You can also skip record/normalize and **author `demo.toml` by hand**, then
