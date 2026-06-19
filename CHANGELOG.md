@@ -21,6 +21,10 @@ All notable changes to DemoStage are documented here. Format loosely follows
 - **Captions**: a `caption` timeline action overlays on-canvas step labels (gif/mp4).
 - **Secret redaction**: `demo record` detects password/passphrase prompts and never
   records the keystrokes typed at them (forwarded to the program only).
+- **Reveal on focus**: browser panes appear at the moment the timeline focuses them
+  (e.g. once a server is up or a PDF has compiled).
+- **`[env].requires`**: declare env vars export needs (provided by the runner, not
+  stored); `check` fails when one is unset — reproducible secret-gated demos.
 
 ### Notes
 - `cast`/`html`/`gif` and the core pipeline are fully offline. The Chromium screenshot

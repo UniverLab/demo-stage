@@ -56,6 +56,10 @@ used if present, otherwise `headless_chrome` downloads a managed build on first
 use. (`cast`/`html` stay text-only and reject browser panes; use `gif`/`mp4` for
 multi-scene.)
 
+**Reveal on focus:** a browser pane is blank until the timeline `focus`es it, then
+appears — so you can `focus` it right after a server comes up or a PDF compiles,
+and it "opens" at that exact moment. (The focus time is recorded during the run.)
+
 **Capture order:** the terminal runs to completion first, then each browser pane
 is captured. So a browser pane must point at something still available at capture
 time — a persistent file (a PDF, a rendered `preview.svg`/`.png`) or a server the

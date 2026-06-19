@@ -9,6 +9,18 @@ use crate::model::{PaneKind, Score, Step};
 /// An empty result means the score is valid.
 pub fn validate(score: &Score) -> Vec<String> {
     let mut problems = Vec::new();
+
+    // ── Required environment (provided at export time, not stored) ────────
+    if let Some(env) = &score.env {
+        for var in &env.requires {
+            if std::env::var(var).is_err() {
+                problems.push(format!(
+                    "env: required variable ${var} is not set (export reads it from your environment)"
+                ));
+            }
+        }
+    }
+
     let layout = &score.layout;
 
     // ── Canvas ────────────────────────────────────────────────────────────
@@ -268,6 +280,31 @@ duration_ms = 1000
 "#,
         );
         assert!(validate(&s).iter().any(|p| p.contains("must be a Browser")));
+    }
+
+    #[test]
+    fn flags_missing_required_env() {
+        let s = score_from(
+            r#"
+[demo]
+name = "t"
+[env]
+requires = ["DEMOSTAGE_DEFINITELY_UNSET_VAR_XYZ"]
+[layout]
+width = 100
+height = 100
+  [[layout.panes]]
+  id = "c"
+  type = "terminal"
+  x = 0
+  y = 0
+  width = 100
+  height = 100
+"#,
+        );
+        assert!(validate(&s)
+            .iter()
+            .any(|p| p.contains("DEMOSTAGE_DEFINITELY_UNSET")));
     }
 
     #[test]

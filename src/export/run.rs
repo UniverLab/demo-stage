@@ -34,6 +34,9 @@ pub struct Recording {
     pub events: Vec<(f64, String)>,
     /// `(seconds_from_start, text)` caption changes (empty text clears).
     pub captions: Vec<(f64, String)>,
+    /// `(seconds_from_start, pane_id)` of each `focus` — used by the stage to
+    /// reveal a browser pane at the moment it's focused.
+    pub focuses: Vec<(f64, String)>,
     pub duration: f64,
 }
 
@@ -93,7 +96,7 @@ pub fn run_with_pane(score: &Score, pane: &crate::model::Pane) -> Result<Recordi
     if let Some(setup) = score.env.as_ref().and_then(|e| e.setup_script.as_deref()) {
         let _ = writeln!(writer, "{setup}");
     }
-    let _ = writeln!(writer, "PS1='$ '; clear");
+    let _ = writeln!(writer, "PS1='$ '; clear"); // PS1 forced; env (tokens, etc.) is inherited
     thread::sleep(Duration::from_millis(400));
     drain(&rx);
 
@@ -101,12 +104,15 @@ pub fn run_with_pane(score: &Score, pane: &crate::model::Pane) -> Result<Recordi
     let t0 = Instant::now();
     let mut events: Vec<(f64, String)> = Vec::new();
     let mut captions: Vec<(f64, String)> = Vec::new();
+    let mut focuses: Vec<(f64, String)> = Vec::new();
     let typing = score.typing.clone().unwrap_or_default();
     let mut rng = Rng::new(typing.seed.unwrap_or(DEFAULT_SEED));
 
     for step in &score.timeline {
         match step {
-            Step::Focus { .. } => {}
+            Step::Focus { pane } => {
+                focuses.push((t0.elapsed().as_secs_f64(), pane.clone()));
+            }
             Step::Caption { text } => {
                 captions.push((t0.elapsed().as_secs_f64(), text.clone()));
             }
@@ -161,6 +167,7 @@ pub fn run_with_pane(score: &Score, pane: &crate::model::Pane) -> Result<Recordi
         title: score.demo.name.clone(),
         events,
         captions,
+        focuses,
         duration,
     })
 }

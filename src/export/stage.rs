@@ -56,8 +56,10 @@ pub fn render_stage(score: &Score, mut on_frame: impl FnMut(&[u8])) -> Result<()
     let n = term_src.n_frames();
     let fps = score.layout.fps.max(1) as f64;
 
-    // Browser panes captured up front (Chromium).
-    let mut scenes: Vec<(&Pane, browser::Scene)> = Vec::new();
+    // Browser panes captured up front (Chromium). Each reveals at the moment it
+    // is first focused (recorded during the terminal run) — so it "opens" exactly
+    // when the demo focuses it, e.g. once a server is up or a PDF has compiled.
+    let mut scenes: Vec<(&Pane, browser::Scene, f64)> = Vec::new();
     for pane in score
         .layout
         .panes
@@ -65,10 +67,17 @@ pub fn render_stage(score: &Score, mut on_frame: impl FnMut(&[u8])) -> Result<()
         .filter(|p| p.kind == PaneKind::Browser)
     {
         let scrolls = scroll_keyframes_for(score, &pane.id);
-        scenes.push((pane, browser::capture(pane, scrolls)?));
+        let reveal_at = rec
+            .focuses
+            .iter()
+            .find(|(_, id)| *id == pane.id)
+            .map(|(t, _)| *t)
+            .unwrap_or(0.0);
+        scenes.push((pane, browser::capture(pane, scrolls)?, reveal_at));
     }
 
     for i in 0..n {
+        let t = i as f64 / fps;
         let progress = if n > 1 {
             i as f64 / (n - 1) as f64
         } else {
@@ -83,7 +92,10 @@ pub fn render_stage(score: &Score, mut on_frame: impl FnMut(&[u8])) -> Result<()
             h: th,
             rgba: &term_frame,
         }];
-        for (pane, scene) in &scenes {
+        for (pane, scene, reveal_at) in &scenes {
+            if t < *reveal_at {
+                continue; // not revealed yet
+            }
             layers.push(composite::Layer {
                 x: pane.x as usize,
                 y: pane.y as usize,

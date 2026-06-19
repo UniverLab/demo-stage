@@ -28,7 +28,13 @@ captured.
 isolated = true
 setup_script = "mkdir -p /tmp/demo-sandbox && cd /tmp/demo-sandbox"
 teardown_script = "rm -rf /tmp/demo-sandbox"
+requires = ["GITHUB_TOKEN"]   # env vars export needs; values come from your shell
 ```
+
+`requires` lists environment variables the export run needs — typically a token
+that lets a flow skip a secret prompt (so the demo stays reproducible without
+storing the secret). The values come from whoever runs `export`; the score never
+holds them. `check` fails if a required variable is unset.
 
 ## `[typing]` (optional)
 

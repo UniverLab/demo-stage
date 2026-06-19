@@ -62,6 +62,11 @@ pub struct Env {
     pub setup_script: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub teardown_script: Option<String>,
+    /// Environment variables the export run needs (e.g. a token that lets a flow
+    /// skip a secret prompt). Names only — values come from the runner's
+    /// environment, never the score. `check` reports any that are unset.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub requires: Vec<String>,
 }
 
 /// `[typing]` — humanized-typing parameters consumed at export time. Set by
