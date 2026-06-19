@@ -34,8 +34,9 @@ pub struct RecordArgs {
     #[arg(short, long, default_value = "macro.raw.toml")]
     pub output: PathBuf,
 
-    /// Stop after this many milliseconds with no terminal output.
-    #[arg(long, default_value_t = 3000)]
+    /// Auto-stop after this many milliseconds with no terminal output
+    /// (0 disables — stop the recording yourself with Ctrl-D).
+    #[arg(long, default_value_t = 0)]
     pub idle_timeout_ms: u64,
 
     /// Shell/command to run inside the capture (defaults to `$SHELL`).

@@ -6,7 +6,9 @@
 //! forced before the clock starts, so demos never leak `user@host`.
 
 use std::io::{Read, Write};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver};
+use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -24,6 +26,13 @@ const CELL_H: u32 = 20;
 const DEFAULT_SEED: u64 = 0xD370_5EED;
 /// Cap for `wait_for_stdout` so a missing match can't hang export.
 const WAIT_FOR_TIMEOUT_MS: u64 = 15_000;
+/// Grace period for the shell to exit after the demo's `exit` before we kill it.
+/// A demo whose last command leaves a process in the foreground (a server, a
+/// REPL — anything that swallows `exit`) would otherwise block teardown forever.
+const EXIT_GRACE_MS: u64 = 2_000;
+/// Cap on waiting for the capture thread to drain once the shell is gone. A
+/// stray foreground process can keep the PTY open, so we never block on it.
+const READER_JOIN_MS: u64 = 1_000;
 
 /// A captured terminal recording.
 pub struct Recording {
@@ -83,14 +92,19 @@ pub fn run_with_pane(score: &Score, pane: &crate::model::Pane) -> Result<Recordi
         .map_err(|e| Error::Export(format!("pty writer: {e}")))?;
 
     let (tx, rx) = mpsc::channel::<(Instant, Vec<u8>)>();
-    let reader_handle = thread::spawn(move || {
-        let mut buf = [0u8; 4096];
-        while let Ok(n) = reader.read(&mut buf) {
-            if n == 0 || tx.send((Instant::now(), buf[..n].to_vec())).is_err() {
-                break;
+    let reader_done = Arc::new(AtomicBool::new(false));
+    {
+        let reader_done = reader_done.clone();
+        thread::spawn(move || {
+            let mut buf = [0u8; 4096];
+            while let Ok(n) = reader.read(&mut buf) {
+                if n == 0 || tx.send((Instant::now(), buf[..n].to_vec())).is_err() {
+                    break;
+                }
             }
-        }
-    });
+            reader_done.store(true, Ordering::SeqCst);
+        });
+    }
 
     // ── Pre-roll (untimed): force a clean prompt + run setup, then discard. ──
     if let Some(setup) = score.env.as_ref().and_then(|e| e.setup_script.as_deref()) {
@@ -155,10 +169,33 @@ pub fn run_with_pane(score: &Score, pane: &crate::model::Pane) -> Result<Recordi
     let _ = writer.write_all(b"\nexit\n");
     let _ = writer.flush();
     drop(writer);
-    let _ = child.wait();
+
+    // Bounded shutdown: give the shell a grace period to exit on its own, then
+    // kill it. Without this, a demo whose last command leaves a process in the
+    // foreground hangs export indefinitely.
+    let deadline = Instant::now() + Duration::from_millis(EXIT_GRACE_MS);
+    loop {
+        if matches!(child.try_wait(), Ok(Some(_))) {
+            break;
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            break;
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
+
+    // Drain trailing output, waiting — bounded — for the capture thread to reach
+    // EOF. A stray foreground process can keep the PTY open, so we never join it
+    // unconditionally; the thread is detached and reaped when the process exits.
     thread::sleep(Duration::from_millis(50));
+    let join_deadline = Instant::now() + Duration::from_millis(READER_JOIN_MS);
+    while !reader_done.load(Ordering::SeqCst) && Instant::now() < join_deadline {
+        collect(&mut events, &rx, t0);
+        thread::sleep(Duration::from_millis(20));
+    }
     collect(&mut events, &rx, t0);
-    let _ = reader_handle.join();
 
     let duration = events.last().map(|(t, _)| t + 0.5).unwrap_or(0.5);
     Ok(Recording {
@@ -292,5 +329,47 @@ mod tests {
         assert_eq!(key_to_bytes("tab"), vec![b'\t']);
         assert_eq!(key_to_bytes("a"), b"a".to_vec());
         assert_eq!(key_to_bytes("up"), vec![0x1b, b'[', b'A']);
+    }
+
+    /// A demo whose last command leaves a process in the foreground must not hang
+    /// teardown: bounded shutdown caps it at the grace period plus the drain, not
+    /// the command's lifetime.
+    #[cfg(unix)]
+    #[test]
+    fn replay_does_not_hang_on_a_long_running_command() {
+        let score: Score = toml::from_str(
+            r#"
+[demo]
+name = "hang"
+[layout]
+width = 800
+height = 400
+fps = 10
+  [[layout.panes]]
+  id = "c"
+  type = "terminal"
+  x = 0
+  y = 0
+  width = 800
+  height = 400
+[[timeline]]
+action = "type"
+text = "sleep 120\n"
+[[timeline]]
+action = "wait"
+duration_ms = 200
+"#,
+        )
+        .unwrap();
+
+        let start = Instant::now();
+        let rec = run_terminal(&score).expect("replay should return");
+        let elapsed = start.elapsed();
+        // Well under `sleep 120`: pre-roll + grace (2s) + drain (≤1s) + slack.
+        assert!(
+            elapsed < Duration::from_secs(10),
+            "teardown hung: took {elapsed:?}"
+        );
+        assert_eq!(rec.cols, 80);
     }
 }

@@ -26,6 +26,16 @@ All notable changes to DemoStage are documented here. Format loosely follows
 - **`[env].requires`**: declare env vars export needs (provided by the runner, not
   stored); `check` fails when one is unset — reproducible secret-gated demos.
 
+### Fixed
+- **`demo record` no longer cuts off on a pause.** The idle-timeout default was 3 s,
+  so any short pause to think ended the capture. It now defaults to `0` (disabled) —
+  recording stops on `exit`/Ctrl-D (or a positive `--idle-timeout-ms` you opt into).
+- **`demo export` can no longer hang forever.** Export replays the score in a PTY; a
+  demo whose last command left a process in the foreground (a server, a REPL) made
+  teardown's `child.wait()` block indefinitely. Teardown is now bounded: the shell
+  gets a 2 s grace period to exit, then it is killed, and the capture thread is
+  drained with a cap instead of joined unconditionally.
+
 ### Notes
 - `cast`/`html`/`gif` and the core pipeline are fully offline. The Chromium screenshot
   path is exercised on machines with Chromium available.

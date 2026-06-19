@@ -11,15 +11,18 @@ order: 5
 Capture an interactive session into a raw macro. Needs a real terminal.
 
 ```sh
-demo record [-o macro.raw.toml] [--idle-timeout-ms 3000] [--shell /bin/bash]
+demo record [-o macro.raw.toml] [--idle-timeout-ms 0] [--shell /bin/bash]
 ```
 
 - `-o, --output` — where to write the raw macro.
-- `--idle-timeout-ms` — stop after this long with no output (the trailing idle is
-  trimmed by `normalize`).
+- `--idle-timeout-ms` — auto-stop after this long with no terminal output.
+  **Defaults to `0` (disabled)** so a pause to think never cuts the recording
+  short; set a positive value for an unattended capture. Any trailing idle is
+  trimmed by `normalize`.
 - `--shell` — shell to run (defaults to `$SHELL`).
 
-Recording ends when the shell exits (`exit` / Ctrl-D) or on idle timeout.
+Recording ends when the shell exits (`exit` / Ctrl-D) — or, if you set a positive
+`--idle-timeout-ms`, after that long with no output.
 
 **Secrets are redacted.** When a program shows a password/passphrase prompt (a line
 ending in `:` or `?` that mentions *password*, *passphrase*, *passcode*, *secret*,
