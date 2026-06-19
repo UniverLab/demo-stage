@@ -86,6 +86,7 @@ Steps share one timeline, each tagged by `action`:
 | `type` | `text`, `human_salt?` | Type into the focused terminal. |
 | `keypress` | `key` | Press a named key — `enter`, `tab`, `esc`, `up`, `ctrl+c`, … |
 | `wait` | `duration_ms` | Hold for a fixed time. |
+| `caption` | `text` | Show an on-canvas step label (empty `text` clears it). Rendered on `gif`/`mp4`; ignored by text-only `cast`/`html`. |
 | `wait_for_stdout` | `match`, `pane?` | Block until a substring appears. |
 | `scroll` | `direction`, `velocity?`, `duration_ms`, `pane?` | Scroll a browser pane. |
 | `terminate` | — | End the demo. |

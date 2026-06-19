@@ -55,3 +55,9 @@ Chromium is provisioned the same tectonic-style way as ffmpeg: a system Chrome i
 used if present, otherwise `headless_chrome` downloads a managed build on first
 use. (`cast`/`html` stay text-only and reject browser panes; use `gif`/`mp4` for
 multi-scene.)
+
+**Capture order:** the terminal runs to completion first, then each browser pane
+is captured. So a browser pane must point at something still available at capture
+time — a persistent file (a PDF, a rendered `preview.svg`/`.png`) or a server the
+terminal leaves running (don't stop it mid-score). A step like `caption` overlays
+a label on the canvas to narrate the demo.
