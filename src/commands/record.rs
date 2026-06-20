@@ -113,7 +113,11 @@ pub fn run(args: RecordArgs) -> Result<()> {
             let mut line = String::new();
             loop {
                 match reader.read(&mut buf) {
-                    Ok(0) | Err(_) => break,
+                    Ok(0) => break,
+                    // A signal (e.g. SIGWINCH on resize) interrupts the blocking
+                    // read; that is not the shell exiting — retry, don't stop.
+                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                    Err(_) => break,
                     Ok(n) => {
                         let _ = stdout.write_all(&buf[..n]);
                         let _ = stdout.flush();
@@ -144,7 +148,9 @@ pub fn run(args: RecordArgs) -> Result<()> {
             let mut stdin = std::io::stdin();
             while !stop.load(Ordering::SeqCst) {
                 match stdin.read(&mut buf) {
-                    Ok(0) | Err(_) => break,
+                    Ok(0) => break,
+                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                    Err(_) => break,
                     Ok(n) => {
                         if writer.write_all(&buf[..n]).is_err() {
                             break;
