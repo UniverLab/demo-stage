@@ -203,6 +203,7 @@ pub fn run(args: RecordArgs) -> Result<()> {
             cols,
             rows,
             idle_timeout_ms: idle,
+            stage: args.into.as_ref().map(|p| p.display().to_string()),
         },
         events,
     };

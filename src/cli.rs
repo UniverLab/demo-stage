@@ -18,6 +18,8 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
+    /// Scaffold a stage (layout, panes, triggers) to record into.
+    Prepare(PrepareArgs),
     /// Record an interactive session into a raw macro.
     Record(RecordArgs),
     /// Refine a raw macro into a clean, human-looking demo score.
@@ -26,6 +28,51 @@ pub enum Command {
     Check(CheckArgs),
     /// Compile a demo score to a target format.
     Export(ExportArgs),
+}
+
+/// Canvas layouts a stage can be scaffolded with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum Preset {
+    /// One terminal pane filling the canvas.
+    Single,
+    /// Terminal on the left, a browser pane (e.g. a PDF) on the right.
+    Split,
+    /// Terminal on top, a browser pane below.
+    Stacked,
+}
+
+#[derive(Debug, Args)]
+pub struct PrepareArgs {
+    /// Where to write the stage score.
+    #[arg(short, long, default_value = "demo.toml")]
+    pub output: PathBuf,
+
+    /// Canvas layout to scaffold.
+    #[arg(long, value_enum, default_value_t = Preset::Single)]
+    pub preset: Preset,
+
+    /// Demo name.
+    #[arg(long, default_value = "demo")]
+    pub name: String,
+
+    /// A local file to show in the browser pane (turned into a `file://` URL) —
+    /// e.g. the PDF the demo builds. Used by `split`/`stacked`.
+    #[arg(long)]
+    pub pdf: Option<PathBuf>,
+
+    /// A URL to show in the browser pane (overrides `--pdf`).
+    #[arg(long)]
+    pub url: Option<String>,
+
+    /// Canvas width in pixels.
+    #[arg(long, default_value_t = 1280)]
+    pub width: u32,
+    /// Canvas height in pixels.
+    #[arg(long, default_value_t = 720)]
+    pub height: u32,
+    /// Frame rate for pixel targets.
+    #[arg(long, default_value_t = 15)]
+    pub fps: u32,
 }
 
 #[derive(Debug, Args)]
@@ -42,6 +89,11 @@ pub struct RecordArgs {
     /// Shell/command to run inside the capture (defaults to `$SHELL`).
     #[arg(long)]
     pub shell: Option<String>,
+
+    /// Record into a prepared stage: `normalize` will splice the captured
+    /// terminal flow into this stage's timeline instead of a fresh score.
+    #[arg(long)]
+    pub into: Option<PathBuf>,
 }
 
 #[derive(Debug, Args)]
@@ -65,6 +117,11 @@ pub struct NormalizeArgs {
     /// Maximum jitter added per character, in milliseconds.
     #[arg(long, default_value_t = 15)]
     pub salt_ms: u64,
+
+    /// Splice the recording into this prepared stage (keeps its layout, panes
+    /// and trigger steps). Defaults to the stage stamped by `record --into`.
+    #[arg(long)]
+    pub stage: Option<PathBuf>,
 }
 
 #[derive(Debug, Args)]

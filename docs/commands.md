@@ -1,17 +1,39 @@
 ---
 title: Commands
-description: Reference for demo record, normalize, check and export and their flags.
+description: Reference for demo prepare, record, normalize, check and export and their flags.
 order: 5
 ---
 
 # Commands
+
+## `demo prepare`
+
+Scaffold a **stage** — the canvas, its panes, and the trigger steps — to record
+into. Use it when a demo is more than one terminal: e.g. a terminal beside a
+browser pane showing the PDF the demo builds. The layout is authored once here,
+not re-recorded.
+
+```sh
+demo prepare [-o demo.toml] [--preset single|split|stacked] [--pdf FILE | --url URL] [--name demo]
+```
+
+- `--preset` — `single` (one terminal), `split` (terminal left, browser right),
+  `stacked` (terminal top, browser below).
+- `--pdf` — a local file shown in the browser pane (turned into a `file://` URL);
+  `--url` overrides it. The artifact need not exist yet — the demo builds it.
+- `--width` / `--height` / `--fps` — canvas size and frame rate.
+
+The generated timeline focuses the terminal first — that `focus` is the **anchor**
+where `record --into` splices the captured flow — then, for multi-pane presets,
+reveals and scrolls the browser pane. Replace the wait after the terminal with a
+`wait_for_stdout` step to drive the reveal off a real output line.
 
 ## `demo record`
 
 Capture an interactive session into a raw macro. Needs a real terminal.
 
 ```sh
-demo record [-o macro.raw.toml] [--idle-timeout-ms 0] [--shell /bin/bash]
+demo record [-o macro.raw.toml] [--idle-timeout-ms 0] [--shell /bin/bash] [--into demo.toml]
 ```
 
 - `-o, --output` — where to write the raw macro.
@@ -20,6 +42,8 @@ demo record [-o macro.raw.toml] [--idle-timeout-ms 0] [--shell /bin/bash]
   short; set a positive value for an unattended capture. Any trailing idle is
   trimmed by `normalize`.
 - `--shell` — shell to run (defaults to `$SHELL`).
+- `--into` — record into a prepared stage: `normalize` then splices this capture
+  into that stage's timeline instead of building a fresh single-pane score.
 
 Recording ends when the shell exits (`exit` / Ctrl-D) — or, if you set a positive
 `--idle-timeout-ms`, after that long with no output.
@@ -41,11 +65,14 @@ written to `macro.raw.toml`**. Notes:
 Refine a raw macro into a clean score.
 
 ```sh
-demo normalize [macro.raw.toml] [-o demo.toml] [--seed N] [--typing-ms 80] [--salt-ms 15]
+demo normalize [macro.raw.toml] [-o demo.toml] [--seed N] [--typing-ms 80] [--salt-ms 15] [--stage demo.toml]
 ```
 
 - `--seed` — make the humanized typing reproducible.
 - `--typing-ms` / `--salt-ms` — written into the score's `[typing]` table.
+- `--stage` — splice the capture into a prepared stage (keeping its layout, panes
+  and trigger steps), instead of emitting a fresh single-pane score. Defaults to
+  the stage stamped by `record --into`, so you rarely pass it explicitly.
 
 See [the normalizer](normalizer.md) for what it does.
 

@@ -40,6 +40,10 @@ pub struct RawMeta {
     pub rows: u16,
     #[serde(default)]
     pub idle_timeout_ms: u64,
+    /// Stage this macro was recorded into (`record --into`); `normalize` splices
+    /// the captured flow into that stage unless `--stage` overrides it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stage: Option<String>,
 }
 
 /// One captured event, tagged by `kind`, timestamped from recording start.
@@ -64,6 +68,7 @@ mod tests {
                 cols: 100,
                 rows: 30,
                 idle_timeout_ms: 3000,
+                stage: None,
             },
             events: vec![
                 RawEvent::Input {

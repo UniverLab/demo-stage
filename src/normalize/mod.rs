@@ -33,8 +33,80 @@ const MAX_TAIL_MS: u64 = 1500;
 const CELL_W: u32 = 10;
 const CELL_H: u32 = 20;
 
-/// Normalize a raw capture into a clean score named `name`.
+/// Normalize a raw capture into a clean, single-pane score named `name`.
 pub fn normalize(raw: &RawMacro, name: &str, opts: &Options) -> Score {
+    let mut timeline = Vec::new();
+    timeline.push(Step::Focus {
+        pane: "main".to_string(),
+    });
+    timeline.extend(terminal_steps(raw));
+    timeline.push(Step::Terminate);
+
+    Score {
+        demo: DemoMeta {
+            name: name.to_string(),
+            output_dir: "./dist".into(),
+        },
+        env: None,
+        typing: Some(typing(opts)),
+        layout: default_layout(raw),
+        timeline,
+    }
+}
+
+/// Splice the captured terminal flow into a prepared `stage`, keeping its
+/// layout, panes and trigger steps. The flow is inserted right after the first
+/// `focus` on a terminal pane (or, lacking one, prepended with a focus).
+pub fn merge_into_stage(mut stage: Score, raw: &RawMacro, opts: &Options) -> Score {
+    let term_id = stage
+        .layout
+        .panes
+        .iter()
+        .find(|p| p.kind == PaneKind::Terminal)
+        .map(|p| p.id.clone());
+
+    let steps = terminal_steps(raw);
+
+    let mut timeline = Vec::with_capacity(stage.timeline.len() + steps.len() + 1);
+    let mut spliced = false;
+    for step in stage.timeline.drain(..) {
+        let is_anchor = matches!(&step, Step::Focus { pane } if Some(pane) == term_id.as_ref());
+        timeline.push(step);
+        if is_anchor && !spliced {
+            timeline.extend(steps.iter().cloned());
+            spliced = true;
+        }
+    }
+    if !spliced {
+        let mut head = Vec::new();
+        if let Some(id) = &term_id {
+            head.push(Step::Focus { pane: id.clone() });
+        }
+        head.extend(steps);
+        head.append(&mut timeline);
+        timeline = head;
+    }
+    if !timeline.iter().any(|s| matches!(s, Step::Terminate)) {
+        timeline.push(Step::Terminate);
+    }
+
+    stage.typing = Some(typing(opts));
+    stage.timeline = timeline;
+    stage
+}
+
+fn typing(opts: &Options) -> Typing {
+    Typing {
+        base_ms: opts.typing_ms,
+        salt_ms: opts.salt_ms,
+        seed: opts.seed,
+    }
+}
+
+/// Build the humanized terminal step sequence (Type / Keypress / Wait) from a
+/// raw capture — without any Focus/Terminate wrappers, so it can fill either a
+/// fresh score or a prepared stage's terminal pane.
+fn terminal_steps(raw: &RawMacro) -> Vec<Step> {
     let inputs: Vec<(u64, &str)> = raw
         .events
         .iter()
@@ -56,18 +128,14 @@ pub fn normalize(raw: &RawMacro, name: &str, opts: &Options) -> Score {
         .max()
         .unwrap_or(0);
 
-    let mut timeline = Vec::with_capacity(commands.len() * 3 + 2);
-    timeline.push(Step::Focus {
-        pane: "main".to_string(),
-    });
-
+    let mut steps = Vec::with_capacity(commands.len() * 3);
     for (i, cmd) in commands.iter().enumerate() {
-        timeline.push(Step::Type {
+        steps.push(Step::Type {
             text: cmd.text.clone(),
             human_salt: true,
         });
         if cmd.had_enter {
-            timeline.push(Step::Keypress {
+            steps.push(Step::Keypress {
                 key: "enter".to_string(),
             });
         }
@@ -83,26 +151,10 @@ pub fn normalize(raw: &RawMacro, name: &str, opts: &Options) -> Score {
             None => last_output_ms.saturating_sub(cmd.enter_ms).min(MAX_TAIL_MS),
         };
         if wait > 0 {
-            timeline.push(Step::Wait { duration_ms: wait });
+            steps.push(Step::Wait { duration_ms: wait });
         }
     }
-
-    timeline.push(Step::Terminate);
-
-    Score {
-        demo: DemoMeta {
-            name: name.to_string(),
-            output_dir: "./dist".into(),
-        },
-        env: None,
-        typing: Some(Typing {
-            base_ms: opts.typing_ms,
-            salt_ms: opts.salt_ms,
-            seed: opts.seed,
-        }),
-        layout: default_layout(raw),
-        timeline,
-    }
+    steps
 }
 
 /// A single terminal pane sized to the captured grid.
@@ -140,6 +192,7 @@ mod tests {
                 cols: 80,
                 rows: 24,
                 idle_timeout_ms: 3000,
+                stage: None,
             },
             events,
         }
@@ -239,5 +292,79 @@ mod tests {
             })
             .collect();
         assert_eq!(typed, vec!["git status"]);
+    }
+
+    const STAGE: &str = r##"
+[demo]
+name = "texforge"
+[layout]
+width = 1280
+height = 720
+  [[layout.panes]]
+  id = "term"
+  type = "terminal"
+  x = 0
+  y = 0
+  width = 768
+  height = 720
+  [[layout.panes]]
+  id = "view"
+  type = "browser"
+  x = 768
+  y = 0
+  width = 512
+  height = 720
+  url = "file:///x.pdf"
+[[timeline]]
+action = "focus"
+pane = "term"
+[[timeline]]
+action = "focus"
+pane = "view"
+[[timeline]]
+action = "scroll"
+direction = "down"
+duration_ms = 1000
+pane = "view"
+[[timeline]]
+action = "terminate"
+"##;
+
+    #[test]
+    fn merges_flow_into_a_prepared_stage() {
+        let stage: Score = toml::from_str(STAGE).unwrap();
+        let r = raw(vec![RawEvent::Input {
+            t_ms: 0,
+            bytes: "ls\r".into(),
+        }]);
+        let merged = merge_into_stage(stage, &r, &opts());
+
+        // The merged score is valid and keeps the stage's two panes.
+        assert!(crate::validate::validate(&merged).is_empty());
+        assert_eq!(merged.layout.panes.len(), 2);
+
+        // The captured command was spliced in...
+        let typed: Vec<&str> = merged
+            .timeline
+            .iter()
+            .filter_map(|s| match s {
+                Step::Type { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(typed, vec!["ls"]);
+
+        // ...after `focus term` and before the stage's `focus view` trigger.
+        let type_at = merged
+            .timeline
+            .iter()
+            .position(|s| matches!(s, Step::Type { .. }))
+            .unwrap();
+        let view_at = merged
+            .timeline
+            .iter()
+            .position(|s| matches!(s, Step::Focus { pane } if pane == "view"))
+            .unwrap();
+        assert!(type_at < view_at, "flow must precede the view trigger");
     }
 }
