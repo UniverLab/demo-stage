@@ -22,6 +22,9 @@ use crate::normalize::Rng;
 /// Assumed monospace cell size (px), inverse of the normalizer's sizing.
 const CELL_W: u32 = 10;
 const CELL_H: u32 = 20;
+/// Built-in demo prompt (bash `PS1`): a green `❯`, used when the score pins none.
+/// `\[ \]` wrap the non-printing colour so bash measures the line correctly.
+pub const DEFAULT_PROMPT: &str = "\\[\\e[32m\\]❯\\[\\e[0m\\] ";
 /// Default seed when the score pins none.
 const DEFAULT_SEED: u64 = 0xD370_5EED;
 /// Cap for `wait_for_stdout` so a missing match can't hang export.
@@ -71,9 +74,10 @@ pub fn run_with_pane(score: &Score, pane: &crate::model::Pane) -> Result<Recordi
         })
         .map_err(|e| Error::Export(format!("openpty: {e}")))?;
 
+    let prompt = score.demo.prompt.as_deref().unwrap_or(DEFAULT_PROMPT);
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
     let mut cmd = CommandBuilder::new(&shell);
-    cmd.env("PS1", "$ ");
+    cmd.env("PS1", prompt);
     cmd.env("PS2", "> ");
     cmd.env("TERM", "xterm-256color");
     let mut child = pair
@@ -110,7 +114,9 @@ pub fn run_with_pane(score: &Score, pane: &crate::model::Pane) -> Result<Recordi
     if let Some(setup) = score.env.as_ref().and_then(|e| e.setup_script.as_deref()) {
         let _ = writeln!(writer, "{setup}");
     }
-    let _ = writeln!(writer, "PS1='$ '; clear"); // PS1 forced; env (tokens, etc.) is inherited
+    // Force the prompt after the rc files (which usually set their own PS1), so a
+    // demo never leaks `user@host`. Other env (tokens, etc.) is inherited.
+    let _ = writeln!(writer, "PS1={}; clear", sh_single_quote(prompt));
     thread::sleep(Duration::from_millis(400));
     drain(&rx);
 
@@ -282,6 +288,23 @@ fn drain(rx: &Receiver<(Instant, Vec<u8>)>) {
     while rx.try_recv().is_ok() {}
 }
 
+/// Wrap a string in POSIX single quotes for safe substitution into a shell
+/// command (each embedded `'` becomes `'\''`), so an arbitrary configured prompt
+/// can't break out of the `PS1=…` assignment.
+fn sh_single_quote(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('\'');
+    for ch in s.chars() {
+        if ch == '\'' {
+            out.push_str("'\\''");
+        } else {
+            out.push(ch);
+        }
+    }
+    out.push('\'');
+    out
+}
+
 /// Translate a named key into the bytes a terminal expects.
 fn key_to_bytes(key: &str) -> Vec<u8> {
     match key.to_ascii_lowercase().as_str() {
@@ -329,6 +352,17 @@ mod tests {
         assert_eq!(key_to_bytes("tab"), vec![b'\t']);
         assert_eq!(key_to_bytes("a"), b"a".to_vec());
         assert_eq!(key_to_bytes("up"), vec![0x1b, b'[', b'A']);
+    }
+
+    #[test]
+    fn single_quotes_prompts_safely() {
+        assert_eq!(sh_single_quote("$ "), "'$ '");
+        // An embedded quote can't break out of the assignment.
+        assert_eq!(sh_single_quote("a'b"), "'a'\\''b'");
+        assert_eq!(
+            sh_single_quote(DEFAULT_PROMPT),
+            "'\\[\\e[32m\\]❯\\[\\e[0m\\] '"
+        );
     }
 
     /// A demo whose last command leaves a process in the foreground must not hang

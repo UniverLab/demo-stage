@@ -46,6 +46,7 @@ pub fn normalize(raw: &RawMacro, name: &str, opts: &Options) -> Score {
         demo: DemoMeta {
             name: name.to_string(),
             output_dir: "./dist".into(),
+            prompt: None,
         },
         env: None,
         typing: Some(typing(opts)),

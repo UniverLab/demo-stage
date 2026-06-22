@@ -116,6 +116,7 @@ fn build_stage(o: &StageOpts) -> Score {
         demo: DemoMeta {
             name: o.name.clone(),
             output_dir: "./dist".into(),
+            prompt: None,
         },
         env: None,
         typing: Some(Typing::default()),
