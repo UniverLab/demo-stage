@@ -6,9 +6,11 @@ order: 7
 
 # Export targets
 
-`demo export <fmt> [score]` compiles a score. `cast`/`html`/`gif` are pure-Rust
-and offline; `mp4` and multi-scene **browser panes** auto-provision their tool
-(ffmpeg / Chromium) on first use.
+`demo export <fmt[,fmt…]> [score]` compiles a score. `cast`/`html`/`gif` are
+pure-Rust and offline; `mp4` and multi-scene **browser panes** auto-provision
+their tool (ffmpeg / Chromium) on first use. Pass several formats at once
+(`demo export gif,mp4`), and use `--speed 2x` (or `3x`, `0.5x`) to retime the
+whole demo.
 
 | Target | Output | External tool | Best for |
 |---|---|---|---|

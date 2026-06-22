@@ -120,13 +120,18 @@ a `url`, and every timeline step targets the right kind of pane (e.g. you can't
 Compile a score to a target format.
 
 ```sh
-demo export <cast|html|gif|mp4> [demo.toml] [-o PATH]
+demo export <fmt[,fmt…]> [demo.toml] [-o PATH] [--speed 2x]
 ```
 
-- `<target>` — output format, the first argument: `cast`, `html`, `gif` or `mp4`
-  (see [export targets](export-targets.md)).
+- `<formats>` — one or more output formats, the first argument, **comma-separated**:
+  `cast`, `html`, `gif`, `mp4` (see [export targets](export-targets.md)). Pass several
+  at once, e.g. `demo export gif,mp4` or `demo export cast,html,gif`.
 - `[input]` — the score to compile; defaults to `demo.toml`.
-- `-o, --output` — output path; defaults to `<output_dir>/<name>.<ext>`.
+- `-o, --output` — output path; defaults to `<output_dir>/<name>.<ext>`. Only valid
+  with a **single** format; with several, each format uses its default name.
+- `--speed` — a multiplier applied to typing and waits: `2x`, `3x`, `0.5x` (a bare
+  number works too). `1x` (the default) keeps the recorded pace. Output-driven
+  `wait_for_stdout` steps are not scaled — they still wait for real output.
 
 Export runs the timeline in a real PTY with a clean prompt, capturing the output —
 so the typed commands actually execute. A demo whose last command leaves a process

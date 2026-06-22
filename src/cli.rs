@@ -148,17 +148,61 @@ pub struct CheckArgs {
 
 #[derive(Debug, Args)]
 pub struct ExportArgs {
-    /// Output format: cast, html, gif or mp4.
-    #[arg(value_enum)]
-    pub target: Target,
+    /// One or more formats, comma-separated: cast, html, gif, mp4 (e.g. `gif,mp4`).
+    #[arg(value_parser = parse_targets)]
+    pub targets: TargetList,
 
     /// The demo score to compile.
     #[arg(default_value = "demo.toml")]
     pub input: PathBuf,
 
-    /// Output file or directory (target-dependent default when omitted).
+    /// Output file (single format only; with several formats the default,
+    /// per-format names are used).
     #[arg(short, long)]
     pub output: Option<PathBuf>,
+
+    /// Speed multiplier applied to typing and waits — e.g. `2x`, `3x`, `0.5x`
+    /// (a bare number works too). `1x` keeps the recorded pace.
+    #[arg(long, default_value = "1x", value_parser = parse_speed)]
+    pub speed: f64,
+}
+
+/// One or more export targets parsed from a comma-separated token.
+#[derive(Debug, Clone)]
+pub struct TargetList(pub Vec<Target>);
+
+/// Parse `gif,mp4` into a deduplicated list of targets.
+fn parse_targets(s: &str) -> Result<TargetList, String> {
+    let mut out: Vec<Target> = Vec::new();
+    for part in s.split(',') {
+        let p = part.trim();
+        if p.is_empty() {
+            continue;
+        }
+        let t = <Target as ValueEnum>::from_str(p, true)
+            .map_err(|_| format!("invalid format '{p}' (expected cast, html, gif or mp4)"))?;
+        if !out.contains(&t) {
+            out.push(t);
+        }
+    }
+    if out.is_empty() {
+        return Err("no export formats given (try cast, html, gif or mp4)".to_string());
+    }
+    Ok(TargetList(out))
+}
+
+/// Parse a speed multiplier like `2x`, `3x`, `0.5x` or a bare `2`.
+fn parse_speed(s: &str) -> Result<f64, String> {
+    let trimmed = s.trim();
+    let value = trimmed.strip_suffix(['x', 'X']).unwrap_or(trimmed);
+    let v: f64 = value
+        .parse()
+        .map_err(|_| format!("invalid speed '{s}' (try 2x, 3x or 0.5x)"))?;
+    if v.is_finite() && v > 0.0 {
+        Ok(v)
+    } else {
+        Err(format!("speed must be a positive number (got '{s}')"))
+    }
 }
 
 /// Supported export targets.
