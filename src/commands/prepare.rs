@@ -6,6 +6,7 @@
 //! Configure it with the flags, or run `demo prepare --wizard` for a guided,
 //! ghScaff-style interactive setup. Both feed the same stage builder.
 
+use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 
 use inquire::{Select, Text};
@@ -32,7 +33,11 @@ struct StageOpts {
 }
 
 pub fn run(args: PrepareArgs) -> Result<()> {
-    let opts = if args.wizard {
+    // The wizard runs on `--wizard`, or by default when `prepare` is called with
+    // no flags on an interactive terminal. With flags (or no TTY, e.g. CI), the
+    // flags drive it non-interactively.
+    let interactive = args.wizard || (bare_invocation() && std::io::stdin().is_terminal());
+    let opts = if interactive {
         wizard()?
     } else {
         from_args(args)
@@ -41,6 +46,13 @@ pub fn run(args: PrepareArgs) -> Result<()> {
     score.save(&opts.output)?;
     print_next(&opts);
     Ok(())
+}
+
+/// True when `prepare` was invoked with no arguments after it (`demo prepare`).
+fn bare_invocation() -> bool {
+    let mut args = std::env::args().skip_while(|a| a != "prepare");
+    args.next(); // the "prepare" token itself
+    args.next().is_none()
 }
 
 /// Resolve options straight from the CLI flags.

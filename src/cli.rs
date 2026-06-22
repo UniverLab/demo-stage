@@ -43,7 +43,8 @@ pub enum Preset {
 
 #[derive(Debug, Args)]
 pub struct PrepareArgs {
-    /// Configure interactively (a guided wizard) instead of using the flags below.
+    /// Force the interactive wizard. (It also runs by default when `prepare` is
+    /// called with no flags on a terminal; with flags or no TTY it's non-interactive.)
     #[arg(short = 'w', long)]
     pub wizard: bool,
 
