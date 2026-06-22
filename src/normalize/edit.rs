@@ -15,12 +15,28 @@ pub struct Command {
     pub had_enter: bool,
 }
 
+/// Where we are inside a terminal escape sequence. Arrow keys and other special
+/// keys arrive as multi-byte sequences (e.g. Up = `ESC [ A`); the whole sequence
+/// must be swallowed, or the non-control tail (`[A`, `[B`, …) leaks into the
+/// reconstructed text as if the user had typed it.
+enum Esc {
+    /// Not in a sequence.
+    None,
+    /// Just saw `ESC`; the next byte selects the sequence kind.
+    Saw,
+    /// Inside a CSI sequence (`ESC [ … final`); consume up to the final byte.
+    Csi,
+    /// Inside an SS3 sequence (`ESC O x`); exactly one byte follows.
+    Ss3,
+}
+
 /// Replay timestamped input chunks into a list of clean commands. Blank lines
 /// (a bare `Enter`, or a line killed before submitting) are dropped.
 pub fn reconstruct(inputs: &[(u64, &str)]) -> Vec<Command> {
     let mut commands = Vec::new();
     let mut buf: Vec<char> = Vec::new();
     let mut start_ms: Option<u64> = None;
+    let mut esc = Esc::None;
 
     let flush = |commands: &mut Vec<Command>,
                  buf: &mut Vec<char>,
@@ -41,7 +57,34 @@ pub fn reconstruct(inputs: &[(u64, &str)]) -> Vec<Command> {
 
     for &(t, bytes) in inputs {
         for ch in bytes.chars() {
+            // Swallow special-key escape sequences whole (arrows, Home/End, F-keys),
+            // so their tail (`[A`, `[B`, `OP`, …) never lands in the command text.
+            match esc {
+                Esc::Csi => {
+                    // CSI ends at a final byte in 0x40..=0x7E.
+                    if ('\u{40}'..='\u{7e}').contains(&ch) {
+                        esc = Esc::None;
+                    }
+                    continue;
+                }
+                Esc::Ss3 => {
+                    esc = Esc::None;
+                    continue;
+                }
+                Esc::Saw => {
+                    esc = match ch {
+                        '[' => Esc::Csi,
+                        'O' => Esc::Ss3,
+                        // Any other byte: a 2-byte escape (e.g. Alt-key); done.
+                        _ => Esc::None,
+                    };
+                    continue;
+                }
+                Esc::None => {}
+            }
             match ch {
+                // ESC: start of a special-key sequence — swallow what follows.
+                '\u{1b}' => esc = Esc::Saw,
                 '\r' | '\n' => {
                     flush(&mut commands, &mut buf, start_ms.unwrap_or(t), t, true);
                     start_ms = None;
@@ -57,7 +100,7 @@ pub fn reconstruct(inputs: &[(u64, &str)]) -> Vec<Command> {
                     buf.clear();
                     start_ms = None;
                 }
-                // Ignore other control bytes (arrows, escape sequences, …).
+                // Ignore other stray control bytes (Tab, Bell, …).
                 c if c.is_control() => {}
                 c => {
                     if start_ms.is_none() {
@@ -118,6 +161,21 @@ mod tests {
         assert_eq!(cmds.len(), 2);
         assert_eq!(cmds[1].text, "vim");
         assert!(!cmds[1].had_enter);
+    }
+
+    #[test]
+    fn swallows_arrow_key_escape_sequences() {
+        // Up, Down, Right, Left around real text must not leak `[A[B…` as typed.
+        let cmds = reconstruct(&[(0, "ab\u{1b}[A\u{1b}[Bcd\u{1b}[C\u{1b}[De\r")]);
+        assert_eq!(cmds.len(), 1);
+        assert_eq!(cmds[0].text, "abcde");
+    }
+
+    #[test]
+    fn swallows_ss3_and_csi_tilde_sequences() {
+        // SS3 (F1 = ESC O P) and a CSI tilde key (F5 = ESC [ 1 5 ~) leave nothing.
+        let cmds = reconstruct(&[(0, "x\u{1b}OP\u{1b}[15~y\r")]);
+        assert_eq!(cmds[0].text, "xy");
     }
 
     #[test]
