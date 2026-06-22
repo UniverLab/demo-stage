@@ -38,7 +38,7 @@ pub fn run(args: PrepareArgs) -> Result<()> {
     // flags drive it non-interactively.
     let interactive = args.wizard || (bare_invocation() && std::io::stdin().is_terminal());
     let opts = if interactive {
-        wizard()?
+        wizard(args.output.clone())?
     } else {
         from_args(args)
     };
@@ -135,9 +135,11 @@ fn ask<T>(r: std::result::Result<T, inquire::InquireError>) -> Result<T> {
     r.map_err(|e| Error::Export(format!("wizard: {e}")))
 }
 
-/// Guided, ghScaff-style interactive setup.
-fn wizard() -> Result<StageOpts> {
-    println!("\n  demo prepare — configure a stage\n");
+/// Guided, ghScaff-style interactive setup. Prepares the *recording* (the
+/// `demo.toml`); the output path comes from `-o` (default `demo.toml`), not a
+/// prompt — export to any format is a separate, later step.
+fn wizard(output: PathBuf) -> Result<StageOpts> {
+    println!("\n  demo prepare — configure the recording\n");
 
     let name = ask(Text::new("Demo name:").with_default("demo").prompt())?;
 
@@ -210,10 +212,6 @@ fn wizard() -> Result<StageOpts> {
         .parse::<u32>()
         .unwrap_or(15);
 
-    let output = PathBuf::from(ask(Text::new("Write to:")
-        .with_default("demo.toml")
-        .prompt())?);
-
     Ok(StageOpts {
         name,
         preset,
@@ -230,6 +228,7 @@ fn print_next(o: &StageOpts) {
     println!("prepared {} stage → {out}", preset_name(o.preset));
     println!("  next:  demo record --into {out}");
     println!("         demo normalize macro.raw.toml -o {out}");
+    println!("  then:  demo export <cast|html|gif|mp4> {out}   (same demo, any format)");
     if o.preset != Preset::Single {
         if o.view_url.is_none() {
             println!("  note:  set the browser pane `url` (pass --pdf <file> or --url <url>)");
