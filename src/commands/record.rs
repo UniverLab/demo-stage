@@ -99,6 +99,18 @@ pub fn run(args: RecordArgs) -> Result<()> {
     let sensitive = Arc::new(AtomicBool::new(false));
     let t0 = Instant::now();
 
+    // Tell the user how to end the capture before the shell takes over — the
+    // only cues otherwise are typing `exit` or Ctrl-D, neither of which is
+    // obvious mid-demo.
+    println!("● recording — run your demo, then type `exit` or press Ctrl-D to stop");
+    if args.idle_timeout_ms > 0 {
+        println!(
+            "  (auto-stops after {} ms with no output)",
+            args.idle_timeout_ms
+        );
+    }
+    println!();
+
     enable_raw_mode().map_err(|e| Error::Export(format!("raw mode: {e}")))?;
 
     // PTY → stdout, recorded as output events.
