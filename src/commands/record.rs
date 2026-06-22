@@ -14,7 +14,8 @@ use std::time::{Duration, Instant};
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode, size};
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 
-use crate::cli::RecordArgs;
+use crate::cli::{NormalizeArgs, RecordArgs};
+use crate::commands::stop::STOP_FILE_ENV;
 use crate::error::{Error, Result};
 use crate::model::{RawEvent, RawMacro, RawMeta};
 
@@ -75,9 +76,17 @@ pub fn run(args: RecordArgs) -> Result<()> {
             pixel_height: 0,
         })
         .map_err(|e| Error::Export(format!("openpty: {e}")))?;
+    // Sentinel the captured shell can touch (via `demo stop`) to end the
+    // capture without typing `exit` mid-demo. Unique per recorder process.
+    let stopfile =
+        std::env::temp_dir().join(format!("demo-stage-record-{}.stop", std::process::id()));
+    let _ = std::fs::remove_file(&stopfile);
+    let mut command = CommandBuilder::new(&shell);
+    command.env(STOP_FILE_ENV, &stopfile);
+
     let mut child = pair
         .slave
-        .spawn_command(CommandBuilder::new(&shell))
+        .spawn_command(command)
         .map_err(|e| Error::Export(format!("spawn {shell}: {e}")))?;
     drop(pair.slave);
 
@@ -102,7 +111,7 @@ pub fn run(args: RecordArgs) -> Result<()> {
     // Tell the user how to end the capture before the shell takes over — the
     // only cues otherwise are typing `exit` or Ctrl-D, neither of which is
     // obvious mid-demo.
-    println!("● recording — run your demo, then type `exit` or press Ctrl-D to stop");
+    println!("● recording — run your demo, then type `demo stop` (or `exit` / Ctrl-D) to stop");
     if args.idle_timeout_ms > 0 {
         println!(
             "  (auto-stops after {} ms with no output)",
@@ -196,6 +205,10 @@ pub fn run(args: RecordArgs) -> Result<()> {
         if matches!(child.try_wait(), Ok(Some(_))) {
             break;
         }
+        // `demo stop`, run inside the capture, touches this file.
+        if stopfile.exists() {
+            break;
+        }
         if idle > 0 && last_activity.lock().unwrap().elapsed() > Duration::from_millis(idle) {
             break;
         }
@@ -207,6 +220,7 @@ pub fn run(args: RecordArgs) -> Result<()> {
     let _ = child.wait();
     let _ = out_handle.join();
     let _ = disable_raw_mode();
+    let _ = std::fs::remove_file(&stopfile);
 
     let events = events.lock().unwrap().clone();
     let raw = RawMacro {
@@ -220,12 +234,30 @@ pub fn run(args: RecordArgs) -> Result<()> {
         events,
     };
     raw.save(&args.output)?;
-
     println!(
-        "recorded {} events → {} (next: demo normalize {})",
+        "recorded {} events → {}",
         raw.events.len(),
-        args.output.display(),
         args.output.display()
+    );
+
+    // Normalize is part of finishing a recording, not a separate chore — run it
+    // automatically into a clean score unless the user opted out.
+    if args.no_normalize {
+        println!("next: demo normalize {}", args.output.display());
+        return Ok(());
+    }
+
+    crate::commands::normalize::run(NormalizeArgs {
+        input: args.output.clone(),
+        output: args.normalized_output.clone(),
+        seed: None,
+        typing_ms: 80,
+        salt_ms: 15,
+        stage: None,
+    })?;
+    println!(
+        "next: demo export <cast|html|gif|mp4> {}",
+        args.normalized_output.display()
     );
     Ok(())
 }

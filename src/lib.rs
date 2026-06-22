@@ -14,6 +14,10 @@ pub mod validate;
 
 pub use error::{Error, Result};
 
+/// The command a user types inside a capture to end it (see `demo stop`). The
+/// normalizer drops it from the score so it never shows up in the finished demo.
+pub const STOP_COMMAND: &str = "demo stop";
+
 use std::process::ExitCode;
 
 use cli::{Cli, Command};
@@ -25,6 +29,7 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
     match cli.command {
         Command::Prepare(args) => commands::prepare::run(args).map(|()| ExitCode::SUCCESS),
         Command::Record(args) => commands::record::run(args).map(|()| ExitCode::SUCCESS),
+        Command::Stop => commands::stop::run().map(|()| ExitCode::SUCCESS),
         Command::Normalize(args) => commands::normalize::run(args).map(|()| ExitCode::SUCCESS),
         Command::Check(args) => commands::check::run(args),
         Command::Export(args) => commands::export::run(args).map(|()| ExitCode::SUCCESS),

@@ -33,10 +33,13 @@ reveals and scrolls the browser pane. Replace the wait after the terminal with a
 Capture an interactive session into a raw macro. Needs a real terminal.
 
 ```sh
-demo record [-o macro.raw.toml] [--idle-timeout-ms 0] [--shell /bin/bash] [--into demo.toml]
+demo record [-o macro.raw.toml] [-O demo.toml] [--no-normalize] [--idle-timeout-ms 0] [--shell /bin/bash] [--into demo.toml]
 ```
 
 - `-o, --output` — where to write the raw macro.
+- `-O, --normalized-output` — where the automatic normalize writes the clean score
+  (default `demo.toml`).
+- `--no-normalize` — stop after the raw capture; don't normalize automatically.
 - `--idle-timeout-ms` — auto-stop after this long with no terminal output.
   **Defaults to `0` (disabled)** so a pause to think never cuts the recording
   short; set a positive value for an unattended capture. Any trailing idle is
@@ -45,8 +48,18 @@ demo record [-o macro.raw.toml] [--idle-timeout-ms 0] [--shell /bin/bash] [--int
 - `--into` — record into a prepared stage: `normalize` then splices this capture
   into that stage's timeline instead of building a fresh single-pane score.
 
-Recording ends when the shell exits (`exit` / Ctrl-D) — or, if you set a positive
-`--idle-timeout-ms`, after that long with no output.
+**Ending a recording.** Run `demo stop` inside the captured session — it's the
+clean way to finish, even mid-wizard. (`exit` / Ctrl-D still work; a positive
+`--idle-timeout-ms` also stops after that long with no output.) The `demo stop`
+you type is dropped from the normalized score.
+
+When `record` finishes it **normalizes automatically**, so a single `demo record`
+gives you both `macro.raw.toml` and a ready-to-export `demo.toml`. Pass
+`--no-normalize` to skip that and run [`demo normalize`](#demo-normalize) yourself.
+
+Arrow keys and other special keys (Home/End, function keys) pressed inside an
+interactive wizard are recorded as control sequences and **swallowed by the
+normalizer** — they won't leak into the score as stray `[A`/`[B` text.
 
 **Secrets are redacted.** When a program shows a password/passphrase prompt (a line
 ending in `:` or `?` that mentions *password*, *passphrase*, *passcode*, *secret*,
@@ -59,6 +72,19 @@ written to `macro.raw.toml`**. Notes:
   skips its vault passphrase).
 - A program that *prints* a secret to stdout (a token in its output) is not
   redacted — edit it out of the score.
+
+## `demo stop`
+
+End the in-progress capture. Run it **inside** a `demo record` session:
+
+```sh
+demo stop
+```
+
+`record` exports a sentinel path into the captured shell; `demo stop` touches it,
+which the recorder notices and uses to end the capture. Outside a recording it
+errors. The command is dropped from the normalized score, so it never appears in
+the finished demo.
 
 ## `demo normalize`
 

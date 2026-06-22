@@ -22,6 +22,8 @@ pub enum Command {
     Prepare(PrepareArgs),
     /// Record an interactive session into a raw macro.
     Record(RecordArgs),
+    /// End the in-progress capture — run this inside a `demo record` session.
+    Stop,
     /// Refine a raw macro into a clean, human-looking demo score.
     Normalize(NormalizeArgs),
     /// Statically validate a demo score (exit 0 = ok, 1 = invalid).
@@ -87,7 +89,7 @@ pub struct RecordArgs {
     pub output: PathBuf,
 
     /// Auto-stop after this many milliseconds with no terminal output
-    /// (0 disables — stop the recording yourself with Ctrl-D).
+    /// (0 disables — stop the recording yourself with `demo stop`).
     #[arg(long, default_value_t = 0)]
     pub idle_timeout_ms: u64,
 
@@ -99,6 +101,14 @@ pub struct RecordArgs {
     /// terminal flow into this stage's timeline instead of a fresh score.
     #[arg(long)]
     pub into: Option<PathBuf>,
+
+    /// Skip the automatic `normalize` pass — keep only the raw macro.
+    #[arg(long)]
+    pub no_normalize: bool,
+
+    /// Where the automatic `normalize` writes the demo score.
+    #[arg(short = 'O', long, default_value = "demo.toml")]
+    pub normalized_output: PathBuf,
 }
 
 #[derive(Debug, Args)]

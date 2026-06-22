@@ -116,7 +116,15 @@ fn terminal_steps(raw: &RawMacro) -> Vec<Step> {
         })
         .collect();
 
-    let commands = edit::reconstruct(&inputs);
+    let mut commands = edit::reconstruct(&inputs);
+    // Drop the trailing `demo stop` the user typed to end the capture, so it
+    // never shows up in the finished demo.
+    if commands
+        .last()
+        .is_some_and(|c| c.text.trim() == crate::STOP_COMMAND)
+    {
+        commands.pop();
+    }
 
     let last_output_ms = raw
         .events
@@ -292,6 +300,31 @@ mod tests {
             })
             .collect();
         assert_eq!(typed, vec!["git status"]);
+    }
+
+    #[test]
+    fn drops_the_trailing_stop_command() {
+        // The `demo stop` the user typed to end the capture is not part of the demo.
+        let r = raw(vec![
+            RawEvent::Input {
+                t_ms: 0,
+                bytes: "echo hi\r".into(),
+            },
+            RawEvent::Input {
+                t_ms: 1000,
+                bytes: "demo stop\r".into(),
+            },
+        ]);
+        let score = normalize(&r, "demo", &opts());
+        let typed: Vec<&str> = score
+            .timeline
+            .iter()
+            .filter_map(|s| match s {
+                Step::Type { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(typed, vec!["echo hi"]);
     }
 
     const STAGE: &str = r##"

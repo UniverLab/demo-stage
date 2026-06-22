@@ -6,22 +6,24 @@ order: 3
 
 # Quickstart
 
-## Record → normalize → export
+## Record → export
 
 ```sh
-# 1. Record an interactive session. Type your demo, then Ctrl-D (or `exit`).
-demo record -o macro.raw.toml
+# 1. Record an interactive session. Run your demo, then type `demo stop` to finish
+#    (`exit` / Ctrl-D still work too). record normalizes automatically, so you get
+#    both macro.raw.toml (the raw capture) and demo.toml (the clean score).
+demo record
 
-# 2. Refine it into a clean, declarative score.
-demo normalize macro.raw.toml -o demo.toml
-
-# 3. Validate.
+# 2. Validate.
 demo check demo.toml
 
-# 4. Compile to a self-contained HTML player (great for a website).
+# 3. Compile to a self-contained HTML player (great for a website).
 demo export html demo.toml
 #   → dist/<name>.html
 ```
+
+Pass `--no-normalize` to `record` if you want only the raw macro and will run
+`demo normalize` yourself.
 
 ## Or author by hand
 

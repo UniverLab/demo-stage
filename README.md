@@ -31,27 +31,26 @@ cargo install --path .          # from this repo
 ## The loop
 
 ```
-demo record  ──>  macro.raw.toml
-                      │  (capture raw keystrokes + output + timing)
+demo record  ──>  macro.raw.toml  +  demo.toml
+                      │  (capture raw keystrokes + output + timing,
+                      │   then normalize automatically)
                       ▼
-                demo normalize  ──>  demo.toml
-                                        │  (prune typos, humanize typing, trim idle)
-                                        ▼
-                                   demo check  ──>  (ok · fail)
-                                        │  (validate the score statically)
-                                        ▼
-                                   demo export  ──>  dist/  (cast · html · gif · mp4)
+                demo check  ──>  (ok · fail)
+                      │  (validate the score statically)
+                      ▼
+                demo export  ──>  dist/  (cast · html · gif · mp4)
 ```
 
 ```sh
-demo record                       # record an interactive session (Ctrl-D to stop)
-demo normalize macro.raw.toml     # → demo.toml (clean, declarative)
+demo record                       # record a session, then type `demo stop` to finish
+                                  # → macro.raw.toml + demo.toml (auto-normalized)
 demo check demo.toml              # static validation
 demo export html demo.toml            # → dist/<name>.html
 ```
 
-You can also skip record/normalize and **author `demo.toml` by hand**, then
-`check` + `export`.
+`record` runs `normalize` for you when it finishes (pass `--no-normalize` to skip
+it, then run `demo normalize` yourself). You can also skip recording entirely and
+**author `demo.toml` by hand**, then `check` + `export`.
 
 ## What makes it different
 

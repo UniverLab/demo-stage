@@ -5,3 +5,4 @@ pub mod export;
 pub mod normalize;
 pub mod prepare;
 pub mod record;
+pub mod stop;
