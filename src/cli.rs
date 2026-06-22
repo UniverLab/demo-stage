@@ -43,6 +43,10 @@ pub enum Preset {
 
 #[derive(Debug, Args)]
 pub struct PrepareArgs {
+    /// Configure interactively (a guided wizard) instead of using the flags below.
+    #[arg(short = 'w', long)]
+    pub wizard: bool,
+
     /// Where to write the stage score.
     #[arg(short, long, default_value = "demo.toml")]
     pub output: PathBuf,

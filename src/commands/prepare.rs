@@ -2,11 +2,16 @@
 //! steps around a terminal anchor. `record --into <stage>` then captures the
 //! terminal flow, and `normalize` splices it in at the anchor — so the layout
 //! (e.g. a PDF shown beside the terminal) is authored once, not re-recorded.
+//!
+//! Configure it with the flags, or run `demo prepare --wizard` for a guided,
+//! ghScaff-style interactive setup. Both feed the same stage builder.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
+
+use inquire::{Select, Text};
 
 use crate::cli::{PrepareArgs, Preset};
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::model::{
     DemoMeta, Layout, Pane, PaneKind, Score, ScrollDirection, Step, Typing, Velocity,
 };
@@ -14,27 +19,63 @@ use crate::model::{
 const TERM_ID: &str = "term";
 const VIEW_ID: &str = "view";
 
+/// Resolved stage options, gathered from CLI flags or the interactive wizard.
+struct StageOpts {
+    name: String,
+    preset: Preset,
+    /// Browser pane URL (split/stacked); `None` writes a placeholder.
+    view_url: Option<String>,
+    width: u32,
+    height: u32,
+    fps: u32,
+    output: PathBuf,
+}
+
 pub fn run(args: PrepareArgs) -> Result<()> {
-    // Browser pane source (split/stacked): --url wins, else --pdf as a file URL.
+    let opts = if args.wizard {
+        wizard()?
+    } else {
+        from_args(args)
+    };
+    let score = build_stage(&opts);
+    score.save(&opts.output)?;
+    print_next(&opts);
+    Ok(())
+}
+
+/// Resolve options straight from the CLI flags.
+fn from_args(args: PrepareArgs) -> StageOpts {
     let view_url = args
         .url
         .clone()
         .or_else(|| args.pdf.as_deref().map(pdf_url));
+    StageOpts {
+        name: args.name,
+        preset: args.preset,
+        view_url,
+        width: args.width,
+        height: args.height,
+        fps: args.fps,
+        output: args.output,
+    }
+}
 
-    let panes = match args.preset {
-        Preset::Single => vec![terminal(0, 0, args.width, args.height)],
+/// Build the stage score from resolved options.
+fn build_stage(o: &StageOpts) -> Score {
+    let panes = match o.preset {
+        Preset::Single => vec![terminal(0, 0, o.width, o.height)],
         Preset::Split => {
-            let tw = args.width * 3 / 5; // terminal ≈ 60% of the width
+            let tw = o.width * 3 / 5; // terminal ≈ 60% of the width
             vec![
-                terminal(0, 0, tw, args.height),
-                browser(tw, 0, args.width - tw, args.height, view_url.clone()),
+                terminal(0, 0, tw, o.height),
+                browser(tw, 0, o.width - tw, o.height, o.view_url.clone()),
             ]
         }
         Preset::Stacked => {
-            let th = args.height * 3 / 5; // terminal ≈ 60% of the height
+            let th = o.height * 3 / 5; // terminal ≈ 60% of the height
             vec![
-                terminal(0, 0, args.width, th),
-                browser(0, th, args.width, args.height - th, view_url.clone()),
+                terminal(0, 0, o.width, th),
+                browser(0, th, o.width, o.height - th, o.view_url.clone()),
             ]
         }
     };
@@ -44,7 +85,7 @@ pub fn run(args: PrepareArgs) -> Result<()> {
     let mut timeline = vec![Step::Focus {
         pane: TERM_ID.to_string(),
     }];
-    if args.preset != Preset::Single {
+    if o.preset != Preset::Single {
         timeline.push(Step::Wait { duration_ms: 800 });
         timeline.push(Step::Focus {
             pane: VIEW_ID.to_string(),
@@ -59,38 +100,132 @@ pub fn run(args: PrepareArgs) -> Result<()> {
     }
     timeline.push(Step::Terminate);
 
-    let score = Score {
+    Score {
         demo: DemoMeta {
-            name: args.name.clone(),
+            name: o.name.clone(),
             output_dir: "./dist".into(),
         },
         env: None,
         typing: Some(Typing::default()),
         layout: Layout {
-            width: args.width,
-            height: args.height,
-            fps: args.fps,
+            width: o.width,
+            height: o.height,
+            fps: o.fps,
             background: Some("#0b0f14".to_string()),
             panes,
         },
         timeline,
+    }
+}
+
+/// Map an inquire prompt result into our error type (a cancel reads cleanly).
+fn ask<T>(r: std::result::Result<T, inquire::InquireError>) -> Result<T> {
+    r.map_err(|e| Error::Export(format!("wizard: {e}")))
+}
+
+/// Guided, ghScaff-style interactive setup.
+fn wizard() -> Result<StageOpts> {
+    println!("\n  demo prepare — configure a stage\n");
+
+    let name = ask(Text::new("Demo name:").with_default("demo").prompt())?;
+
+    let layout = ask(Select::new(
+        "Layout:",
+        vec![
+            "single — one terminal pane",
+            "split — terminal + browser pane (e.g. a PDF)",
+            "stacked — terminal above a browser pane",
+        ],
+    )
+    .prompt())?;
+    let preset = if layout.starts_with("split") {
+        Preset::Split
+    } else if layout.starts_with("stacked") {
+        Preset::Stacked
+    } else {
+        Preset::Single
     };
 
-    score.save(&args.output)?;
+    let view_url = if preset == Preset::Single {
+        None
+    } else {
+        let src = ask(Select::new(
+            "Browser pane shows:",
+            vec!["a PDF file", "a URL", "set later (placeholder)"],
+        )
+        .prompt())?;
+        if src.starts_with("a PDF") {
+            let p = ask(Text::new("PDF path:")
+                .with_help_message("turned into a file:// URL; it need not exist yet")
+                .prompt())?;
+            let p = p.trim();
+            (!p.is_empty()).then(|| pdf_url(Path::new(p)))
+        } else if src.starts_with("a URL") {
+            let u = ask(Text::new("URL:")
+                .with_default("http://localhost:8080")
+                .prompt())?;
+            let u = u.trim();
+            (!u.is_empty()).then(|| u.to_string())
+        } else {
+            None
+        }
+    };
 
-    let out = args.output.display();
-    println!("prepared {} stage → {out}", preset_name(args.preset));
+    let size = ask(Select::new(
+        "Canvas size:",
+        vec!["1280×720 (720p)", "1920×1080 (1080p)", "1600×900", "custom"],
+    )
+    .prompt())?;
+    let (width, height) = match size {
+        "1920×1080 (1080p)" => (1920, 1080),
+        "1600×900" => (1600, 900),
+        "custom" => {
+            let w = ask(Text::new("Width:").with_default("1280").prompt())?
+                .trim()
+                .parse::<u32>()
+                .unwrap_or(1280);
+            let h = ask(Text::new("Height:").with_default("720").prompt())?
+                .trim()
+                .parse::<u32>()
+                .unwrap_or(720);
+            (w, h)
+        }
+        _ => (1280, 720),
+    };
+
+    let fps = ask(Text::new("FPS:").with_default("15").prompt())?
+        .trim()
+        .parse::<u32>()
+        .unwrap_or(15);
+
+    let output = PathBuf::from(ask(Text::new("Write to:")
+        .with_default("demo.toml")
+        .prompt())?);
+
+    Ok(StageOpts {
+        name,
+        preset,
+        view_url,
+        width,
+        height,
+        fps,
+        output,
+    })
+}
+
+fn print_next(o: &StageOpts) {
+    let out = o.output.display();
+    println!("prepared {} stage → {out}", preset_name(o.preset));
     println!("  next:  demo record --into {out}");
     println!("         demo normalize macro.raw.toml -o {out}");
-    if args.preset != Preset::Single {
-        if view_url.is_none() {
+    if o.preset != Preset::Single {
+        if o.view_url.is_none() {
             println!("  note:  set the browser pane `url` (pass --pdf <file> or --url <url>)");
         }
         println!(
             "  tip:   to reveal the view off a build line, replace the wait after the\n         terminal with: action = \"wait_for_stdout\", match = \"<line>\", pane = \"{TERM_ID}\""
         );
     }
-    Ok(())
 }
 
 fn terminal(x: u32, y: u32, width: u32, height: u32) -> Pane {
