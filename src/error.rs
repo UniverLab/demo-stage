@@ -34,7 +34,7 @@ pub enum Error {
     #[error("validation failed:\n{0}")]
     Validation(String),
 
-    /// JSON encoding failed (asciinema cast output).
+    /// JSON encoding failed (the recording header/events).
     #[error("could not encode JSON: {0}")]
     Json(#[from] serde_json::Error),
 

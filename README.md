@@ -34,7 +34,7 @@ cargo install --path .          # from this repo
 demo capture  ──>  macro.raw.toml + demo.toml + demo.rec   (capture live, normalize,
                        │                                       record the real session)
                        ▼
-demo export   ──>  dist/  (html · gif · mp4)                 (render — never executes)
+demo export   ──>  dist/  (gif · mp4)                        (render — never executes)
 
                    demo record  ──>  demo.rec   (optional: re-run the score for a
                                                    fresh take when the app changes)
@@ -43,7 +43,7 @@ demo export   ──>  dist/  (html · gif · mp4)                 (render — n
 ```sh
 demo capture                      # capture a session, then type `demo stop` to finish
                                   # → macro.raw.toml + demo.toml + demo.rec
-demo export                       # no args → every format (html, gif, mp4)
+demo export                       # no args → every format (gif, mp4)
 demo export gif,mp4 --speed 2x        # several at once, retimed 2× faster
 ```
 
@@ -67,16 +67,15 @@ also **author `demo.toml` by hand**, then `record` + `export`.
 
 ## Export targets
 
-| Target | Output | Needs |
-|---|---|---|
-| `html` | self-contained player page (text) | — (pure Rust) |
-| `gif`  | animated GIF (rasterized) | — (pure Rust, embedded font) |
-| `mp4`  | H.264 video | ffmpeg — **auto-fetched on first use** |
-| browser panes (PDF/web) | composited into gif/mp4 | Chromium — **auto-fetched on first use** |
+| Target | Output | Best for | Needs |
+|---|---|---|---|
+| `gif`  | animated GIF (rasterized) | READMEs, chat, anywhere `<img>` works | — (pure Rust, embedded font) |
+| `mp4`  | H.264 video | landings / the web (`<video>`) | ffmpeg — **auto-fetched on first use** |
+| browser panes (PDF/web) | composited into gif/mp4 | a scene beside the terminal | Chromium — **auto-fetched on first use** |
 
-`html` / `gif` work fully offline. `mp4` and multi-scene **browser panes**
-provision their tool **tectonic-style** — the first export downloads a managed
-ffmpeg / Chromium into a cache (a system install is used if present).
+`gif` works fully offline. `mp4` and multi-scene **browser panes** provision
+their tool **tectonic-style** — the first export downloads a managed ffmpeg /
+Chromium into a cache (a system install is used if present).
 
 ## Documentation
 

@@ -91,10 +91,8 @@ background = "#0b0f14"
 a `url`.
 
 `line_height` (optional, default `1.0`) is the line spacing as a multiple of the
-font size on the pixel targets (gif/mp4). `1.0` makes box-drawing characters
-(`│ ─ ┌ ┘ …`) join into continuous lines for TUIs; raise it (e.g. `1.25`) for
-airier, prose-style spacing. It has no effect on `html` (the player sets its own
-line height).
+font size. `1.0` makes box-drawing characters (`│ ─ ┌ ┘ …`) join into continuous
+lines for TUIs; raise it (e.g. `1.25`) for airier, prose-style spacing.
 
 ## `[[timeline]]`
 
@@ -106,7 +104,7 @@ Steps share one timeline, each tagged by `action`:
 | `type` | `text`, `human_salt?` | Type into the focused terminal. |
 | `keypress` | `key` | Press a named key — `enter`, `tab`, `esc`, `up`, `ctrl+c`, … |
 | `wait` | `duration_ms` | Hold for a fixed time. |
-| `caption` | `text` | Show an on-canvas step label (empty `text` clears it). Rendered on `gif`/`mp4`; ignored by the text-only `html`. |
+| `caption` | `text` | Show an on-canvas step label (empty `text` clears it). Rendered on `gif`/`mp4`. |
 | `wait_for_stdout` | `match`, `pane?` | Block until a substring appears. |
 | `scroll` | `direction`, `velocity?`, `duration_ms`, `pane?` | Scroll a browser pane. |
 | `terminate` | — | End the demo. |

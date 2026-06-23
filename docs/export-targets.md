@@ -1,29 +1,26 @@
 ---
 title: Export targets
-description: html and gif are pure-Rust and offline; mp4 needs ffmpeg and browser panes need chromium.
+description: gif is pure-Rust and offline; mp4 needs ffmpeg; browser panes need chromium.
 order: 7
 ---
 
 # Export targets
 
-`demo export [fmt[,fmt…]] [recording]` renders a recording. `html`/`gif` are
-pure-Rust and offline; `mp4` and multi-scene **browser panes** auto-provision
-their tool (ffmpeg / Chromium) on first use. Pass several formats at once
+`demo export [fmt[,fmt…]] [recording]` renders a recording to **`gif`** and/or
+**`mp4`**. `gif` is pure-Rust and offline; `mp4` and multi-scene **browser panes**
+auto-provision their tool (ffmpeg / Chromium) on first use. Pass both at once
 (`demo export gif,mp4`), **omit the format to build them all** (`demo export`),
 and use `--speed 2x` (or `3x`, `0.5x`) to retime the whole demo.
 
-| Target | Output | External tool | Best for |
+| Target | Output | Best for | External tool |
 |---|---|---|---|
-| `html` | self-contained player page (text) | — | Dropping a demo onto a website. |
-| `gif`  | animated GIF | — (terminal only) | READMEs, chat, anywhere images go. |
-| `mp4`  | H.264 video | ffmpeg — **auto-fetched** | High-fidelity video, social. |
-| browser panes | composited into gif/mp4 | Chromium — **auto-fetched** | PDF / web scenes beside the terminal. |
+| `gif`  | animated GIF | READMEs, chat, GitHub — anywhere `<img>` works | — (pure Rust) |
+| `mp4`  | H.264 video | landings / the web (`<video>`), CDN-friendly | ffmpeg — **auto-fetched** |
+| browser panes | composited into gif/mp4 | a PDF / web scene beside the terminal | Chromium — **auto-fetched** |
 
-## html
-
-A single self-contained HTML file that plays the recording in the browser. Ideal
-for a landing page: a terminal demo with zero video weight. Text-only — browser
-panes aren't shown (use `gif`/`mp4` for those).
+> A text-based, framework-agnostic web player (a *DemoStagePlayer*, with crisp
+> selectable text and no asciinema dependency) is planned as a separate piece —
+> for now, embed `gif` (READMEs/chat) or `mp4` (`<video>` on a landing).
 
 ## gif
 
@@ -49,8 +46,7 @@ composites both panes onto the canvas frame by frame.
 
 Chromium is provisioned the same tectonic-style way as ffmpeg: a system Chrome is
 used if present, otherwise `headless_chrome` downloads a managed build on first
-use. (`html` stays text-only and drops browser panes; use `gif`/`mp4` for
-multi-scene.)
+use. (Browser panes only appear on `gif`/`mp4` — there's no text target.)
 
 **Reveal on focus:** a browser pane is blank until the timeline `focus`es it, then
 appears — so you can `focus` it right after a server comes up or a PDF compiles,

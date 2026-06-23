@@ -1,6 +1,6 @@
 ---
 title: DemoStage
-description: Demos as Code — record a terminal session, normalize it into a clean declarative score, and compile it to html, gif or mp4.
+description: Demos as Code — record a terminal session, normalize it into a clean declarative score, and compile it to gif or mp4.
 order: 1
 ---
 
@@ -29,7 +29,7 @@ demo capture  ──>  macro.raw.toml + demo.toml + demo.rec  ──>  demo expo
 | `capture`   | TTY               | `macro.raw.toml` + `demo.toml` + `demo.rec` | Capture a live session, normalize (prune typos, humanize typing, trim idle), and save a faithful recording. |
 | `check`     | `demo.toml`       | exit 0/1         | Validate the score statically. |
 | `record`    | `demo.toml`       | `demo.rec`      | *(Optional)* Re-execute the score in a PTY → a fresh recording. |
-| `export`    | `demo.rec`       | `dist/…`         | Render the recording to `html`, `gif`, `mp4`. Never executes. |
+| `export`    | `demo.rec`       | `dist/…`         | Render the recording to `gif` or `mp4`. Never executes. |
 
 `demo export` works straight after `capture`. You don't have to capture, either: a
 `demo.toml` can be **authored by hand**, then `record`ed and exported.

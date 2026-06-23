@@ -35,7 +35,8 @@ struct DemoStageMeta {
     focuses: Vec<(f64, String)>,
 }
 
-/// Serialize a recording plus its render config as an extended asciinema cast.
+/// Serialize a recording plus its render config: a JSON header line (with the
+/// `demostage` render config) followed by timestamped output lines.
 pub fn write(rec: &Recording, score: &Score) -> Result<String> {
     let meta = DemoStageMeta {
         demo: score.demo.clone(),

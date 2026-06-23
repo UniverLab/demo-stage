@@ -145,7 +145,7 @@ demo export [fmt[,fmt…]] [demo.rec] [--speed 2x]
 ```
 
 - `[formats]` — which formats to build, the first argument, **comma-separated**:
-  `html`, `gif`, `mp4`, or `all` (see [export targets](export-targets.md)).
+  `gif`, `mp4`, or `all` (see [export targets](export-targets.md)).
   Pass several at once (`demo export gif,mp4`) — and **omit it entirely to build
   every supported format** (`demo export` ≡ `demo export all`).
 - `[input]` — the recording to render; defaults to `demo.rec`. Accepts a `.rec`
@@ -157,8 +157,6 @@ demo export [fmt[,fmt…]] [demo.rec] [--speed 2x]
 
 Each format is written to its default path `<output_dir>/<name>.<ext>`.
 
-For a **multi-pane stage**, the pixel targets (`gif`/`mp4`) composite the recorded
-terminal with its browser panes — each captured via headless Chromium
-(auto-provisioned) and revealed at the moment the timeline focuses it. The
-text target (`html`) carries only the terminal stream (browser panes are dropped
-— they can't be represented as text).
+For a **multi-pane stage**, `gif`/`mp4` composite the recorded terminal with its
+browser panes — each captured via headless Chromium (auto-provisioned) and
+revealed at the moment the timeline focuses it.

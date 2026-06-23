@@ -1,5 +1,5 @@
 //! `demo record` — execute a demo score in a PTY and save the result as a
-//! recording (an asciinema `.cast`) that `demo export` plays back.
+//! recording (a `.rec`) that `demo export` plays back.
 //!
 //! This is the repeatable step: re-run it after the app changes and the
 //! recording refreshes. Rendering (`export`) never executes — it only replays

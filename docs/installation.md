@@ -30,7 +30,7 @@ curl -fsSL https://get.univerlab.org/demo-stage | sh
 
 ## Optional external tools
 
-`html` and `gif` work with **no external dependencies**.
+`gif` works with **no external dependencies**.
 
 - **`mp4`** → [ffmpeg](https://ffmpeg.org/). You don't have to install it: the
   first `mp4` export **auto-downloads a managed static ffmpeg** (tectonic-style)

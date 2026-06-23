@@ -15,8 +15,8 @@ order: 3
 demo capture
 
 # 2. Render the recording (playback — never executes). Omit the format for all.
-demo export html
-#   → dist/<name>.html
+demo export gif
+#   → dist/<name>.gif
 ```
 
 That's it — `export` plays back the recording `capture` just made, so it works for

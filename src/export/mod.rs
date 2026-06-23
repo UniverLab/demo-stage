@@ -6,10 +6,8 @@
 //! drives Chromium for browser panes.
 
 pub mod browser;
-pub mod cast;
 pub mod composite;
 pub mod gif;
-pub mod html;
 pub mod mp4;
 pub mod provision;
 pub mod raster;
@@ -45,11 +43,6 @@ pub fn render(rec: &Recording, score: &Score, target: Target) -> Result<PathBuf>
     );
 
     match target {
-        Target::Html => {
-            let path = resolve_output(score, "html");
-            write(&path, html::to_html(rec)?.as_bytes())?;
-            Ok(path)
-        }
         Target::Gif => {
             let path = resolve_output(score, "gif");
             ensure_parent(&path)?;
@@ -122,15 +115,6 @@ fn sanitize(name: &str) -> String {
             }
         })
         .collect()
-}
-
-fn write(path: &Path, bytes: &[u8]) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        if !parent.as_os_str().is_empty() {
-            std::fs::create_dir_all(parent).map_err(|e| Error::io(parent, e))?;
-        }
-    }
-    std::fs::write(path, bytes).map_err(|e| Error::io(path, e))
 }
 
 #[cfg(test)]
