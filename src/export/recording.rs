@@ -150,18 +150,45 @@ fn read_raw(path: &Path, text: &str) -> Result<(Recording, Score)> {
     Ok((from_raw(&raw, name), default_score(name, cols, rows)))
 }
 
-/// Build a playback recording from a raw capture's real output stream (input
-/// events are dropped — the output already includes the shell's echo).
+/// Longest pause kept between consecutive output chunks when normalizing a
+/// faithful recording — longer waits (thinking, network) are trimmed to this, so
+/// playback feels deliberate without dead air.
+const MAX_GAP_MS: f64 = 1200.0;
+
+/// Build a playback recording from a raw capture's real output stream, with its
+/// **timing normalized**: the trailing `demo stop` you typed is dropped, and idle
+/// gaps are trimmed. Input events are dropped — the output already echoes them.
+///
+/// Note: typo-pruning and re-humanized typing can't be applied to a faithful
+/// recording (the keystrokes are already baked into the output) — those need
+/// re-execution via `demo record`. Timing is what we can clean here.
 pub fn from_raw(raw: &RawMacro, name: &str) -> Recording {
-    let events: Vec<(f64, String)> = raw
+    // Drop everything from the moment the user started typing the stop command.
+    let cutoff = stop_cutoff_ms(raw);
+    let raw_events: Vec<(f64, String)> = raw
         .events
         .iter()
         .filter_map(|e| match e {
-            RawEvent::Output { t_ms, data } => Some((*t_ms as f64 / 1000.0, data.clone())),
-            RawEvent::Input { .. } => None,
+            RawEvent::Output { t_ms, data } if cutoff.is_none_or(|c| *t_ms < c) => {
+                Some((*t_ms as f64 / 1000.0, data.clone()))
+            }
+            _ => None,
         })
         .collect();
+
+    // Trim idle: cap the gap before each chunk (also trims leading dead air).
+    let cap = MAX_GAP_MS / 1000.0;
+    let mut events = Vec::with_capacity(raw_events.len());
+    let mut acc = 0.0;
+    let mut prev = 0.0;
+    for (i, (t, data)) in raw_events.iter().enumerate() {
+        let gap = if i == 0 { *t } else { t - prev };
+        acc += gap.clamp(0.0, cap);
+        prev = *t;
+        events.push((acc, data.clone()));
+    }
     let duration = events.last().map(|(t, _)| *t).unwrap_or(0.0);
+
     Recording {
         cols: raw.meta.cols,
         rows: raw.meta.rows,
@@ -171,6 +198,38 @@ pub fn from_raw(raw: &RawMacro, name: &str) -> Recording {
         focuses: Vec::new(),
         duration,
     }
+}
+
+/// The `t_ms` at which the user started typing the final `demo stop` line, if the
+/// capture ended that way — so its echo (and the "stopping" message) is dropped.
+fn stop_cutoff_ms(raw: &RawMacro) -> Option<u64> {
+    let mut line = String::new();
+    let mut line_start: Option<u64> = None;
+    let mut cutoff: Option<u64> = None;
+    for e in &raw.events {
+        if let RawEvent::Input { t_ms, bytes } = e {
+            for ch in bytes.chars() {
+                match ch {
+                    '\r' | '\n' => {
+                        if line.trim() == crate::STOP_COMMAND {
+                            cutoff = line_start;
+                        }
+                        line.clear();
+                        line_start = None;
+                    }
+                    c if c.is_control() => {}
+                    c => {
+                        line_start.get_or_insert(*t_ms);
+                        line.push(c);
+                    }
+                }
+            }
+        }
+    }
+    if line.trim() == crate::STOP_COMMAND {
+        cutoff = cutoff.or(line_start);
+    }
+    cutoff
 }
 
 /// A plain single-terminal score sized to a `cols`×`rows` capture, used to render
@@ -269,5 +328,62 @@ data = "file.txt\n"
         assert_eq!(rec.events, vec![(0.25, "file.txt\n".to_string())]);
         assert_eq!(rec.cols, 90);
         assert_eq!(score.layout.width, 90 * CELL_W);
+    }
+
+    fn raw(events: Vec<RawEvent>) -> RawMacro {
+        RawMacro {
+            meta: crate::model::RawMeta {
+                shell: "/bin/bash".into(),
+                cols: 80,
+                rows: 24,
+                idle_timeout_ms: 0,
+                stage: None,
+            },
+            events,
+        }
+    }
+
+    #[test]
+    fn from_raw_caps_idle_gaps() {
+        // A 5s dead-air gap between two chunks is trimmed to the 1.2s cap.
+        let r = raw(vec![
+            RawEvent::Output {
+                t_ms: 0,
+                data: "a".into(),
+            },
+            RawEvent::Output {
+                t_ms: 5000,
+                data: "b".into(),
+            },
+        ]);
+        let rec = from_raw(&r, "t");
+        assert_eq!(rec.events[0].0, 0.0);
+        assert!((rec.events[1].0 - 1.2).abs() < 1e-9, "{}", rec.events[1].0);
+    }
+
+    #[test]
+    fn from_raw_drops_the_trailing_demo_stop() {
+        // The `demo stop` the user typed (and its echo/stopping message) is gone.
+        let r = raw(vec![
+            RawEvent::Output {
+                t_ms: 100,
+                data: "real output".into(),
+            },
+            RawEvent::Input {
+                t_ms: 2000,
+                bytes: "demo stop\r".into(),
+            },
+            RawEvent::Output {
+                t_ms: 2010,
+                data: "demo stop".into(),
+            },
+            RawEvent::Output {
+                t_ms: 2100,
+                data: "● stopping recording…".into(),
+            },
+        ]);
+        let rec = from_raw(&r, "t");
+        assert_eq!(rec.events.len(), 1);
+        assert_eq!(rec.events[0].1, "real output");
     }
 }
