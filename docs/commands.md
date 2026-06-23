@@ -60,8 +60,11 @@ clean way to finish, even mid-wizard. (`exit` / Ctrl-D still work; a positive
 `--idle-timeout-ms` also stops after that long with no output.) The `demo stop`
 you type is dropped from the normalized score.
 
-`capture` **normalizes automatically** when it finishes, so a single `demo capture`
-gives you both `macro.raw.toml` and a ready-to-`record` `demo.toml`.
+`capture` **normalizes automatically** when it finishes **and** saves a faithful
+recording of the real session, so a single `demo capture` gives you
+`macro.raw.toml`, a clean `demo.toml`, and a `demo.cast` — meaning **`demo export`
+works straight after `capture`**, with no re-execution. (Run `demo record` later
+only if you want to re-execute the score for a fresh take.)
 
 Arrow keys and other special keys (Home/End, function keys) pressed inside an
 interactive wizard are recorded as control sequences and **swallowed by the

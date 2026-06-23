@@ -141,9 +141,18 @@ fn read_cast(text: &str) -> Result<(Recording, Score)> {
 fn read_raw(path: &Path, text: &str) -> Result<(Recording, Score)> {
     let raw: RawMacro =
         toml::from_str(text).map_err(|e| Error::Export(format!("{}: {e}", path.display())))?;
-    let cols = raw.meta.cols;
-    let rows = raw.meta.rows;
+    let name = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .map(|s| s.strip_suffix(".raw").unwrap_or(s))
+        .unwrap_or("demo");
+    let (cols, rows) = (raw.meta.cols, raw.meta.rows);
+    Ok((from_raw(&raw, name), default_score(name, cols, rows)))
+}
 
+/// Build a playback recording from a raw capture's real output stream (input
+/// events are dropped — the output already includes the shell's echo).
+pub fn from_raw(raw: &RawMacro, name: &str) -> Recording {
     let events: Vec<(f64, String)> = raw
         .events
         .iter()
@@ -153,30 +162,20 @@ fn read_raw(path: &Path, text: &str) -> Result<(Recording, Score)> {
         })
         .collect();
     let duration = events.last().map(|(t, _)| *t).unwrap_or(0.0);
-
-    let name = path
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .map(|s| s.strip_suffix(".raw").unwrap_or(s))
-        .unwrap_or("demo");
-
-    Ok((
-        Recording {
-            cols,
-            rows,
-            title: name.to_string(),
-            events,
-            captions: Vec::new(),
-            focuses: Vec::new(),
-            duration,
-        },
-        default_score(name, cols, rows),
-    ))
+    Recording {
+        cols: raw.meta.cols,
+        rows: raw.meta.rows,
+        title: name.to_string(),
+        events,
+        captions: Vec::new(),
+        focuses: Vec::new(),
+        duration,
+    }
 }
 
 /// A plain single-terminal score sized to a `cols`×`rows` capture, used to render
 /// a recording that carries no layout of its own.
-fn default_score(name: &str, cols: u16, rows: u16) -> Score {
+pub fn default_score(name: &str, cols: u16, rows: u16) -> Score {
     let width = cols as u32 * CELL_W;
     let height = rows as u32 * CELL_H;
     Score {

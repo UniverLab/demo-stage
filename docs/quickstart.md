@@ -6,28 +6,32 @@ order: 3
 
 # Quickstart
 
-## Capture → record → export
+## Capture → export
 
 ```sh
 # 1. Capture a live session. Run your demo, then type `demo stop` to finish
-#    (`exit` / Ctrl-D still work too). capture normalizes automatically, so you get
-#    both macro.raw.toml (the raw capture) and demo.toml (the clean score).
+#    (`exit` / Ctrl-D still work too). capture normalizes automatically AND saves a
+#    faithful recording, so you get macro.raw.toml + demo.toml + demo.cast.
 demo capture
 
-# 2. (Optional) Validate the score.
-demo check demo.toml
-
-# 3. Execute the score to produce a recording (repeatable — re-run after changes).
-demo record
-#   → demo.cast
-
-# 4. Render the recording (playback — never executes). Omit the format for all.
+# 2. Render the recording (playback — never executes). Omit the format for all.
 demo export html
 #   → dist/<name>.html
 ```
 
-For a tool you can't safely re-run (interactive, needs secrets), skip `record` and
-render the live capture directly: `demo export html macro.raw.toml`.
+That's it — `export` plays back the recording `capture` just made, so it works for
+interactive tools, secrets and side effects (no re-running).
+
+### Optional: refresh the recording by re-running
+
+For a deterministic demo you want to keep current as the app changes, re-execute the
+clean score to produce a fresh `demo.cast`:
+
+```sh
+demo check demo.toml   # (optional) validate first
+demo record            # execute demo.toml → demo.cast
+demo export            # render every format
+```
 
 ## Or author by hand
 

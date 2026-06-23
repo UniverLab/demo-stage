@@ -31,29 +31,30 @@ cargo install --path .          # from this repo
 ## The loop
 
 ```
-demo capture  ──>  macro.raw.toml  +  demo.toml   (capture live + auto-normalize)
-                       │
+demo capture  ──>  macro.raw.toml + demo.toml + demo.cast   (capture live, normalize,
+                       │                                       record the real session)
                        ▼
-demo record   ──>  demo.cast                       (execute the score → recording)
-                       │  (repeatable: re-run after the app changes)
-                       ▼
-demo export   ──>  dist/  (cast · html · gif · mp4) (render the recording — never runs)
+demo export   ──>  dist/  (cast · html · gif · mp4)          (render — never executes)
+
+                   demo record  ──>  demo.cast   (optional: re-run the score for a
+                                                   fresh take when the app changes)
 ```
 
 ```sh
 demo capture                      # capture a session, then type `demo stop` to finish
-                                  # → macro.raw.toml + demo.toml (auto-normalized)
-demo record                       # execute demo.toml → demo.cast (repeatable)
+                                  # → macro.raw.toml + demo.toml + demo.cast
 demo export                       # no args → every format (cast, html, gif, mp4)
 demo export gif,mp4 --speed 2x        # several at once, retimed 2× faster
 ```
 
-**Capture** runs the demo live and **normalizes automatically**. **Record** re-executes
-the clean score to (re)produce the recording — repeatable, so you refresh it when the
-app changes. **Export** is pure playback: it renders a recording and never executes
-anything. For a tool you can't safely re-run (interactive, needs secrets), skip `record`
-and render the live capture directly: `demo export gif macro.raw.toml`. You can also
-**author `demo.toml` by hand**, then `record` + `export`.
+**Capture** runs the demo live, **normalizes automatically**, and saves a faithful
+recording (`demo.cast`) of the real session — so **`demo export` works straight after
+`capture`**, with no re-execution. **Export** is pure playback: it renders a recording
+and never executes anything (great for interactive tools, secrets, side effects).
+
+**Record** is optional: it re-executes the clean `demo.toml` to refresh `demo.cast` —
+use it for deterministic demos you want to keep current as the app changes. You can
+also **author `demo.toml` by hand**, then `record` + `export`.
 
 ## What makes it different
 

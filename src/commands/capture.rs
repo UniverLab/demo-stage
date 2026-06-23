@@ -18,7 +18,8 @@ use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use crate::cli::{CaptureArgs, NormalizeArgs};
 use crate::commands::stop::STOP_FILE_ENV;
 use crate::error::{Error, Result};
-use crate::model::{RawEvent, RawMacro, RawMeta};
+use crate::export::recording;
+use crate::model::{RawEvent, RawMacro, RawMeta, Score};
 
 fn ms(t0: Instant) -> u64 {
     t0.elapsed().as_millis() as u64
@@ -319,11 +320,19 @@ pub fn run(args: CaptureArgs) -> Result<()> {
         args.output.display()
     );
 
+    // A recording (.cast) of what actually happened, so `demo export` plays back
+    // the real session out of the box — no re-execution, which is what breaks
+    // interactive/secret/side-effecting tools.
+    let cast_path = args.normalized_output.with_extension("cast");
+
     // Normalizing is part of finishing a capture, not a separate command — run
     // it automatically into a clean score unless the user opted out.
     if args.no_normalize {
-        // Raw capture only: render the live session directly (faithful playback).
-        println!("next: demo export {}", args.output.display());
+        write_faithful_cast(&raw, None, &cast_path)?;
+        println!(
+            "next: demo export   (renders {}, the live capture)",
+            cast_path.display()
+        );
         return Ok(());
     }
 
@@ -335,12 +344,39 @@ pub fn run(args: CaptureArgs) -> Result<()> {
         salt_ms: 15,
         stage: None,
     })?;
+    let score = Score::load(&args.normalized_output)?;
+    write_faithful_cast(&raw, Some(&score), &cast_path)?;
     println!(
-        "next: demo record {}  →  demo export   (or: demo export {} for a faithful render)",
-        args.normalized_output.display(),
-        args.output.display()
+        "next: demo export   (renders {})   |   demo record  to re-run the demo for a fresh take",
+        cast_path.display()
     );
     Ok(())
+}
+
+/// Write a faithful recording of the captured session (its real output) to
+/// `path`, so `demo export` can play it back without re-executing anything.
+fn write_faithful_cast(
+    raw: &RawMacro,
+    score: Option<&Score>,
+    path: &std::path::Path,
+) -> Result<()> {
+    let name = score.map(|s| s.demo.name.as_str()).unwrap_or("demo");
+    let rec = recording::from_raw(raw, name);
+    let fallback;
+    let score = match score {
+        Some(s) => s,
+        None => {
+            fallback = recording::default_score(name, raw.meta.cols, raw.meta.rows);
+            &fallback
+        }
+    };
+    let cast = recording::write(&rec, score)?;
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent).map_err(|e| Error::io(parent, e))?;
+        }
+    }
+    std::fs::write(path, cast).map_err(|e| Error::io(path, e))
 }
 
 #[cfg(test)]
