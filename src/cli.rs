@@ -106,6 +106,11 @@ pub struct RecordArgs {
     #[arg(long)]
     pub no_normalize: bool,
 
+    /// Write a timestamped diagnostic log of every input/output chunk (with hex)
+    /// next to the raw macro (`<output>.debug.log`), for debugging captures.
+    #[arg(long)]
+    pub debug: bool,
+
     /// Where the automatic `normalize` writes the demo score.
     #[arg(short = 'O', long, default_value = "demo.toml")]
     pub normalized_output: PathBuf,
@@ -148,18 +153,14 @@ pub struct CheckArgs {
 
 #[derive(Debug, Args)]
 pub struct ExportArgs {
-    /// One or more formats, comma-separated: cast, html, gif, mp4 (e.g. `gif,mp4`).
+    /// Formats to build, comma-separated — `cast`, `html`, `gif`, `mp4`, or `all`
+    /// (e.g. `gif,mp4`). Omit it to build every supported format.
     #[arg(value_parser = parse_targets)]
-    pub targets: TargetList,
+    pub targets: Option<TargetList>,
 
     /// The demo score to compile.
     #[arg(default_value = "demo.toml")]
     pub input: PathBuf,
-
-    /// Output file (single format only; with several formats the default,
-    /// per-format names are used).
-    #[arg(short, long)]
-    pub output: Option<PathBuf>,
 
     /// Speed multiplier applied to typing and waits — e.g. `2x`, `3x`, `0.5x`
     /// (a bare number works too). `1x` keeps the recorded pace.
@@ -171,7 +172,12 @@ pub struct ExportArgs {
 #[derive(Debug, Clone)]
 pub struct TargetList(pub Vec<Target>);
 
-/// Parse `gif,mp4` into a deduplicated list of targets.
+/// Every format `demo export` builds when no target is given.
+pub fn all_targets() -> Vec<Target> {
+    vec![Target::Cast, Target::Html, Target::Gif, Target::Mp4]
+}
+
+/// Parse `gif,mp4` (or `all`) into a deduplicated list of targets.
 fn parse_targets(s: &str) -> Result<TargetList, String> {
     let mut out: Vec<Target> = Vec::new();
     for part in s.split(',') {
@@ -179,14 +185,17 @@ fn parse_targets(s: &str) -> Result<TargetList, String> {
         if p.is_empty() {
             continue;
         }
+        if p.eq_ignore_ascii_case("all") {
+            return Ok(TargetList(all_targets()));
+        }
         let t = <Target as ValueEnum>::from_str(p, true)
-            .map_err(|_| format!("invalid format '{p}' (expected cast, html, gif or mp4)"))?;
+            .map_err(|_| format!("invalid format '{p}' (expected cast, html, gif, mp4 or all)"))?;
         if !out.contains(&t) {
             out.push(t);
         }
     }
     if out.is_empty() {
-        return Err("no export formats given (try cast, html, gif or mp4)".to_string());
+        return Err("no export formats given (try cast, html, gif, mp4 or all)".to_string());
     }
     Ok(TargetList(out))
 }

@@ -25,12 +25,7 @@ use crate::validate::validate;
 
 /// Export `score` to `target` at `speed` (1.0 = recorded pace), returning the
 /// path written.
-pub fn export(
-    score: &Score,
-    target: Target,
-    output: Option<PathBuf>,
-    speed: f64,
-) -> Result<PathBuf> {
+pub fn export(score: &Score, target: Target, speed: f64) -> Result<PathBuf> {
     let problems = validate(score);
     if !problems.is_empty() {
         return Err(Error::Validation(problems.join("\n")));
@@ -49,18 +44,18 @@ pub fn export(
     match target {
         Target::Cast => {
             let rec = run::run_terminal(score)?;
-            let path = resolve_output(score, output, "cast");
+            let path = resolve_output(score, "cast");
             write(&path, cast::to_cast(&rec)?.as_bytes())?;
             Ok(path)
         }
         Target::Html => {
             let rec = run::run_terminal(score)?;
-            let path = resolve_output(score, output, "html");
+            let path = resolve_output(score, "html");
             write(&path, html::to_html(&rec)?.as_bytes())?;
             Ok(path)
         }
         Target::Gif => {
-            let path = resolve_output(score, output, "gif");
+            let path = resolve_output(score, "gif");
             ensure_parent(&path)?;
             if stage::needs_stage(score) {
                 let (w, h, fps) = canvas_dims(score);
@@ -74,7 +69,7 @@ pub fn export(
             Ok(path)
         }
         Target::Mp4 => {
-            let path = resolve_output(score, output, "mp4");
+            let path = resolve_output(score, "mp4");
             ensure_parent(&path)?;
             if stage::needs_stage(score) {
                 let (w, h, fps) = canvas_dims(score);
@@ -129,13 +124,11 @@ fn ensure_parent(path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn resolve_output(score: &Score, output: Option<PathBuf>, ext: &str) -> PathBuf {
-    output.unwrap_or_else(|| {
-        score
-            .demo
-            .output_dir
-            .join(format!("{}.{ext}", sanitize(&score.demo.name)))
-    })
+fn resolve_output(score: &Score, ext: &str) -> PathBuf {
+    score
+        .demo
+        .output_dir
+        .join(format!("{}.{ext}", sanitize(&score.demo.name)))
 }
 
 fn sanitize(name: &str) -> String {

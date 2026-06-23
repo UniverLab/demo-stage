@@ -33,13 +33,17 @@ reveals and scrolls the browser pane. Replace the wait after the terminal with a
 Capture an interactive session into a raw macro. Needs a real terminal.
 
 ```sh
-demo record [-o macro.raw.toml] [-O demo.toml] [--no-normalize] [--idle-timeout-ms 0] [--shell /bin/bash] [--into demo.toml]
+demo record [-o macro.raw.toml] [-O demo.toml] [--no-normalize] [--debug] [--idle-timeout-ms 0] [--shell /bin/bash] [--into demo.toml]
 ```
 
 - `-o, --output` — where to write the raw macro.
 - `-O, --normalized-output` — where the automatic normalize writes the clean score
   (default `demo.toml`).
 - `--no-normalize` — stop after the raw capture; don't normalize automatically.
+- `--debug` — write a timestamped diagnostic log next to the raw macro
+  (`<output>.debug.log`): every input/output chunk in escaped + hex form, the
+  secret-redaction toggles, and why the capture stopped. Use it when a capture
+  behaves oddly (e.g. a wizard mis-reads a keystroke).
 - `--idle-timeout-ms` — auto-stop after this long with no terminal output.
   **Defaults to `0` (disabled)** so a pause to think never cuts the recording
   short; set a positive value for an unattended capture. Any trailing idle is
@@ -120,18 +124,19 @@ a `url`, and every timeline step targets the right kind of pane (e.g. you can't
 Compile a score to a target format.
 
 ```sh
-demo export <fmt[,fmt…]> [demo.toml] [-o PATH] [--speed 2x]
+demo export [fmt[,fmt…]] [demo.toml] [--speed 2x]
 ```
 
-- `<formats>` — one or more output formats, the first argument, **comma-separated**:
-  `cast`, `html`, `gif`, `mp4` (see [export targets](export-targets.md)). Pass several
-  at once, e.g. `demo export gif,mp4` or `demo export cast,html,gif`.
+- `[formats]` — which formats to build, the first argument, **comma-separated**:
+  `cast`, `html`, `gif`, `mp4`, or `all` (see [export targets](export-targets.md)).
+  Pass several at once (`demo export gif,mp4`) — and **omit it entirely to build
+  every supported format** (`demo export` ≡ `demo export all`).
 - `[input]` — the score to compile; defaults to `demo.toml`.
-- `-o, --output` — output path; defaults to `<output_dir>/<name>.<ext>`. Only valid
-  with a **single** format; with several, each format uses its default name.
 - `--speed` — a multiplier applied to typing and waits: `2x`, `3x`, `0.5x` (a bare
   number works too). `1x` (the default) keeps the recorded pace. Output-driven
   `wait_for_stdout` steps are not scaled — they still wait for real output.
+
+Each format is written to its default path `<output_dir>/<name>.<ext>`.
 
 Export runs the timeline in a real PTY with a clean prompt, capturing the output —
 so the typed commands actually execute. A demo whose last command leaves a process

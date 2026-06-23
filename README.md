@@ -45,8 +45,9 @@ demo record  ──>  macro.raw.toml  +  demo.toml
 demo record                       # record a session, then type `demo stop` to finish
                                   # → macro.raw.toml + demo.toml (auto-normalized)
 demo check demo.toml              # static validation
-demo export html demo.toml            # → dist/<name>.html
-demo export gif,mp4 --speed 2x        # several formats at once, retimed 2× faster
+demo export html                  # → dist/<name>.html
+demo export                       # no args → every format (cast, html, gif, mp4)
+demo export gif,mp4 --speed 2x        # several at once, retimed 2× faster
 ```
 
 `record` runs `normalize` for you when it finishes (pass `--no-normalize` to skip
