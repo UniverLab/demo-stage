@@ -1,6 +1,6 @@
 ---
 title: Commands
-description: Reference for demo prepare, record, normalize, check and export and their flags.
+description: Reference for demo prepare, capture, record, check and export and their flags.
 order: 5
 ---
 
@@ -28,42 +28,45 @@ where `record --into` splices the captured flow — then, for multi-pane presets
 reveals and scrolls the browser pane. Replace the wait after the terminal with a
 `wait_for_stdout` step to drive the reveal off a real output line.
 
-## `demo record`
+## `demo capture`
 
-Capture an interactive session into a raw macro. Needs a real terminal.
+Capture a live interactive session into a raw macro, then normalize it into a
+clean `demo.toml`. Needs a real terminal.
 
 ```sh
-demo record [-o macro.raw.toml] [-O demo.toml] [--no-normalize] [--debug] [--idle-timeout-ms 0] [--shell /bin/bash] [--into demo.toml]
+demo capture [-o macro.raw.toml] [-O demo.toml] [--no-normalize] [--debug] [--idle-timeout-ms 0] [--shell /bin/bash] [--into demo.toml]
 ```
 
 - `-o, --output` — where to write the raw macro.
 - `-O, --normalized-output` — where the automatic normalize writes the clean score
   (default `demo.toml`).
-- `--no-normalize` — stop after the raw capture; don't normalize automatically.
+- `--no-normalize` — keep only the raw macro (no clean score). Useful when you'll
+  render the capture directly — `demo export gif macro.raw.toml` — instead of
+  re-executing it.
 - `--debug` — write a timestamped diagnostic log next to the raw macro
   (`<output>.debug.log`): every input/output chunk in escaped + hex form, the
   secret-redaction toggles, and why the capture stopped. Use it when a capture
   behaves oddly (e.g. a wizard mis-reads a keystroke).
 - `--idle-timeout-ms` — auto-stop after this long with no terminal output.
-  **Defaults to `0` (disabled)** so a pause to think never cuts the recording
+  **Defaults to `0` (disabled)** so a pause to think never cuts the capture
   short; set a positive value for an unattended capture. Any trailing idle is
-  trimmed by `normalize`.
+  trimmed when normalizing.
 - `--shell` — shell to run (defaults to `$SHELL`).
-- `--into` — record into a prepared stage: `normalize` then splices this capture
+- `--into` — capture into a prepared stage: normalize then splices this capture
   into that stage's timeline instead of building a fresh single-pane score.
 
-**Ending a recording.** Run `demo stop` inside the captured session — it's the
+**Ending a capture.** Run `demo stop` inside the captured session — it's the
 clean way to finish, even mid-wizard. (`exit` / Ctrl-D still work; a positive
 `--idle-timeout-ms` also stops after that long with no output.) The `demo stop`
 you type is dropped from the normalized score.
 
-When `record` finishes it **normalizes automatically**, so a single `demo record`
-gives you both `macro.raw.toml` and a ready-to-export `demo.toml`. Pass
-`--no-normalize` to skip that and run [`demo normalize`](#demo-normalize) yourself.
+`capture` **normalizes automatically** when it finishes, so a single `demo capture`
+gives you both `macro.raw.toml` and a ready-to-`record` `demo.toml`.
 
 Arrow keys and other special keys (Home/End, function keys) pressed inside an
 interactive wizard are recorded as control sequences and **swallowed by the
-normalizer** — they won't leak into the score as stray `[A`/`[B` text.
+normalizer** — they won't leak into the clean score as stray `[A`/`[B` text. (To
+keep a wizard's exact navigation, render the raw capture directly with `export`.)
 
 **Secrets are redacted.** When a program shows a password/passphrase prompt (a line
 ending in `:` or `?` that mentions *password*, *passphrase*, *passcode*, *secret*,
@@ -79,32 +82,42 @@ written to `macro.raw.toml`**. Notes:
 
 ## `demo stop`
 
-End the in-progress capture. Run it **inside** a `demo record` session:
+End the in-progress capture. Run it **inside** a `demo capture` session:
 
 ```sh
 demo stop
 ```
 
-`record` exports a sentinel path into the captured shell; `demo stop` touches it,
-which the recorder notices and uses to end the capture. Outside a recording it
+`capture` exports a sentinel path into the captured shell; `demo stop` touches it,
+which the recorder notices and uses to end the capture. Outside a capture it
 errors. The command is dropped from the normalized score, so it never appears in
 the finished demo.
 
-## `demo normalize`
+> **Normalizing** (prune typos, humanize typing, trim idle — see
+> [the normalizer](normalizer.md)) is **not a separate command**: it runs
+> automatically at the end of `demo capture`.
 
-Refine a raw macro into a clean score.
+## `demo record`
+
+Execute a demo score in a real PTY and save the result as a **recording** (an
+asciinema `.cast` that `demo export` plays back). This is the repeatable step:
+re-run it after the app changes and the recording refreshes.
 
 ```sh
-demo normalize [macro.raw.toml] [-o demo.toml] [--seed N] [--typing-ms 80] [--salt-ms 15] [--stage demo.toml]
+demo record [demo.toml] [-o demo.cast]
 ```
 
-- `--seed` — make the humanized typing reproducible.
-- `--typing-ms` / `--salt-ms` — written into the score's `[typing]` table.
-- `--stage` — splice the capture into a prepared stage (keeping its layout, panes
-  and trigger steps), instead of emitting a fresh single-pane score. Defaults to
-  the stage stamped by `record --into`, so you rarely pass it explicitly.
+- `[input]` — the score to execute; defaults to `demo.toml`.
+- `-o, --output` — where to write the recording; defaults to `demo.cast`.
 
-See [the normalizer](normalizer.md) for what it does.
+The score's commands **actually run**, so the recording reflects the real output.
+A demo whose last command leaves a process in the foreground (a server, a REPL) is
+killed after a short grace period rather than blocking; end such a step with
+`Ctrl-C` or `terminate` to be clean. Multi-pane (browser) stages aren't supported
+here yet.
+
+> Don't want to re-execute (interactive tool, needs secrets, has side effects)?
+> Skip `record` and render the live capture directly: `demo export gif macro.raw.toml`.
 
 ## `demo check`
 
@@ -121,24 +134,25 @@ a `url`, and every timeline step targets the right kind of pane (e.g. you can't
 
 ## `demo export`
 
-Compile a score to a target format.
+Render a **recording** to one or more formats. Pure playback — it replays a
+recording and **never executes** the demo.
 
 ```sh
-demo export [fmt[,fmt…]] [demo.toml] [--speed 2x]
+demo export [fmt[,fmt…]] [demo.cast] [--speed 2x]
 ```
 
 - `[formats]` — which formats to build, the first argument, **comma-separated**:
   `cast`, `html`, `gif`, `mp4`, or `all` (see [export targets](export-targets.md)).
   Pass several at once (`demo export gif,mp4`) — and **omit it entirely to build
   every supported format** (`demo export` ≡ `demo export all`).
-- `[input]` — the score to compile; defaults to `demo.toml`.
-- `--speed` — a multiplier applied to typing and waits: `2x`, `3x`, `0.5x` (a bare
-  number works too). `1x` (the default) keeps the recorded pace. Output-driven
-  `wait_for_stdout` steps are not scaled — they still wait for real output.
+- `[input]` — the recording to render; defaults to `demo.cast`. Accepts a `.cast`
+  from `demo record`, or a raw capture (`macro.raw.toml`) to render the live
+  session directly (faithful playback — handles interactive tools, secrets and
+  side effects that re-execution can't).
+- `--speed` — retimes the recording: `2x`, `3x`, `0.5x` (a bare number works too).
+  `1x` (the default) keeps the recorded pace.
 
 Each format is written to its default path `<output_dir>/<name>.<ext>`.
 
-Export runs the timeline in a real PTY with a clean prompt, capturing the output —
-so the typed commands actually execute. A demo whose last command leaves a process
-in the foreground (a server, a REPL) is killed after a short grace period rather
-than blocking the export; end such a step with `Ctrl-C` or `terminate` to be clean.
+Multi-pane (browser) recordings aren't supported by `export` yet — only
+single-terminal ones.

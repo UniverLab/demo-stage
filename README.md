@@ -31,28 +31,29 @@ cargo install --path .          # from this repo
 ## The loop
 
 ```
-demo record  ──>  macro.raw.toml  +  demo.toml
-                      │  (capture raw keystrokes + output + timing,
-                      │   then normalize automatically)
-                      ▼
-                demo check  ──>  (ok · fail)
-                      │  (validate the score statically)
-                      ▼
-                demo export  ──>  dist/  (cast · html · gif · mp4)
+demo capture  ──>  macro.raw.toml  +  demo.toml   (capture live + auto-normalize)
+                       │
+                       ▼
+demo record   ──>  demo.cast                       (execute the score → recording)
+                       │  (repeatable: re-run after the app changes)
+                       ▼
+demo export   ──>  dist/  (cast · html · gif · mp4) (render the recording — never runs)
 ```
 
 ```sh
-demo record                       # record a session, then type `demo stop` to finish
+demo capture                      # capture a session, then type `demo stop` to finish
                                   # → macro.raw.toml + demo.toml (auto-normalized)
-demo check demo.toml              # static validation
-demo export html                  # → dist/<name>.html
+demo record                       # execute demo.toml → demo.cast (repeatable)
 demo export                       # no args → every format (cast, html, gif, mp4)
 demo export gif,mp4 --speed 2x        # several at once, retimed 2× faster
 ```
 
-`record` runs `normalize` for you when it finishes (pass `--no-normalize` to skip
-it, then run `demo normalize` yourself). You can also skip recording entirely and
-**author `demo.toml` by hand**, then `check` + `export`.
+**Capture** runs the demo live and **normalizes automatically**. **Record** re-executes
+the clean score to (re)produce the recording — repeatable, so you refresh it when the
+app changes. **Export** is pure playback: it renders a recording and never executes
+anything. For a tool you can't safely re-run (interactive, needs secrets), skip `record`
+and render the live capture directly: `demo export gif macro.raw.toml`. You can also
+**author `demo.toml` by hand**, then `record` + `export`.
 
 ## What makes it different
 

@@ -28,9 +28,9 @@ use cli::{Cli, Command};
 pub fn run(cli: Cli) -> Result<ExitCode> {
     match cli.command {
         Command::Prepare(args) => commands::prepare::run(args).map(|()| ExitCode::SUCCESS),
-        Command::Record(args) => commands::record::run(args).map(|()| ExitCode::SUCCESS),
+        Command::Capture(args) => commands::capture::run(args).map(|()| ExitCode::SUCCESS),
         Command::Stop => commands::stop::run().map(|()| ExitCode::SUCCESS),
-        Command::Normalize(args) => commands::normalize::run(args).map(|()| ExitCode::SUCCESS),
+        Command::Record(args) => commands::record::run(args).map(|()| ExitCode::SUCCESS),
         Command::Check(args) => commands::check::run(args),
         Command::Export(args) => commands::export::run(args).map(|()| ExitCode::SUCCESS),
     }

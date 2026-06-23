@@ -20,15 +20,15 @@ pub struct Cli {
 pub enum Command {
     /// Scaffold a stage (layout, panes, triggers) to record into.
     Prepare(PrepareArgs),
-    /// Record an interactive session into a raw macro.
-    Record(RecordArgs),
-    /// End the in-progress capture — run this inside a `demo record` session.
+    /// Capture a live interactive session, then normalize it to a demo score.
+    Capture(CaptureArgs),
+    /// End the in-progress capture — run this inside a `demo capture` session.
     Stop,
-    /// Refine a raw macro into a clean, human-looking demo score.
-    Normalize(NormalizeArgs),
+    /// Execute a demo score in a PTY to (re)produce a recording (a .cast).
+    Record(RecordArgs),
     /// Statically validate a demo score (exit 0 = ok, 1 = invalid).
     Check(CheckArgs),
-    /// Compile a demo score to a target format.
+    /// Render a recording to one or more formats (playback — never executes).
     Export(ExportArgs),
 }
 
@@ -83,13 +83,13 @@ pub struct PrepareArgs {
 }
 
 #[derive(Debug, Args)]
-pub struct RecordArgs {
+pub struct CaptureArgs {
     /// Where to write the captured raw macro.
     #[arg(short, long, default_value = "macro.raw.toml")]
     pub output: PathBuf,
 
     /// Auto-stop after this many milliseconds with no terminal output
-    /// (0 disables — stop the recording yourself with `demo stop`).
+    /// (0 disables — stop the capture yourself with `demo stop`).
     #[arg(long, default_value_t = 0)]
     pub idle_timeout_ms: u64,
 
@@ -97,12 +97,12 @@ pub struct RecordArgs {
     #[arg(long)]
     pub shell: Option<String>,
 
-    /// Record into a prepared stage: `normalize` will splice the captured
+    /// Capture into a prepared stage: normalize will splice the captured
     /// terminal flow into this stage's timeline instead of a fresh score.
     #[arg(long)]
     pub into: Option<PathBuf>,
 
-    /// Skip the automatic `normalize` pass — keep only the raw macro.
+    /// Skip the automatic normalize pass — keep only the raw macro.
     #[arg(long)]
     pub no_normalize: bool,
 
@@ -111,9 +111,20 @@ pub struct RecordArgs {
     #[arg(long)]
     pub debug: bool,
 
-    /// Where the automatic `normalize` writes the demo score.
+    /// Where the automatic normalize writes the demo score.
     #[arg(short = 'O', long, default_value = "demo.toml")]
     pub normalized_output: PathBuf,
+}
+
+#[derive(Debug, Args)]
+pub struct RecordArgs {
+    /// The demo score to execute.
+    #[arg(default_value = "demo.toml")]
+    pub input: PathBuf,
+
+    /// Where to write the recording (an asciinema .cast that `export` plays back).
+    #[arg(short, long, default_value = "demo.cast")]
+    pub output: PathBuf,
 }
 
 #[derive(Debug, Args)]
@@ -158,8 +169,9 @@ pub struct ExportArgs {
     #[arg(value_parser = parse_targets)]
     pub targets: Option<TargetList>,
 
-    /// The demo score to compile.
-    #[arg(default_value = "demo.toml")]
+    /// The recording to render: a `.cast` from `demo record`, or a raw capture
+    /// (`macro.raw.toml`) to render the live session directly.
+    #[arg(default_value = "demo.cast")]
     pub input: PathBuf,
 
     /// Speed multiplier applied to typing and waits — e.g. `2x`, `3x`, `0.5x`

@@ -1,13 +1,14 @@
 ---
 title: The smart normalizer
-description: How demo normalize prunes typos, humanizes typing and trims idle time.
+description: How normalizing prunes typos, humanizes typing and trims idle time.
 order: 6
 ---
 
 # The smart normalizer
 
-`demo normalize` is where a messy human recording becomes a clean score. Three
-algorithms run over the raw event stream.
+Normalizing is where a messy human recording becomes a clean score. It is **not a
+separate command** — it runs automatically at the end of `demo capture` (skip it
+with `demo capture --no-normalize`). Three algorithms run over the raw event stream.
 
 ## 1. Backspace pruning
 

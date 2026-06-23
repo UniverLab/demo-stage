@@ -17,20 +17,22 @@ any other source file.
 ## The pipeline
 
 ```
-demo record  ──>  macro.raw.toml  ──>  demo normalize  ──>  demo.toml
-                                                                │
-                          dist/  <──  demo export  <──  demo check
+demo capture  ──>  macro.raw.toml + demo.toml   (capture live, normalize automatically)
+                                          │
+              dist/  <──  demo export  <──  demo record  <──  (demo check)
+              (render)        (re-execute → demo.cast)
 ```
 
 | Command | In | Out | Does |
 |---|---|---|---|
-| `record`    | TTY               | `macro.raw.toml` | Capture raw keystrokes, output and timing. |
-| `normalize` | `macro.raw.toml`  | `demo.toml`      | Prune typos, humanize typing, trim idle. |
+| `capture`   | TTY               | `macro.raw.toml` + `demo.toml` | Capture a live session, then normalize (prune typos, humanize typing, trim idle). |
 | `check`     | `demo.toml`       | exit 0/1         | Validate the score statically. |
-| `export`    | `demo.toml`       | `dist/…`         | Compile to `cast`, `html`, `gif` (or `mp4`). |
+| `record`    | `demo.toml`       | `demo.cast`      | Execute the score in a PTY → a recording. Repeatable. |
+| `export`    | `demo.cast`       | `dist/…`         | Render the recording to `cast`, `html`, `gif`, `mp4`. Never executes. |
 
-You don't have to record: a `demo.toml` can be **authored by hand**, then checked
-and exported.
+You don't have to capture: a `demo.toml` can be **authored by hand**, then
+`record`ed and exported. And for a tool you can't safely re-run, render the live
+capture directly with `demo export gif macro.raw.toml`.
 
 ## Why it exists
 
