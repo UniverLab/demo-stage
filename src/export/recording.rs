@@ -155,6 +155,9 @@ fn read_raw(path: &Path, text: &str) -> Result<(Recording, Score)> {
 /// faithful recording — longer waits (thinking, network) are trimmed to this, so
 /// playback feels deliberate without dead air.
 const MAX_GAP_MS: f64 = 1200.0;
+/// How long the final frame is held after the last output, so the result is
+/// readable before the demo ends / loops (instead of cutting off abruptly).
+const TAIL_HOLD_MS: f64 = 1800.0;
 
 /// Build a playback recording from a raw capture's real output stream, with its
 /// **timing normalized**: the trailing `demo stop` you typed is dropped, and idle
@@ -188,7 +191,11 @@ pub fn from_raw(raw: &RawMacro, name: &str) -> Recording {
         prev = *t;
         events.push((acc, data.clone()));
     }
-    let duration = events.last().map(|(t, _)| *t).unwrap_or(0.0);
+    // Hold the final frame a moment so the last result is readable.
+    let duration = events
+        .last()
+        .map(|(t, _)| *t + TAIL_HOLD_MS / 1000.0)
+        .unwrap_or(0.0);
 
     Recording {
         cols: raw.meta.cols,
