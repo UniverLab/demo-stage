@@ -1,7 +1,8 @@
 //! Shared frame rasterizer for the pixel targets (gif, mp4, and the multi-scene
 //! stage). Replays a recording through a vt100 parser at the score's fps and
 //! renders each frame to RGBA with the embedded monospace font. Pure Rust;
-//! covers printable ASCII and ANSI colours. Exotic glyphs are skipped.
+//! covers printable ASCII, ANSI colours, and every other glyph the capture
+//! actually prints (banners, box-drawing, arrows) as long as the font has it.
 
 use std::collections::HashMap;
 
@@ -120,8 +121,16 @@ impl<'a> FrameSource<'a> {
             let ch = code as char;
             glyphs.insert(ch, font.rasterize(ch, px));
         }
-        for &ch in EXTRA_GLYPHS {
-            glyphs.insert(ch, font.rasterize(ch, px));
+        // Cache every non-ASCII glyph the capture actually prints (box-drawing,
+        // block art like a banner, arrows, accents, …) so it renders here too —
+        // not just the printable-ASCII range. Without this, e.g. a banner drawn
+        // with `█`/`░` is invisible on the pixel targets while fine in html.
+        for (_, chunk) in &rec.events {
+            for ch in chunk.chars() {
+                if !ch.is_control() && !ch.is_whitespace() {
+                    glyphs.entry(ch).or_insert_with(|| font.rasterize(ch, px));
+                }
+            }
         }
 
         let fps = score.layout.fps.max(1) as f64;
