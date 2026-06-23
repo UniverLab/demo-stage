@@ -22,9 +22,9 @@ use crate::normalize::Rng;
 /// Assumed monospace cell size (px), inverse of the normalizer's sizing.
 const CELL_W: u32 = 10;
 const CELL_H: u32 = 20;
-/// Built-in demo prompt (bash `PS1`): a green `❯`, used when the score pins none.
-/// `\[ \]` wrap the non-printing colour so bash measures the line correctly.
-pub const DEFAULT_PROMPT: &str = "\\[\\e[32m\\]❯\\[\\e[0m\\] ";
+/// Built-in demo prompt (bash `PS1`): the plain Linux `$ `, used when the score
+/// pins none. Set `[demo] prompt` to customize (e.g. a green `❯`).
+pub const DEFAULT_PROMPT: &str = "$ ";
 /// Default seed when the score pins none.
 const DEFAULT_SEED: u64 = 0xD370_5EED;
 /// Cap for `wait_for_stdout` so a missing match can't hang export.
@@ -142,7 +142,7 @@ pub fn run_with_pane(score: &Score, pane: &crate::model::Pane) -> Result<Recordi
     // ── Timed run. ───────────────────────────────────────────────────────
     let t0 = Instant::now();
     // The startup prompt was discarded above; emit one fresh prompt so the first
-    // command has a clean `❯ ` in front of it.
+    // command has a clean prompt (`$ `) in front of it.
     let _ = writer.write_all(b"\r");
     let _ = writer.flush();
     let mut events: Vec<(f64, String)> = Vec::new();
@@ -455,13 +455,14 @@ mod tests {
 
     #[test]
     fn single_quotes_prompts_safely() {
-        assert_eq!(sh_single_quote("$ "), "'$ '");
-        // An embedded quote can't break out of the assignment.
-        assert_eq!(sh_single_quote("a'b"), "'a'\\''b'");
+        assert_eq!(sh_single_quote(DEFAULT_PROMPT), "'$ '");
+        // A colour-escaped prompt is preserved verbatim inside the quotes.
         assert_eq!(
-            sh_single_quote(DEFAULT_PROMPT),
+            sh_single_quote("\\[\\e[32m\\]❯\\[\\e[0m\\] "),
             "'\\[\\e[32m\\]❯\\[\\e[0m\\] '"
         );
+        // An embedded quote can't break out of the assignment.
+        assert_eq!(sh_single_quote("a'b"), "'a'\\''b'");
     }
 
     /// A demo whose last command leaves a process in the foreground must not hang

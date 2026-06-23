@@ -49,7 +49,8 @@ pub struct DemoMeta {
     pub output_dir: PathBuf,
     /// Shell prompt shown in the exported demo (bash `PS1` syntax, so colours via
     /// `\[\e[..m\]` and escapes like `\w` work). Absent → the built-in default
-    /// (a green `❯`). Set it to e.g. `"$ "` for a plain prompt.
+    /// (the plain Linux `$ `). Set it to e.g. `"\[\e[32m\]❯\[\e[0m\] "` for a
+    /// green arrow.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt: Option<String>,
 }

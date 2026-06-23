@@ -15,14 +15,14 @@ the typing parameters, the canvas layout, and the timeline.
 [demo]
 name = "my-demo"          # used for the output filename
 output_dir = "./dist"     # default
-# prompt = "$ "           # shell prompt shown in the demo; omit for the
-                          # built-in default (a green ❯)
+# prompt = "\[\e[32m\]❯\[\e[0m\] "   # custom prompt; omit for the default `$ `
 ```
 
 `prompt` is bash `PS1` syntax, so colours (`\[\e[36m\]…\[\e[0m\]`) and escapes
-like `\w` work. Export always forces this prompt over your rc files, so a demo
-never leaks `user@host`. The pixel targets (gif/mp4) render the default `❯` and a
-handful of common prompt symbols; very exotic glyphs may not rasterize.
+like `\w` work. The built-in default is the plain Linux `$ `. Export always forces
+this prompt over your rc files, so a demo never leaks `user@host`. The pixel
+targets (gif/mp4) render a green-arrow `❯` and a handful of common prompt symbols,
+so a custom prompt rasterizes too; very exotic glyphs may not.
 
 ## `[env]` (optional)
 

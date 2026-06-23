@@ -18,8 +18,8 @@ const FONT: &[u8] = include_bytes!("../../assets/DejaVuSansMono.ttf");
 const DEFAULT_FG: [u8; 3] = [200, 200, 200];
 
 /// Non-ASCII glyphs cached on top of printable ASCII so they render on the pixel
-/// targets — the prompt arrow (`demo` defaults to `❯`) and a few common symbols
-/// people use in prompts and captions.
+/// targets — a green-arrow prompt (`❯`) and a few common symbols people use in
+/// prompts and captions, so a custom prompt still rasterizes.
 const EXTRA_GLYPHS: &[char] = &[
     '❯', '❮', '›', '‹', '»', '«', '→', '←', '▶', '▸', '●', '•', '★', '✓', '✗', 'λ',
 ];
