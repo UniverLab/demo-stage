@@ -3,7 +3,8 @@
 //! frame by frame. Terminal capture + compositing are verified; the browser
 //! capture needs Chromium and is verified outside the sandbox.
 
-use super::{browser, composite, raster, run};
+use super::run::Recording;
+use super::{browser, composite, raster};
 use crate::error::{Error, Result};
 use crate::model::{Pane, PaneKind, Score, Step};
 
@@ -24,8 +25,10 @@ pub fn needs_stage(score: &Score) -> bool {
     has_browser || terminals > 1
 }
 
-/// Render a multi-pane score, emitting each composited canvas frame.
-pub fn render_stage(score: &Score, mut on_frame: impl FnMut(&[u8])) -> Result<()> {
+/// Composite a multi-pane score from an already-captured terminal `rec`,
+/// emitting each composited canvas frame. Pure playback — the terminal pane comes
+/// from `rec` (never re-run); browser panes are captured here via Chromium.
+pub fn render_stage(rec: &Recording, score: &Score, mut on_frame: impl FnMut(&[u8])) -> Result<()> {
     let canvas_w = score.layout.width as usize;
     let canvas_h = score.layout.height as usize;
     let bg = score
@@ -42,16 +45,16 @@ pub fn render_stage(score: &Score, mut on_frame: impl FnMut(&[u8])) -> Result<()
         .find(|p| p.kind == PaneKind::Terminal)
         .ok_or_else(|| Error::Export("a multi-scene stage needs a terminal pane".to_string()))?;
 
-    // Terminal content across the whole timeline. Captions are pulled out so the
-    // terminal sub-frames stay clean; they are drawn on the composited canvas.
-    let mut rec = run::run_with_pane(score, term_pane)?;
-    let captions = std::mem::take(&mut rec.captions);
-    let caption = if captions.is_empty() {
+    // Captions are drawn on the composited canvas, so keep them out of the
+    // terminal sub-frames (render the terminal from a captions-free copy).
+    let caption = if rec.captions.is_empty() {
         None
     } else {
-        Some(raster::CaptionOverlay::new(captions, 20.0)?)
+        Some(raster::CaptionOverlay::new(rec.captions.clone(), 20.0)?)
     };
-    let mut term_src = raster::FrameSource::new(&rec, score)?;
+    let mut term_rec = rec.clone();
+    term_rec.captions.clear();
+    let mut term_src = raster::FrameSource::new(&term_rec, score)?;
     let (tw, th) = term_src.dims();
     let n = term_src.n_frames();
     let fps = score.layout.fps.max(1) as f64;

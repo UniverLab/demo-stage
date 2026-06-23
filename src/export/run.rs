@@ -47,6 +47,7 @@ const SETTLE_QUIET_MS: u64 = 1_500;
 const SETTLE_MAX_MS: u64 = 12_000;
 
 /// A captured terminal recording.
+#[derive(Clone)]
 pub struct Recording {
     pub cols: u16,
     pub rows: u16,

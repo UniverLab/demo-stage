@@ -116,8 +116,8 @@ demo record [demo.toml] [-o demo.cast]
 The score's commands **actually run**, so the recording reflects the real output.
 A demo whose last command leaves a process in the foreground (a server, a REPL) is
 killed after a short grace period rather than blocking; end such a step with
-`Ctrl-C` or `terminate` to be clean. Multi-pane (browser) stages aren't supported
-here yet.
+`Ctrl-C` or `terminate` to be clean. For a multi-pane stage, only the **terminal
+pane** is executed and recorded; `export` composites the browser panes around it.
 
 > Don't want to re-execute (interactive tool, needs secrets, has side effects)?
 > Skip `record` and render the live capture directly: `demo export gif macro.raw.toml`.
@@ -157,5 +157,8 @@ demo export [fmt[,fmt…]] [demo.cast] [--speed 2x]
 
 Each format is written to its default path `<output_dir>/<name>.<ext>`.
 
-Multi-pane (browser) recordings aren't supported by `export` yet — only
-single-terminal ones.
+For a **multi-pane stage**, the pixel targets (`gif`/`mp4`) composite the recorded
+terminal with its browser panes — each captured via headless Chromium
+(auto-provisioned) and revealed at the moment the timeline focuses it. The
+text targets (`cast`/`html`) carry only the terminal stream (browser panes are
+dropped — they can't be represented as text).

@@ -34,13 +34,15 @@ pub fn render(rec: &Recording, score: &Score, target: Target) -> Result<PathBuf>
     if !problems.is_empty() {
         return Err(Error::Validation(problems.join("\n")));
     }
-    if stage::needs_stage(score) {
-        return Err(Error::Export(
-            "multi-pane (browser) demos aren't supported by export yet — \
-             only single-terminal recordings"
-                .to_string(),
-        ));
-    }
+    // A multi-pane stage composites the recorded terminal with its browser panes
+    // (Chromium) on the pixel targets. The text targets (cast/html) can only carry
+    // the terminal stream — browser panes are dropped there.
+    let staged = stage::needs_stage(score);
+    let (cw, ch, fps) = (
+        score.layout.width as usize,
+        score.layout.height as usize,
+        score.layout.fps.max(1),
+    );
 
     match target {
         Target::Cast => {
@@ -56,13 +58,25 @@ pub fn render(rec: &Recording, score: &Score, target: Target) -> Result<PathBuf>
         Target::Gif => {
             let path = resolve_output(score, "gif");
             ensure_parent(&path)?;
-            gif::write_gif(rec, score, &path)?;
+            if staged {
+                gif::encode(&path, cw, ch, fps, |emit| {
+                    stage::render_stage(rec, score, |f| emit(f))
+                })?;
+            } else {
+                gif::write_gif(rec, score, &path)?;
+            }
             Ok(path)
         }
         Target::Mp4 => {
             let path = resolve_output(score, "mp4");
             ensure_parent(&path)?;
-            mp4::write_mp4(rec, score, &path)?;
+            if staged {
+                mp4::encode(&path, cw, ch, fps, |emit| {
+                    stage::render_stage(rec, score, |f| emit(f))
+                })?;
+            } else {
+                mp4::write_mp4(rec, score, &path)?;
+            }
             Ok(path)
         }
     }
