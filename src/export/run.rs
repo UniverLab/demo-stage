@@ -36,6 +36,15 @@ const EXIT_GRACE_MS: u64 = 2_000;
 /// Cap on waiting for the capture thread to drain once the shell is gone. A
 /// stray foreground process can keep the PTY open, so we never block on it.
 const READER_JOIN_MS: u64 = 1_000;
+/// Pre-roll: discard startup chatter once output has been quiet this long…
+const PREROLL_QUIET_MS: u64 = 400;
+/// …but never wait longer than this for it to settle.
+const PREROLL_MAX_MS: u64 = 4_000;
+/// End of run: consider the demo finished once output is quiet this long (this
+/// also becomes how long the final frame is held).
+const SETTLE_QUIET_MS: u64 = 1_500;
+/// …capped, so a last command that streams forever can't hang the export.
+const SETTLE_MAX_MS: u64 = 12_000;
 
 /// A captured terminal recording.
 pub struct Recording {
@@ -117,16 +126,32 @@ pub fn run_with_pane(score: &Score, pane: &crate::model::Pane) -> Result<Recordi
     // Force the prompt after the rc files (which usually set their own PS1), so a
     // demo never leaks `user@host`. Other env (tokens, etc.) is inherited.
     let _ = writeln!(writer, "PS1={}; clear", sh_single_quote(prompt));
-    thread::sleep(Duration::from_millis(400));
-    drain(&rx);
+    // A readiness marker makes the start deterministic: wait until the shell
+    // echoes it back, which proves all rc/startup chatter and our setup have
+    // flushed. A fixed delay (or plain quiet-detection) is racy on slow shells
+    // (e.g. WSL) where startup output arrives *after* the silence we'd wait out,
+    // leaking `user@host`/`PS1=…` into the demo.
+    // The printed marker is assembled by the shell so it differs from the typed
+    // command text — otherwise we'd match the PTY's *instant* line-discipline
+    // echo of the command (15 ms) instead of the shell actually running it.
+    let _ = writeln!(writer, "printf 'demostage_%s_ready\\n' OK");
+    wait_for_marker(&rx, "demostage_OK_ready", PREROLL_MAX_MS);
+    // Discard the marker's own output and the prompt that follows it.
+    drain_until_quiet(&rx, PREROLL_QUIET_MS, PREROLL_MAX_MS);
 
     // ── Timed run. ───────────────────────────────────────────────────────
     let t0 = Instant::now();
+    // The startup prompt was discarded above; emit one fresh prompt so the first
+    // command has a clean `❯ ` in front of it.
+    let _ = writer.write_all(b"\r");
+    let _ = writer.flush();
     let mut events: Vec<(f64, String)> = Vec::new();
     let mut captions: Vec<(f64, String)> = Vec::new();
     let mut focuses: Vec<(f64, String)> = Vec::new();
     let typing = score.typing.clone().unwrap_or_default();
     let mut rng = Rng::new(typing.seed.unwrap_or(DEFAULT_SEED));
+    // Capture that fresh prompt so it leads the first command.
+    sleep_collecting(120, &mut events, &rx, t0);
 
     for step in &score.timeline {
         match step {
@@ -163,6 +188,11 @@ pub fn run_with_pane(score: &Score, pane: &crate::model::Pane) -> Result<Recordi
             Step::Terminate => break,
         }
     }
+
+    // ── Settle: hold after the last step until output goes quiet, so the final
+    // result (a command's output, an error) finishes rendering and is held on
+    // screen — rather than being cut off by a fixed timer. ──────────────────
+    let settle_end = settle(&mut events, &rx, t0, SETTLE_QUIET_MS, SETTLE_MAX_MS);
 
     // ── Teardown + close. ──────────────────────────────────────────────────
     if let Some(td) = score
@@ -203,7 +233,10 @@ pub fn run_with_pane(score: &Score, pane: &crate::model::Pane) -> Result<Recordi
     }
     collect(&mut events, &rx, t0);
 
-    let duration = events.last().map(|(t, _)| t + 0.5).unwrap_or(0.5);
+    // Drop the post-settle teardown noise (the `exit` echo) and hold the final
+    // frame for the settle's quiet period.
+    events.retain(|(t, _)| *t <= settle_end);
+    let duration = settle_end.max(events.last().map(|(t, _)| *t).unwrap_or(0.0)) + 0.2;
     Ok(Recording {
         cols,
         rows,
@@ -284,8 +317,74 @@ fn wait_for(
     }
 }
 
-fn drain(rx: &Receiver<(Instant, Vec<u8>)>) {
-    while rx.try_recv().is_ok() {}
+/// Read and discard output until `marker` appears (or `max_ms` elapses). Used in
+/// the pre-roll to wait out slow shell startup deterministically.
+fn wait_for_marker(rx: &Receiver<(Instant, Vec<u8>)>, marker: &str, max_ms: u64) {
+    let deadline = Instant::now() + Duration::from_millis(max_ms);
+    let mut seen = String::new();
+    while Instant::now() < deadline {
+        let mut got = false;
+        while let Ok((_, bytes)) = rx.try_recv() {
+            seen.push_str(&String::from_utf8_lossy(&bytes));
+            got = true;
+        }
+        if seen.contains(marker) {
+            return;
+        }
+        if !got {
+            thread::sleep(Duration::from_millis(15));
+        }
+    }
+}
+
+/// Discard output until none has arrived for `quiet_ms` (or `max_ms` elapses) —
+/// used to wait out (and throw away) slow shell-startup chatter before the timed
+/// run, instead of a racy fixed delay.
+fn drain_until_quiet(rx: &Receiver<(Instant, Vec<u8>)>, quiet_ms: u64, max_ms: u64) {
+    let start = Instant::now();
+    let mut last = Instant::now();
+    loop {
+        let mut got = false;
+        while rx.try_recv().is_ok() {
+            got = true;
+        }
+        if got {
+            last = Instant::now();
+        }
+        if last.elapsed() >= Duration::from_millis(quiet_ms)
+            || start.elapsed() >= Duration::from_millis(max_ms)
+        {
+            return;
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// Capture output until none has arrived for `quiet_ms` (or `max_ms` elapses),
+/// returning the elapsed time when it went quiet — so the final result finishes
+/// rendering and the last frame is held for the quiet period.
+fn settle(
+    events: &mut Vec<(f64, String)>,
+    rx: &Receiver<(Instant, Vec<u8>)>,
+    t0: Instant,
+    quiet_ms: u64,
+    max_ms: u64,
+) -> f64 {
+    let start = Instant::now();
+    let mut last_change = Instant::now();
+    loop {
+        let before = events.len();
+        collect(events, rx, t0);
+        if events.len() != before {
+            last_change = Instant::now();
+        }
+        if last_change.elapsed() >= Duration::from_millis(quiet_ms)
+            || start.elapsed() >= Duration::from_millis(max_ms)
+        {
+            return t0.elapsed().as_secs_f64();
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
 }
 
 /// Wrap a string in POSIX single quotes for safe substitution into a shell
