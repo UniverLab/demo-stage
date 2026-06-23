@@ -45,13 +45,17 @@ fn is_secret_prompt(line: &str) -> bool {
     if !(trimmed.ends_with(':') || trimmed.ends_with('?')) {
         return false;
     }
-    const HINTS: [&str; 6] = [
+    const HINTS: [&str; 10] = [
         "password",
         "passphrase",
         "passcode",
         "secret",
         "[sudo]",
         "verification code",
+        "token",
+        "api key",
+        "access key",
+        "credential",
     ];
     HINTS.iter().any(|h| trimmed.contains(h))
 }
@@ -244,7 +248,13 @@ pub fn run(args: CaptureArgs) -> Result<()> {
                         // record them; clear once the prompt is answered (Enter).
                         let masked = sensitive.load(Ordering::SeqCst);
                         if let Some(d) = &debug {
-                            d.chunk(if masked { "IN*" } else { "IN " }, &buf[..n]);
+                            // Never write the secret to the debug log: at a secret
+                            // prompt, log only the byte count, not the keystrokes.
+                            if masked {
+                                d.note(&format!("IN* {n} bytes (redacted — secret prompt)"));
+                            } else {
+                                d.chunk("IN ", &buf[..n]);
+                            }
                         }
                         if masked {
                             if buf[..n].iter().any(|b| *b == b'\r' || *b == b'\n') {
@@ -391,8 +401,13 @@ mod tests {
         assert!(is_secret_prompt("Password: "));
         assert!(is_secret_prompt("[sudo] password for jheison:"));
         assert!(is_secret_prompt("Vault passphrase?"));
+        // Tokens / API keys are secrets too.
+        assert!(is_secret_prompt("GitHub token:"));
+        assert!(is_secret_prompt("Personal access token: "));
+        assert!(is_secret_prompt("API key:"));
         // A typed command that mentions the word is NOT a prompt.
         assert!(!is_secret_prompt("$ echo my secret plan"));
         assert!(!is_secret_prompt("Cloning into 'repo'..."));
+        assert!(!is_secret_prompt("Refreshing access token cache"));
     }
 }

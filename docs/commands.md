@@ -44,9 +44,10 @@ demo capture [-o macro.raw.toml] [-O demo.toml] [--no-normalize] [--debug] [--id
   render the capture directly — `demo export gif macro.raw.toml` — instead of
   re-executing it.
 - `--debug` — write a timestamped diagnostic log next to the raw macro
-  (`<output>.debug.log`): every input/output chunk in escaped + hex form, the
-  secret-redaction toggles, and why the capture stopped. Use it when a capture
-  behaves oddly (e.g. a wizard mis-reads a keystroke).
+  (`<output>.debug.log`): every input/output chunk in escaped + hex form (secret
+  keystrokes are logged only as a byte count, never their value) and why the
+  capture stopped. Use it when a capture behaves oddly (e.g. a wizard mis-reads a
+  keystroke).
 - `--idle-timeout-ms` — auto-stop after this long with no terminal output.
   **Defaults to `0` (disabled)** so a pause to think never cuts the capture
   short; set a positive value for an unattended capture. Any trailing idle is
@@ -71,17 +72,19 @@ interactive wizard are recorded as control sequences and **swallowed by the
 normalizer** — they won't leak into the clean score as stray `[A`/`[B` text. (To
 keep a wizard's exact navigation, render the raw capture directly with `export`.)
 
-**Secrets are redacted.** When a program shows a password/passphrase prompt (a line
-ending in `:` or `?` that mentions *password*, *passphrase*, *passcode*, *secret*,
-`[sudo]`, …), the keystrokes you type are forwarded to the program but **never
-written to `macro.raw.toml`**. Notes:
+**Secrets are redacted.** When a program shows a secret prompt — a line ending in
+`:` or `?` that mentions *password*, *passphrase*, *passcode*, *secret*, *token*,
+*api key*, *access key*, *credential*, `[sudo]`, … — the keystrokes you type are
+forwarded to the program but **never written to `macro.raw.toml`** (nor the
+`--debug` log, which records only the byte count there). Notes:
 
-- Password prompts disable echo, so the secret isn't in the output either — but the
-  detector is a heuristic, so **review the macro/score before sharing**, and prefer
-  non-interactive bypasses for secret flows (e.g. export `GITHUB_TOKEN` so ghScaff
-  skips its vault passphrase).
-- A program that *prints* a secret to stdout (a token in its output) is not
-  redacted — edit it out of the score.
+- Secret prompts disable echo, so the secret isn't in the output either — but the
+  detector is a **heuristic** (keyword + a `:`/`?` ending). A prompt without one of
+  those keywords **won't** be caught, so **review the macro/score before sharing**,
+  and prefer non-interactive bypasses (e.g. export `GITHUB_TOKEN` so ghScaff skips
+  its vault passphrase — nothing is typed at all).
+- A program that *prints* a secret to stdout (a token in its output) is **not**
+  redacted — edit it out, since it lands in the recording and the gif/mp4.
 
 ## `demo stop`
 
