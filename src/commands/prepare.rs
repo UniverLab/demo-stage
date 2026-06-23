@@ -124,6 +124,7 @@ fn build_stage(o: &StageOpts) -> Score {
             width: o.width,
             height: o.height,
             fps: o.fps,
+            line_height: 1.0,
             background: Some("#0b0f14".to_string()),
             panes,
         },

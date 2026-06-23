@@ -114,6 +114,11 @@ pub struct Layout {
     pub height: u32,
     #[serde(default = "default_fps")]
     pub fps: u32,
+    /// Line height as a multiple of the font size on the pixel targets (gif/mp4).
+    /// Defaults to `1.0` so box-drawing (`│ ─ ┌ ┘`) joins up for TUIs; raise it
+    /// (e.g. `1.25`) for airier, prose-style spacing.
+    #[serde(default = "default_line_height")]
+    pub line_height: f32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub background: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -122,6 +127,10 @@ pub struct Layout {
 
 fn default_fps() -> u32 {
     15
+}
+
+fn default_line_height() -> f32 {
+    1.0
 }
 
 /// `[[layout.panes]]` — one scene placed on the canvas.

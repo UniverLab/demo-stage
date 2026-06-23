@@ -64,6 +64,7 @@ The canvas (pixels) and the scenes placed on it.
 width = 1920
 height = 1080
 fps = 15
+line_height = 1.0      # gif/mp4 line spacing × font size; 1.0 connects box-drawing
 background = "#0b0f14"
 
   [[layout.panes]]
@@ -88,6 +89,12 @@ background = "#0b0f14"
 
 `check` verifies pane ids are unique, panes fit the canvas, and browser panes have
 a `url`.
+
+`line_height` (optional, default `1.0`) is the line spacing as a multiple of the
+font size on the pixel targets (gif/mp4). `1.0` makes box-drawing characters
+(`│ ─ ┌ ┘ …`) join into continuous lines for TUIs; raise it (e.g. `1.25`) for
+airier, prose-style spacing. It has no effect on `cast`/`html` (the player sets
+its own line height).
 
 ## `[[timeline]]`
 

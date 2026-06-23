@@ -58,9 +58,10 @@ fn cell_size(score: &Score) -> (usize, usize) {
         .iter()
         .find_map(|p| p.font_size)
         .unwrap_or(16) as f32;
+    let line_height = score.layout.line_height.max(0.5);
     (
         (px * 0.6).round().max(1.0) as usize,
-        (px * 1.25).round().max(1.0) as usize,
+        (px * line_height).round().max(1.0) as usize,
     )
 }
 
