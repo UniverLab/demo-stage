@@ -257,7 +257,7 @@ pub fn default_score(name: &str, cols: u16, rows: u16) -> Score {
             width,
             height,
             fps: 15,
-            line_height: 1.0,
+            line_height: 1.2,
             background: None,
             panes: vec![Pane {
                 id: "main".to_string(),

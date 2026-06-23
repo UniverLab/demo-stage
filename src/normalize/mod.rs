@@ -191,7 +191,7 @@ fn default_layout(raw: &RawMacro) -> Layout {
         width,
         height,
         fps: 15,
-        line_height: 1.0,
+        line_height: 1.2,
         background: Some("#0b0f14".to_string()),
         panes: vec![Pane {
             id: "main".to_string(),

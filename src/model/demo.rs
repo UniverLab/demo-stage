@@ -116,8 +116,8 @@ pub struct Layout {
     #[serde(default = "default_fps")]
     pub fps: u32,
     /// Line height as a multiple of the font size on the pixel targets (gif/mp4).
-    /// Defaults to `1.0` so box-drawing (`│ ─ ┌ ┘`) joins up for TUIs; raise it
-    /// (e.g. `1.25`) for airier, prose-style spacing.
+    /// Defaults to `1.2` (room for descenders like `j p q g`). Box-drawing and
+    /// block glyphs are drawn to fill the cell, so they stay solid at any value.
     #[serde(default = "default_line_height")]
     pub line_height: f32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -131,7 +131,7 @@ fn default_fps() -> u32 {
 }
 
 fn default_line_height() -> f32 {
-    1.0
+    1.2
 }
 
 /// `[[layout.panes]]` — one scene placed on the canvas.

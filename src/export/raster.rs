@@ -221,6 +221,128 @@ pub fn render_frames(
     Ok(plan(rec, score))
 }
 
+/// Coverage (0–255 per pixel, row-major) for a block-element or box-drawing glyph
+/// drawn to fill a `w`×`h` cell, or `None` for an ordinary glyph (use the font).
+fn solid_cell(ch: char, w: usize, h: usize) -> Option<Vec<u8>> {
+    block_cell(ch, w, h).or_else(|| box_cell(ch, w, h))
+}
+
+/// Block elements (U+2580–U+259F): full block, shades, halves, eighths, quadrants.
+fn block_cell(ch: char, w: usize, h: usize) -> Option<Vec<u8>> {
+    let n = w * h;
+    let region = |pred: &dyn Fn(usize, usize) -> bool| {
+        let mut v = vec![0u8; n];
+        for y in 0..h {
+            for x in 0..w {
+                if pred(x, y) {
+                    v[y * w + x] = 255;
+                }
+            }
+        }
+        Some(v)
+    };
+    match ch {
+        '\u{2588}' => Some(vec![255; n]),             // █ full block
+        '\u{2591}' => Some(vec![64; n]),              // ░ light shade
+        '\u{2592}' => Some(vec![128; n]),             // ▒ medium shade
+        '\u{2593}' => Some(vec![192; n]),             // ▓ dark shade
+        '\u{2580}' => region(&|_, y| y < h / 2),      // ▀ upper half
+        '\u{2584}' => region(&|_, y| y >= h / 2),     // ▄ lower half
+        '\u{258C}' => region(&|x, _| x < w / 2),      // ▌ left half
+        '\u{2590}' => region(&|x, _| x >= w / 2),     // ▐ right half
+        '\u{2594}' => region(&|_, y| y < h / 8),      // ▔ upper one-eighth
+        '\u{2595}' => region(&|x, _| x >= w - w / 8), // ▕ right one-eighth
+        // Lower 1–7 eighths (▁▂▃▄▅▆▇).
+        '\u{2581}'..='\u{2587}' => {
+            let fill = h * (ch as usize - 0x2580) / 8;
+            region(&move |_, y| y >= h - fill)
+        }
+        // Left 7–1 eighths (▉▊▋▍▎▏ — ▌ left-half is handled above).
+        '\u{2589}'..='\u{258F}' => {
+            let fill = w * (0x2590 - ch as usize) / 8;
+            region(&move |x, _| x < fill)
+        }
+        // Quadrant combinations (▖▗▘▙▚▛▜▝▞▟).
+        '\u{2596}'..='\u{259F}' => {
+            let q = QUADRANTS[ch as usize - 0x2596];
+            region(&move |x, y| {
+                let (l, t) = (x < w / 2, y < h / 2);
+                let bit = match (l, t) {
+                    (true, true) => 0b0001,   // top-left
+                    (false, true) => 0b0010,  // top-right
+                    (true, false) => 0b0100,  // bottom-left
+                    (false, false) => 0b1000, // bottom-right
+                };
+                q & bit != 0
+            })
+        }
+        _ => None,
+    }
+}
+
+/// Quadrant bitmasks (TL, TR, BL, BR) for U+2596..=U+259F.
+const QUADRANTS: [u8; 10] = [
+    0b0100, // ▖ BL
+    0b1000, // ▗ BR
+    0b0001, // ▘ TL
+    0b1101, // ▙ TL+BL+BR
+    0b1001, // ▚ TL+BR
+    0b0111, // ▛ TL+TR+BL
+    0b1011, // ▜ TL+TR+BR
+    0b0010, // ▝ TR
+    0b0110, // ▞ TR+BL
+    0b1110, // ▟ TR+BL+BR
+];
+
+/// Box-drawing glyphs (U+2500…): draw the present arms from the cell centre.
+fn box_cell(ch: char, w: usize, h: usize) -> Option<Vec<u8>> {
+    let (up, down, left, right) = box_arms(ch)?;
+    let mut v = vec![0u8; w * h];
+    let (cx, cy) = (w / 2, h / 2);
+    let vt = (w / 6).max(1); // vertical-stroke half-width
+    let ht = (h / 10).max(1); // horizontal-stroke half-width
+    let (xl, xr) = (cx.saturating_sub(vt), (cx + vt + 1).min(w));
+    let (yt, yb) = (cy.saturating_sub(ht), (cy + ht + 1).min(h));
+    let mut fill = |x0: usize, x1: usize, y0: usize, y1: usize| {
+        for y in y0..y1 {
+            for x in x0..x1 {
+                v[y * w + x] = 255;
+            }
+        }
+    };
+    if up {
+        fill(xl, xr, 0, yb);
+    }
+    if down {
+        fill(xl, xr, yt, h);
+    }
+    if left {
+        fill(0, xr, yt, yb);
+    }
+    if right {
+        fill(xl, w, yt, yb);
+    }
+    Some(v)
+}
+
+/// (up, down, left, right) arms for the common light/heavy/rounded box glyphs.
+fn box_arms(ch: char) -> Option<(bool, bool, bool, bool)> {
+    Some(match ch {
+        '─' | '━' => (false, false, true, true),
+        '│' | '┃' => (true, true, false, false),
+        '┌' | '┏' | '╭' => (false, true, false, true),
+        '┐' | '┓' | '╮' => (false, true, true, false),
+        '└' | '┗' | '╰' => (true, false, false, true),
+        '┘' | '┛' | '╯' => (true, false, true, false),
+        '├' | '┣' => (true, true, false, true),
+        '┤' | '┫' => (true, true, true, false),
+        '┬' | '┳' => (false, true, true, true),
+        '┴' | '┻' => (true, false, true, true),
+        '┼' | '╋' => (true, true, true, true),
+        _ => return None,
+    })
+}
+
 #[allow(clippy::too_many_arguments)]
 fn render_cells(
     parser: &Parser,
@@ -261,6 +383,26 @@ fn render_cells(
             let Some(chr) = cell.and_then(|c| c.contents().chars().next()) else {
                 continue;
             };
+            // Block & box-drawing glyphs are drawn procedurally to FILL the cell,
+            // so banners and TUI frames render as solid, continuous shapes — the
+            // font glyph leaves gaps between cells.
+            if let Some(cov) = solid_cell(chr, cell_w, cell_h) {
+                for y in 0..cell_h {
+                    for x in 0..cell_w {
+                        let a = cov[y * cell_w + x] as u32;
+                        if a == 0 {
+                            continue;
+                        }
+                        let p = ((y0 + y) * w + x0 + x) * 4;
+                        for k in 0..3 {
+                            let dst = img[p + k] as u32;
+                            let src = fg[k] as u32;
+                            img[p + k] = ((src * a + dst * (255 - a)) / 255) as u8;
+                        }
+                    }
+                }
+                continue;
+            }
             let Some((m, cov)) = glyphs.get(&chr) else {
                 continue;
             };
