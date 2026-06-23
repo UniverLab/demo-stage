@@ -54,6 +54,43 @@ fn is_secret_prompt(line: &str) -> bool {
     HINTS.iter().any(|h| trimmed.contains(h))
 }
 
+/// A timestamped diagnostic log written when `record --debug` is set. Both I/O
+/// threads write to it, so it lives behind a mutex.
+struct DebugLog {
+    file: Mutex<std::fs::File>,
+    t0: Instant,
+}
+
+impl DebugLog {
+    fn create(path: &std::path::Path, t0: Instant) -> Result<Self> {
+        let file = std::fs::File::create(path).map_err(|e| Error::io(path, e))?;
+        Ok(DebugLog {
+            file: Mutex::new(file),
+            t0,
+        })
+    }
+
+    /// Write one timestamped line.
+    fn note(&self, msg: &str) {
+        if let Ok(mut f) = self.file.lock() {
+            let _ = writeln!(f, "[+{:>8}ms] {msg}", self.t0.elapsed().as_millis());
+            let _ = f.flush();
+        }
+    }
+
+    /// Log a byte chunk in both escaped-text and hex form — the escaped form
+    /// makes control bytes (arrows = `\u{1b}[A`, etc.) visible at a glance.
+    fn chunk(&self, dir: &str, bytes: &[u8]) {
+        let text = String::from_utf8_lossy(bytes);
+        let hex: String = bytes.iter().map(|b| format!("{b:02x} ")).collect();
+        self.note(&format!(
+            "{dir} {:>4}B  repr={text:?}  hex=[{}]",
+            bytes.len(),
+            hex.trim_end()
+        ));
+    }
+}
+
 pub fn run(args: RecordArgs) -> Result<()> {
     if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
         return Err(Error::Export(
@@ -108,6 +145,24 @@ pub fn run(args: RecordArgs) -> Result<()> {
     let sensitive = Arc::new(AtomicBool::new(false));
     let t0 = Instant::now();
 
+    // Optional diagnostic log (`--debug`): every chunk in/out with hex, plus
+    // lifecycle notes, written next to the raw macro.
+    let debug: Option<Arc<DebugLog>> = if args.debug {
+        let mut path = args.output.clone().into_os_string();
+        path.push(".debug.log");
+        let path = std::path::PathBuf::from(path);
+        let log = Arc::new(DebugLog::create(&path, t0)?);
+        log.note(&format!(
+            "record start — shell={shell} cols={cols} rows={rows} idle_timeout_ms={} stopfile={}",
+            args.idle_timeout_ms,
+            stopfile.display()
+        ));
+        println!("  (debug log → {})", path.display());
+        Some(log)
+    } else {
+        None
+    };
+
     // Tell the user how to end the capture before the shell takes over — the
     // only cues otherwise are typing `exit` or Ctrl-D, neither of which is
     // obvious mid-demo.
@@ -128,6 +183,7 @@ pub fn run(args: RecordArgs) -> Result<()> {
         let last = last_activity.clone();
         let exited = shell_exited.clone();
         let sensitive = sensitive.clone();
+        let debug = debug.clone();
         thread::spawn(move || {
             let mut buf = [0u8; 4096];
             let mut stdout = std::io::stdout();
@@ -143,6 +199,9 @@ pub fn run(args: RecordArgs) -> Result<()> {
                         let _ = stdout.write_all(&buf[..n]);
                         let _ = stdout.flush();
                         *last.lock().unwrap() = Instant::now();
+                        if let Some(d) = &debug {
+                            d.chunk("OUT", &buf[..n]);
+                        }
                         let text = String::from_utf8_lossy(&buf[..n]).into_owned();
                         track_line(&mut line, &text);
                         sensitive.store(is_secret_prompt(&line), Ordering::SeqCst);
@@ -164,6 +223,7 @@ pub fn run(args: RecordArgs) -> Result<()> {
         let last = last_activity.clone();
         let stop = stop.clone();
         let sensitive = sensitive.clone();
+        let debug = debug.clone();
         thread::spawn(move || {
             let mut buf = [0u8; 1024];
             let mut stdin = std::io::stdin();
@@ -180,7 +240,11 @@ pub fn run(args: RecordArgs) -> Result<()> {
                         *last.lock().unwrap() = Instant::now();
                         // Secret prompt active → forward the keystrokes but do NOT
                         // record them; clear once the prompt is answered (Enter).
-                        if sensitive.load(Ordering::SeqCst) {
+                        let masked = sensitive.load(Ordering::SeqCst);
+                        if let Some(d) = &debug {
+                            d.chunk(if masked { "IN*" } else { "IN " }, &buf[..n]);
+                        }
+                        if masked {
                             if buf[..n].iter().any(|b| *b == b'\r' || *b == b'\n') {
                                 sensitive.store(false, Ordering::SeqCst);
                             }
@@ -198,21 +262,24 @@ pub fn run(args: RecordArgs) -> Result<()> {
 
     // Watchdog: stop on shell exit or idle timeout.
     let idle = args.idle_timeout_ms;
-    loop {
+    let reason = loop {
         if shell_exited.load(Ordering::SeqCst) {
-            break;
+            break "reader closed (shell exited)";
         }
         if matches!(child.try_wait(), Ok(Some(_))) {
-            break;
+            break "shell process exited";
         }
         // `demo stop`, run inside the capture, touches this file.
         if stopfile.exists() {
-            break;
+            break "demo stop";
         }
         if idle > 0 && last_activity.lock().unwrap().elapsed() > Duration::from_millis(idle) {
-            break;
+            break "idle timeout";
         }
         thread::sleep(Duration::from_millis(100));
+    };
+    if let Some(d) = &debug {
+        d.note(&format!("stopping — reason: {reason}"));
     }
 
     stop.store(true, Ordering::SeqCst);
@@ -234,6 +301,17 @@ pub fn run(args: RecordArgs) -> Result<()> {
         events,
     };
     raw.save(&args.output)?;
+    if let Some(d) = &debug {
+        let (ins, outs) = raw.events.iter().fold((0, 0), |(i, o), e| match e {
+            RawEvent::Input { .. } => (i + 1, o),
+            RawEvent::Output { .. } => (i, o + 1),
+        });
+        d.note(&format!(
+            "recorded {} events ({ins} input, {outs} output) → {}",
+            raw.events.len(),
+            args.output.display()
+        ));
+    }
     println!(
         "recorded {} events → {}",
         raw.events.len(),
