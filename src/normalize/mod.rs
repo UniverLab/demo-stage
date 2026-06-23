@@ -12,6 +12,7 @@ pub use rng::Rng;
 
 use crate::model::{DemoMeta, Layout, Pane, PaneKind, Score, Step, Typing};
 use crate::model::{RawEvent, RawMacro};
+use edit::Action;
 
 /// Knobs for normalization (humanized-typing params are stored in the score).
 #[derive(Debug, Clone)]
@@ -21,9 +22,7 @@ pub struct Options {
     pub seed: Option<u64>,
 }
 
-/// Shortest pause shown between two commands.
-const MIN_SETTLE_MS: u64 = 300;
-/// Longest pause shown between two commands (caps human "think time").
+/// Longest pause shown between two actions (caps human "think time").
 const MAX_SETTLE_MS: u64 = 2500;
 /// Longest tail held after the final command (the idle that stopped the
 /// recording is trimmed away entirely).
@@ -117,15 +116,8 @@ fn terminal_steps(raw: &RawMacro) -> Vec<Step> {
         })
         .collect();
 
-    let mut commands = edit::reconstruct(&inputs);
-    // Drop the trailing `demo stop` the user typed to end the capture, so it
-    // never shows up in the finished demo.
-    if commands
-        .last()
-        .is_some_and(|c| c.text.trim() == crate::STOP_COMMAND)
-    {
-        commands.pop();
-    }
+    let mut actions = edit::reconstruct(&inputs);
+    strip_trailing_stop(&mut actions);
 
     let last_output_ms = raw
         .events
@@ -137,33 +129,58 @@ fn terminal_steps(raw: &RawMacro) -> Vec<Step> {
         .max()
         .unwrap_or(0);
 
-    let mut steps = Vec::with_capacity(commands.len() * 3);
-    for (i, cmd) in commands.iter().enumerate() {
-        steps.push(Step::Type {
-            text: cmd.text.clone(),
-            human_salt: true,
-        });
-        if cmd.had_enter {
-            steps.push(Step::Keypress {
-                key: "enter".to_string(),
-            });
+    let mut steps = Vec::with_capacity(actions.len() * 2);
+    for (i, action) in actions.iter().enumerate() {
+        match action {
+            Action::Type { text, .. } => steps.push(Step::Type {
+                text: text.clone(),
+                human_salt: true,
+            }),
+            Action::Key { key, .. } => steps.push(Step::Keypress { key: key.clone() }),
         }
 
-        let wait = match commands.get(i + 1) {
-            // Pause until the next command starts typing, clamped to a sane range.
-            Some(next) => next
-                .start_ms
-                .saturating_sub(cmd.enter_ms)
-                .clamp(MIN_SETTLE_MS, MAX_SETTLE_MS),
-            // Final command: hold for the time output kept arriving, capped; the
-            // trailing idle that stopped the recording is dropped.
-            None => last_output_ms.saturating_sub(cmd.enter_ms).min(MAX_TAIL_MS),
+        // Pause from when this action finished until the next one begins, capped.
+        let this_end = action_end(action);
+        let wait = match actions.get(i + 1) {
+            Some(next) => action_start(next)
+                .saturating_sub(this_end)
+                .min(MAX_SETTLE_MS),
+            // Final action: hold for the time output kept arriving, capped.
+            None => last_output_ms.saturating_sub(this_end).min(MAX_TAIL_MS),
         };
         if wait > 0 {
             steps.push(Step::Wait { duration_ms: wait });
         }
     }
     steps
+}
+
+fn action_start(a: &Action) -> u64 {
+    match a {
+        Action::Type { t_ms, .. } | Action::Key { t_ms, .. } => *t_ms,
+    }
+}
+
+fn action_end(a: &Action) -> u64 {
+    match a {
+        Action::Type { end_ms, .. } => *end_ms,
+        Action::Key { t_ms, .. } => *t_ms,
+    }
+}
+
+/// Drop the trailing `demo stop` the user typed to end the capture (and its
+/// `enter`), so it never shows up in the finished demo.
+fn strip_trailing_stop(actions: &mut Vec<Action>) {
+    let is_enter = |a: &Action| matches!(a, Action::Key { key, .. } if key == "enter");
+    let is_stop =
+        |a: &Action| matches!(a, Action::Type { text, .. } if text.trim() == crate::STOP_COMMAND);
+
+    let n = actions.len();
+    if n >= 2 && is_enter(&actions[n - 1]) && is_stop(&actions[n - 2]) {
+        actions.truncate(n - 2);
+    } else if actions.last().is_some_and(is_stop) {
+        actions.pop();
+    }
 }
 
 /// A single terminal pane sized to the captured grid.

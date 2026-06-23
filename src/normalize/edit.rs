@@ -1,81 +1,134 @@
 //! Keystroke reconstruction (SPEC §3.1): replay the raw input stream through a
-//! minimal line editor, applying destructive edits (backspace, Ctrl-U, Ctrl-C)
-//! so the result is the *clean* text the user meant to run — never the typos.
+//! minimal line editor, producing an ordered stream of [`Action`]s — clean typed
+//! text plus the keys actually pressed (Enter, arrows, Tab, …).
+//!
+//! Destructive edits (backspace, Ctrl-U) are applied so typed text is the *clean*
+//! text the user meant — never the typos. But navigation keys are **kept** as
+//! [`Action::Key`], so re-executing the score (`demo record`) drives interactive
+//! programs — wizards, selectors — exactly as the human did, instead of
+//! desyncing and cancelling.
 
-/// A reconstructed command line.
+/// One reconstructed input action, in order.
 #[derive(Debug, Clone, PartialEq)]
-pub struct Command {
-    /// The clean text, after pruning destructive edits.
-    pub text: String,
-    /// Time (ms from start) the first character was typed.
-    pub start_ms: u64,
-    /// Time (ms from start) `Enter` was pressed (`== start_ms` if never).
-    pub enter_ms: u64,
-    /// Whether the line was submitted with `Enter`.
-    pub had_enter: bool,
+pub enum Action {
+    /// A run of clean typed text (destructive edits already applied).
+    Type {
+        text: String,
+        /// Time (ms from start) the first character of the run was typed.
+        t_ms: u64,
+        /// Time (ms from start) the last character of the run was typed.
+        end_ms: u64,
+    },
+    /// A single named key press (`enter`, `up`, `down`, `tab`, `ctrl+c`, …).
+    Key {
+        key: String,
+        /// Time (ms from start) the key was pressed.
+        t_ms: u64,
+    },
 }
 
 /// Where we are inside a terminal escape sequence. Arrow keys and other special
-/// keys arrive as multi-byte sequences (e.g. Up = `ESC [ A`); the whole sequence
-/// must be swallowed, or the non-control tail (`[A`, `[B`, …) leaks into the
-/// reconstructed text as if the user had typed it.
+/// keys arrive as multi-byte sequences (e.g. Up = `ESC [ A`); we parse the whole
+/// sequence and turn it into a named [`Action::Key`].
 enum Esc {
     /// Not in a sequence.
     None,
     /// Just saw `ESC`; the next byte selects the sequence kind.
     Saw,
-    /// Inside a CSI sequence (`ESC [ … final`); consume up to the final byte.
-    Csi,
-    /// Inside an SS3 sequence (`ESC O x`); exactly one byte follows.
+    /// Inside a CSI sequence (`ESC [ … final`); collecting parameter bytes.
+    Csi(String),
+    /// Inside an SS3 sequence (`ESC O x`) — application-mode cursor / function keys.
     Ss3,
 }
 
-/// Replay timestamped input chunks into a list of clean commands. Blank lines
-/// (a bare `Enter`, or a line killed before submitting) are dropped.
-pub fn reconstruct(inputs: &[(u64, &str)]) -> Vec<Command> {
-    let mut commands = Vec::new();
+/// Map a CSI sequence (its parameters and final byte) to a key name, if known.
+fn csi_key(params: &str, final_byte: char) -> Option<&'static str> {
+    match final_byte {
+        'A' => Some("up"),
+        'B' => Some("down"),
+        'C' => Some("right"),
+        'D' => Some("left"),
+        'H' => Some("home"),
+        'F' => Some("end"),
+        '~' => match params {
+            "1" | "7" => Some("home"),
+            "4" | "8" => Some("end"),
+            "3" => Some("delete"),
+            "5" => Some("pageup"),
+            "6" => Some("pagedown"),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Map an SS3 sequence's final byte to a key name (application-mode arrows), if known.
+fn ss3_key(final_byte: char) -> Option<&'static str> {
+    match final_byte {
+        'A' => Some("up"),
+        'B' => Some("down"),
+        'C' => Some("right"),
+        'D' => Some("left"),
+        'H' => Some("home"),
+        'F' => Some("end"),
+        _ => None,
+    }
+}
+
+/// Replay timestamped input chunks into an ordered list of clean actions.
+pub fn reconstruct(inputs: &[(u64, &str)]) -> Vec<Action> {
+    let mut actions = Vec::new();
     let mut buf: Vec<char> = Vec::new();
-    let mut start_ms: Option<u64> = None;
+    let mut start_ms = 0u64;
+    let mut end_ms = 0u64;
     let mut esc = Esc::None;
 
-    let flush = |commands: &mut Vec<Command>,
-                 buf: &mut Vec<char>,
-                 start: u64,
-                 enter: u64,
-                 had_enter: bool| {
-        let text: String = buf.iter().collect();
-        if !text.trim().is_empty() {
-            commands.push(Command {
-                text,
-                start_ms: start,
-                enter_ms: enter,
-                had_enter,
+    // Emit the pending typed run (if any) as a Type action.
+    let flush = |actions: &mut Vec<Action>, buf: &mut Vec<char>, start: u64, end: u64| {
+        if !buf.is_empty() {
+            actions.push(Action::Type {
+                text: buf.iter().collect(),
+                t_ms: start,
+                end_ms: end,
             });
+            buf.clear();
         }
-        buf.clear();
     };
 
     for &(t, bytes) in inputs {
         for ch in bytes.chars() {
-            // Swallow special-key escape sequences whole (arrows, Home/End, F-keys),
-            // so their tail (`[A`, `[B`, `OP`, …) never lands in the command text.
             match esc {
-                Esc::Csi => {
-                    // CSI ends at a final byte in 0x40..=0x7E.
+                Esc::Csi(ref mut params) => {
                     if ('\u{40}'..='\u{7e}').contains(&ch) {
+                        if let Some(key) = csi_key(params, ch) {
+                            flush(&mut actions, &mut buf, start_ms, end_ms);
+                            actions.push(Action::Key {
+                                key: key.to_string(),
+                                t_ms: t,
+                            });
+                        }
                         esc = Esc::None;
+                    } else {
+                        params.push(ch);
                     }
                     continue;
                 }
                 Esc::Ss3 => {
+                    if let Some(key) = ss3_key(ch) {
+                        flush(&mut actions, &mut buf, start_ms, end_ms);
+                        actions.push(Action::Key {
+                            key: key.to_string(),
+                            t_ms: t,
+                        });
+                    }
                     esc = Esc::None;
                     continue;
                 }
                 Esc::Saw => {
                     esc = match ch {
-                        '[' => Esc::Csi,
+                        '[' => Esc::Csi(String::new()),
                         'O' => Esc::Ss3,
-                        // Any other byte: a 2-byte escape (e.g. Alt-key); done.
+                        // ESC + char (Alt-key) — uncommon in demos; drop it.
                         _ => Esc::None,
                     };
                     continue;
@@ -83,105 +136,132 @@ pub fn reconstruct(inputs: &[(u64, &str)]) -> Vec<Command> {
                 Esc::None => {}
             }
             match ch {
-                // ESC: start of a special-key sequence — swallow what follows.
+                // ESC: start of a special-key sequence.
                 '\u{1b}' => esc = Esc::Saw,
+                // Enter: submit. ALWAYS kept — a bare Enter accepts a selector
+                // default, which interactive programs depend on.
                 '\r' | '\n' => {
-                    flush(&mut commands, &mut buf, start_ms.unwrap_or(t), t, true);
-                    start_ms = None;
+                    flush(&mut actions, &mut buf, start_ms, end_ms);
+                    actions.push(Action::Key {
+                        key: "enter".to_string(),
+                        t_ms: t,
+                    });
                 }
-                // Backspace / DEL.
+                // Backspace / DEL: prune a typo from the current run.
                 '\u{7f}' | '\u{8}' => {
                     buf.pop();
                 }
                 // Ctrl-U: kill the whole line.
                 '\u{15}' => buf.clear(),
-                // Ctrl-C: cancel the line entirely.
+                // Ctrl-C: cancel — kept as a key so replay matches.
                 '\u{3}' => {
                     buf.clear();
-                    start_ms = None;
+                    actions.push(Action::Key {
+                        key: "ctrl+c".to_string(),
+                        t_ms: t,
+                    });
                 }
-                // Ignore other stray control bytes (Tab, Bell, …).
+                // Tab: completion / field navigation — kept as a key.
+                '\t' => {
+                    flush(&mut actions, &mut buf, start_ms, end_ms);
+                    actions.push(Action::Key {
+                        key: "tab".to_string(),
+                        t_ms: t,
+                    });
+                }
+                // Ignore other stray control bytes (Bell, …).
                 c if c.is_control() => {}
                 c => {
-                    if start_ms.is_none() {
-                        start_ms = Some(t);
+                    if buf.is_empty() {
+                        start_ms = t;
                     }
+                    end_ms = t;
                     buf.push(c);
                 }
             }
         }
     }
-
-    // A trailing, unsubmitted line (typed but no Enter).
-    if let Some(start) = start_ms {
-        flush(&mut commands, &mut buf, start, start, false);
-    }
-
-    commands
+    flush(&mut actions, &mut buf, start_ms, end_ms);
+    actions
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn typed(actions: &[Action]) -> Vec<&str> {
+        actions
+            .iter()
+            .filter_map(|a| match a {
+                Action::Type { text, .. } => Some(text.as_str()),
+                Action::Key { .. } => None,
+            })
+            .collect()
+    }
+
+    fn keys(actions: &[Action]) -> Vec<&str> {
+        actions
+            .iter()
+            .filter_map(|a| match a {
+                Action::Key { key, .. } => Some(key.as_str()),
+                Action::Type { .. } => None,
+            })
+            .collect()
+    }
+
     #[test]
     fn prunes_backspaces() {
         // g t i [bs] [bs] i t  →  "git"
-        let cmds = reconstruct(&[(0, "gti\u{7f}\u{7f}it\r")]);
-        assert_eq!(cmds.len(), 1);
-        assert_eq!(cmds[0].text, "git");
-        assert!(cmds[0].had_enter);
+        let a = reconstruct(&[(0, "gti\u{7f}\u{7f}it\r")]);
+        assert_eq!(typed(&a), vec!["git"]);
+        assert_eq!(keys(&a), vec!["enter"]);
     }
 
     #[test]
     fn ctrl_u_kills_the_line() {
-        let cmds = reconstruct(&[(0, "wrong command\u{15}ls -la\r")]);
-        assert_eq!(cmds[0].text, "ls -la");
+        let a = reconstruct(&[(0, "wrong command\u{15}ls -la\r")]);
+        assert_eq!(typed(&a), vec!["ls -la"]);
     }
 
     #[test]
-    fn splits_commands_on_enter() {
-        let cmds = reconstruct(&[(0, "ls\r"), (500, "pwd\r")]);
-        assert_eq!(cmds.len(), 2);
-        assert_eq!(cmds[0].text, "ls");
-        assert_eq!(cmds[1].text, "pwd");
-        assert_eq!(cmds[1].start_ms, 500);
+    fn splits_runs_on_enter() {
+        let a = reconstruct(&[(0, "ls\r"), (500, "pwd\r")]);
+        assert_eq!(typed(&a), vec!["ls", "pwd"]);
+        assert_eq!(keys(&a), vec!["enter", "enter"]);
     }
 
     #[test]
-    fn drops_blank_lines() {
-        let cmds = reconstruct(&[(0, "\r\r"), (10, "  \r"), (20, "echo hi\r")]);
-        assert_eq!(cmds.len(), 1);
-        assert_eq!(cmds[0].text, "echo hi");
+    fn keeps_bare_enters() {
+        // A lone Enter (accepting a selector default) must be preserved.
+        let a = reconstruct(&[(0, "\r"), (10, "echo hi\r")]);
+        assert_eq!(typed(&a), vec!["echo hi"]);
+        assert_eq!(keys(&a), vec!["enter", "enter"]);
     }
 
     #[test]
-    fn keeps_trailing_unsubmitted_line() {
-        let cmds = reconstruct(&[(0, "ls\r"), (300, "vim")]);
-        assert_eq!(cmds.len(), 2);
-        assert_eq!(cmds[1].text, "vim");
-        assert!(!cmds[1].had_enter);
+    fn keeps_arrow_keys_as_keypresses() {
+        // Navigation in a selector: typed text stays clean, arrows become keys.
+        let a = reconstruct(&[(0, "ab\u{1b}[A\u{1b}[Bcd\u{1b}[C\u{1b}[De\r")]);
+        assert_eq!(typed(&a), vec!["ab", "cd", "e"]);
+        assert_eq!(keys(&a), vec!["up", "down", "right", "left", "enter"]);
     }
 
     #[test]
-    fn swallows_arrow_key_escape_sequences() {
-        // Up, Down, Right, Left around real text must not leak `[A[B…` as typed.
-        let cmds = reconstruct(&[(0, "ab\u{1b}[A\u{1b}[Bcd\u{1b}[C\u{1b}[De\r")]);
-        assert_eq!(cmds.len(), 1);
-        assert_eq!(cmds[0].text, "abcde");
-    }
-
-    #[test]
-    fn swallows_ss3_and_csi_tilde_sequences() {
-        // SS3 (F1 = ESC O P) and a CSI tilde key (F5 = ESC [ 1 5 ~) leave nothing.
-        let cmds = reconstruct(&[(0, "x\u{1b}OP\u{1b}[15~y\r")]);
-        assert_eq!(cmds[0].text, "xy");
+    fn maps_application_mode_arrows() {
+        // SS3 arrows (ESC O A/B) used in application cursor mode.
+        let a = reconstruct(&[(0, "\u{1b}OA\u{1b}OB\r")]);
+        assert_eq!(keys(&a), vec!["up", "down", "enter"]);
     }
 
     #[test]
     fn tracks_typing_start_time() {
-        let cmds = reconstruct(&[(100, "a"), (140, "b"), (900, "c\r")]);
-        assert_eq!(cmds[0].start_ms, 100);
-        assert_eq!(cmds[0].enter_ms, 900);
+        let a = reconstruct(&[(100, "a"), (140, "b"), (900, "c\r")]);
+        match &a[0] {
+            Action::Type { text, t_ms, .. } => {
+                assert_eq!(text, "abc");
+                assert_eq!(*t_ms, 100);
+            }
+            _ => panic!("expected a Type action first"),
+        }
     }
 }
