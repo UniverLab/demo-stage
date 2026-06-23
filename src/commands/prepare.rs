@@ -1,7 +1,8 @@
 //! `demo prepare` — scaffold a stage: the canvas, its panes, and the trigger
-//! steps around a terminal anchor. `record --into <stage>` then captures the
-//! terminal flow, and `normalize` splices it in at the anchor — so the layout
-//! (e.g. a PDF shown beside the terminal) is authored once, not re-recorded.
+//! steps around a terminal anchor. `capture --into <stage>` then captures the
+//! terminal flow and splices it in at the anchor (normalizing automatically) —
+//! so the layout (e.g. a PDF beside the terminal) is authored once, not
+//! re-recorded.
 //!
 //! Configure it with the flags, or run `demo prepare --wizard` for a guided,
 //! ghScaff-style interactive setup. Both feed the same stage builder.
@@ -228,9 +229,8 @@ fn wizard(output: PathBuf) -> Result<StageOpts> {
 fn print_next(o: &StageOpts) {
     let out = o.output.display();
     println!("prepared {} stage → {out}", preset_name(o.preset));
-    println!("  next:  demo record --into {out}");
-    println!("         demo normalize macro.raw.toml -o {out}");
-    println!("  then:  demo export <cast|html|gif|mp4> {out}   (same demo, any format)");
+    println!("  next:  demo capture --into {out}   (splice your terminal session in)");
+    println!("  then:  demo record {out}  →  demo export   (re-run, then render)");
     if o.preset != Preset::Single {
         if o.view_url.is_none() {
             println!("  note:  set the browser pane `url` (pass --pdf <file> or --url <url>)");

@@ -11,7 +11,7 @@ order: 3
 ```sh
 # 1. Capture a live session. Run your demo, then type `demo stop` to finish
 #    (`exit` / Ctrl-D still work too). capture normalizes automatically AND saves a
-#    faithful recording, so you get macro.raw.toml + demo.toml + demo.cast.
+#    faithful recording, so you get macro.raw.toml + demo.toml + demo.rec.
 demo capture
 
 # 2. Render the recording (playback — never executes). Omit the format for all.
@@ -25,11 +25,11 @@ interactive tools, secrets and side effects (no re-running).
 ### Optional: refresh the recording by re-running
 
 For a deterministic demo you want to keep current as the app changes, re-execute the
-clean score to produce a fresh `demo.cast`:
+clean score to produce a fresh `demo.rec`:
 
 ```sh
 demo check demo.toml   # (optional) validate first
-demo record            # execute demo.toml → demo.cast
+demo record            # execute demo.toml → demo.rec
 demo export            # render every format
 ```
 
@@ -77,8 +77,8 @@ action = "terminate"
 
 ```sh
 demo check demo.toml
-demo record                  # execute demo.toml → demo.cast
-demo export gif              # render demo.cast → dist/hello.gif
+demo record                  # execute demo.toml → demo.rec
+demo export gif              # render demo.rec → dist/hello.gif
 demo export                  # …or all formats at once
 ```
 

@@ -24,7 +24,7 @@ pub enum Command {
     Capture(CaptureArgs),
     /// End the in-progress capture — run this inside a `demo capture` session.
     Stop,
-    /// Execute a demo score in a PTY to (re)produce a recording (a .cast).
+    /// Execute a demo score in a PTY to (re)produce a recording (a .rec).
     Record(RecordArgs),
     /// Statically validate a demo score (exit 0 = ok, 1 = invalid).
     Check(CheckArgs),
@@ -122,8 +122,8 @@ pub struct RecordArgs {
     #[arg(default_value = "demo.toml")]
     pub input: PathBuf,
 
-    /// Where to write the recording (an asciinema .cast that `export` plays back).
-    #[arg(short, long, default_value = "demo.cast")]
+    /// Where to write the recording (a `.rec` that `export` plays back).
+    #[arg(short, long, default_value = "demo.rec")]
     pub output: PathBuf,
 }
 
@@ -164,14 +164,14 @@ pub struct CheckArgs {
 
 #[derive(Debug, Args)]
 pub struct ExportArgs {
-    /// Formats to build, comma-separated — `cast`, `html`, `gif`, `mp4`, or `all`
+    /// Formats to build, comma-separated — `html`, `gif`, `mp4`, or `all`
     /// (e.g. `gif,mp4`). Omit it to build every supported format.
     #[arg(value_parser = parse_targets)]
     pub targets: Option<TargetList>,
 
-    /// The recording to render: a `.cast` from `demo record`, or a raw capture
+    /// The recording to render: a `.rec` from `demo record`, or a raw capture
     /// (`macro.raw.toml`) to render the live session directly.
-    #[arg(default_value = "demo.cast")]
+    #[arg(default_value = "demo.rec")]
     pub input: PathBuf,
 
     /// Speed multiplier applied to typing and waits — e.g. `2x`, `3x`, `0.5x`
@@ -186,7 +186,7 @@ pub struct TargetList(pub Vec<Target>);
 
 /// Every format `demo export` builds when no target is given.
 pub fn all_targets() -> Vec<Target> {
-    vec![Target::Cast, Target::Html, Target::Gif, Target::Mp4]
+    vec![Target::Html, Target::Gif, Target::Mp4]
 }
 
 /// Parse `gif,mp4` (or `all`) into a deduplicated list of targets.
@@ -201,13 +201,13 @@ fn parse_targets(s: &str) -> Result<TargetList, String> {
             return Ok(TargetList(all_targets()));
         }
         let t = <Target as ValueEnum>::from_str(p, true)
-            .map_err(|_| format!("invalid format '{p}' (expected cast, html, gif, mp4 or all)"))?;
+            .map_err(|_| format!("invalid format '{p}' (expected html, gif, mp4 or all)"))?;
         if !out.contains(&t) {
             out.push(t);
         }
     }
     if out.is_empty() {
-        return Err("no export formats given (try cast, html, gif, mp4 or all)".to_string());
+        return Err("no export formats given (try html, gif, mp4 or all)".to_string());
     }
     Ok(TargetList(out))
 }
@@ -229,8 +229,6 @@ fn parse_speed(s: &str) -> Result<f64, String> {
 /// Supported export targets.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum Target {
-    /// asciinema v2 cast (text only).
-    Cast,
     /// Self-contained HTML player (text only).
     Html,
     /// Animated GIF (rasterized).

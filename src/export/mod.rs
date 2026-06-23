@@ -45,11 +45,6 @@ pub fn render(rec: &Recording, score: &Score, target: Target) -> Result<PathBuf>
     );
 
     match target {
-        Target::Cast => {
-            let path = resolve_output(score, "cast");
-            write(&path, cast::to_cast(rec)?.as_bytes())?;
-            Ok(path)
-        }
         Target::Html => {
             let path = resolve_output(score, "html");
             write(&path, html::to_html(rec)?.as_bytes())?;

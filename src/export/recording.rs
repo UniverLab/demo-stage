@@ -1,10 +1,10 @@
-//! The recording artifact that `demo record` writes and `demo export` plays back.
+//! The recording artifact (`.rec`) that `demo record` writes and `demo export`
+//! plays back.
 //!
-//! It is a valid asciinema v2 cast (a JSON header line, then `[t,"o",data]`
-//! lines) — so any asciinema player can open it — whose header carries the extra
-//! demo-stage render config (layout, typing, captions, focuses) under a
-//! `demostage` key. `export` reconstructs everything it needs to render from
-//! that, **without re-executing** the demo.
+//! It is a JSON header line followed by `[t,"o",data]` timestamped output lines;
+//! the header carries the demo-stage render config (layout, typing, captions,
+//! focuses) under a `demostage` key, so `export` reconstructs everything it needs
+//! to render **without re-executing** the demo.
 //!
 //! `read` also accepts a raw capture (`macro.raw.toml`): it renders the live
 //! session's recorded output directly, with a default single-terminal layout.

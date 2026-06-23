@@ -320,10 +320,10 @@ pub fn run(args: CaptureArgs) -> Result<()> {
         args.output.display()
     );
 
-    // A recording (.cast) of what actually happened, so `demo export` plays back
+    // A recording (.rec) of what actually happened, so `demo export` plays back
     // the real session out of the box — no re-execution, which is what breaks
     // interactive/secret/side-effecting tools.
-    let cast_path = args.normalized_output.with_extension("cast");
+    let cast_path = args.normalized_output.with_extension("rec");
 
     // Normalizing is part of finishing a capture, not a separate command — run
     // it automatically into a clean score unless the user opted out.

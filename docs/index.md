@@ -1,6 +1,6 @@
 ---
 title: DemoStage
-description: Demos as Code — record a terminal session, normalize it into a clean declarative score, and compile it to cast, html or gif.
+description: Demos as Code — record a terminal session, normalize it into a clean declarative score, and compile it to html, gif or mp4.
 order: 1
 ---
 
@@ -17,19 +17,19 @@ any other source file.
 ## The pipeline
 
 ```
-demo capture  ──>  macro.raw.toml + demo.toml + demo.cast  ──>  demo export  ──>  dist/
+demo capture  ──>  macro.raw.toml + demo.toml + demo.rec  ──>  demo export  ──>  dist/
                (capture live, normalize, record real session)     (render — no re-run)
 
-                   demo record  ──>  demo.cast   (optional: re-execute the score
+                   demo record  ──>  demo.rec   (optional: re-execute the score
                                                    for a fresh, deterministic take)
 ```
 
 | Command | In | Out | Does |
 |---|---|---|---|
-| `capture`   | TTY               | `macro.raw.toml` + `demo.toml` + `demo.cast` | Capture a live session, normalize (prune typos, humanize typing, trim idle), and save a faithful recording. |
+| `capture`   | TTY               | `macro.raw.toml` + `demo.toml` + `demo.rec` | Capture a live session, normalize (prune typos, humanize typing, trim idle), and save a faithful recording. |
 | `check`     | `demo.toml`       | exit 0/1         | Validate the score statically. |
-| `record`    | `demo.toml`       | `demo.cast`      | *(Optional)* Re-execute the score in a PTY → a fresh recording. |
-| `export`    | `demo.cast`       | `dist/…`         | Render the recording to `cast`, `html`, `gif`, `mp4`. Never executes. |
+| `record`    | `demo.toml`       | `demo.rec`      | *(Optional)* Re-execute the score in a PTY → a fresh recording. |
+| `export`    | `demo.rec`       | `dist/…`         | Render the recording to `html`, `gif`, `mp4`. Never executes. |
 
 `demo export` works straight after `capture`. You don't have to capture, either: a
 `demo.toml` can be **authored by hand**, then `record`ed and exported.

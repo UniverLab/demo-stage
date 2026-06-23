@@ -1,12 +1,12 @@
 ---
 title: Export targets
-description: cast, html and gif are pure-Rust and offline; mp4 needs ffmpeg and browser panes need chromium.
+description: html and gif are pure-Rust and offline; mp4 needs ffmpeg and browser panes need chromium.
 order: 7
 ---
 
 # Export targets
 
-`demo export [fmt[,fmt…]] [score]` compiles a score. `cast`/`html`/`gif` are
+`demo export [fmt[,fmt…]] [recording]` renders a recording. `html`/`gif` are
 pure-Rust and offline; `mp4` and multi-scene **browser panes** auto-provision
 their tool (ffmpeg / Chromium) on first use. Pass several formats at once
 (`demo export gif,mp4`), **omit the format to build them all** (`demo export`),
@@ -14,22 +14,16 @@ and use `--speed 2x` (or `3x`, `0.5x`) to retime the whole demo.
 
 | Target | Output | External tool | Best for |
 |---|---|---|---|
-| `cast` | asciinema v2 (text) | — | Sharing/embedding a terminal recording. |
-| `html` | self-contained player page | — | Dropping a demo onto a website. |
+| `html` | self-contained player page (text) | — | Dropping a demo onto a website. |
 | `gif`  | animated GIF | — (terminal only) | READMEs, chat, anywhere images go. |
 | `mp4`  | H.264 video | ffmpeg — **auto-fetched** | High-fidelity video, social. |
 | browser panes | composited into gif/mp4 | Chromium — **auto-fetched** | PDF / web scenes beside the terminal. |
 
-## cast
-
-asciinema v2: a JSON header plus timestamped output events. Tiny and text-only —
-no pixels. Play it with any asciinema player.
-
 ## html
 
-The `cast` embedded in a single HTML file that plays it with
-[asciinema-player](https://docs.asciinema.org/). Ideal for the landing: a terminal
-demo with zero video weight.
+A single self-contained HTML file that plays the recording in the browser. Ideal
+for a landing page: a terminal demo with zero video weight. Text-only — browser
+panes aren't shown (use `gif`/`mp4` for those).
 
 ## gif
 
@@ -55,7 +49,7 @@ composites both panes onto the canvas frame by frame.
 
 Chromium is provisioned the same tectonic-style way as ffmpeg: a system Chrome is
 used if present, otherwise `headless_chrome` downloads a managed build on first
-use. (`cast`/`html` stay text-only and reject browser panes; use `gif`/`mp4` for
+use. (`html` stays text-only and drops browser panes; use `gif`/`mp4` for
 multi-scene.)
 
 **Reveal on focus:** a browser pane is blank until the timeline `focus`es it, then

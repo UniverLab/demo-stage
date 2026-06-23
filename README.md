@@ -31,28 +31,28 @@ cargo install --path .          # from this repo
 ## The loop
 
 ```
-demo capture  ──>  macro.raw.toml + demo.toml + demo.cast   (capture live, normalize,
+demo capture  ──>  macro.raw.toml + demo.toml + demo.rec   (capture live, normalize,
                        │                                       record the real session)
                        ▼
-demo export   ──>  dist/  (cast · html · gif · mp4)          (render — never executes)
+demo export   ──>  dist/  (html · gif · mp4)                 (render — never executes)
 
-                   demo record  ──>  demo.cast   (optional: re-run the score for a
+                   demo record  ──>  demo.rec   (optional: re-run the score for a
                                                    fresh take when the app changes)
 ```
 
 ```sh
 demo capture                      # capture a session, then type `demo stop` to finish
-                                  # → macro.raw.toml + demo.toml + demo.cast
-demo export                       # no args → every format (cast, html, gif, mp4)
+                                  # → macro.raw.toml + demo.toml + demo.rec
+demo export                       # no args → every format (html, gif, mp4)
 demo export gif,mp4 --speed 2x        # several at once, retimed 2× faster
 ```
 
 **Capture** runs the demo live, **normalizes automatically**, and saves a faithful
-recording (`demo.cast`) of the real session — so **`demo export` works straight after
+recording (`demo.rec`) of the real session — so **`demo export` works straight after
 `capture`**, with no re-execution. **Export** is pure playback: it renders a recording
 and never executes anything (great for interactive tools, secrets, side effects).
 
-**Record** is optional: it re-executes the clean `demo.toml` to refresh `demo.cast` —
+**Record** is optional: it re-executes the clean `demo.toml` to refresh `demo.rec` —
 use it for deterministic demos you want to keep current as the app changes. You can
 also **author `demo.toml` by hand**, then `record` + `export`.
 
@@ -69,15 +69,14 @@ also **author `demo.toml` by hand**, then `record` + `export`.
 
 | Target | Output | Needs |
 |---|---|---|
-| `cast` | asciinema v2 (text) | — (pure Rust) |
-| `html` | self-contained player page | — (pure Rust) |
+| `html` | self-contained player page (text) | — (pure Rust) |
 | `gif`  | animated GIF (rasterized) | — (pure Rust, embedded font) |
 | `mp4`  | H.264 video | ffmpeg — **auto-fetched on first use** |
 | browser panes (PDF/web) | composited into gif/mp4 | Chromium — **auto-fetched on first use** |
 
-`cast` / `html` / `gif` work fully offline. `mp4` and multi-scene **browser
-panes** provision their tool **tectonic-style** — the first export downloads a
-managed ffmpeg / Chromium into a cache (a system install is used if present).
+`html` / `gif` work fully offline. `mp4` and multi-scene **browser panes**
+provision their tool **tectonic-style** — the first export downloads a managed
+ffmpeg / Chromium into a cache (a system install is used if present).
 
 ## Documentation
 

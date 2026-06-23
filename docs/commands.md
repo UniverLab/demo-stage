@@ -62,7 +62,7 @@ you type is dropped from the normalized score.
 
 `capture` **normalizes automatically** when it finishes **and** saves a faithful
 recording of the real session, so a single `demo capture` gives you
-`macro.raw.toml`, a clean `demo.toml`, and a `demo.cast` — meaning **`demo export`
+`macro.raw.toml`, a clean `demo.toml`, and a `demo.rec` — meaning **`demo export`
 works straight after `capture`**, with no re-execution. (Run `demo record` later
 only if you want to re-execute the score for a fresh take.)
 
@@ -102,16 +102,16 @@ the finished demo.
 
 ## `demo record`
 
-Execute a demo score in a real PTY and save the result as a **recording** (an
-asciinema `.cast` that `demo export` plays back). This is the repeatable step:
-re-run it after the app changes and the recording refreshes.
+Execute a demo score in a real PTY and save the result as a **recording** (a
+`.rec` that `demo export` plays back). This is the repeatable step: re-run it
+after the app changes and the recording refreshes.
 
 ```sh
-demo record [demo.toml] [-o demo.cast]
+demo record [demo.toml] [-o demo.rec]
 ```
 
 - `[input]` — the score to execute; defaults to `demo.toml`.
-- `-o, --output` — where to write the recording; defaults to `demo.cast`.
+- `-o, --output` — where to write the recording; defaults to `demo.rec`.
 
 The score's commands **actually run**, so the recording reflects the real output.
 A demo whose last command leaves a process in the foreground (a server, a REPL) is
@@ -141,14 +141,14 @@ Render a **recording** to one or more formats. Pure playback — it replays a
 recording and **never executes** the demo.
 
 ```sh
-demo export [fmt[,fmt…]] [demo.cast] [--speed 2x]
+demo export [fmt[,fmt…]] [demo.rec] [--speed 2x]
 ```
 
 - `[formats]` — which formats to build, the first argument, **comma-separated**:
-  `cast`, `html`, `gif`, `mp4`, or `all` (see [export targets](export-targets.md)).
+  `html`, `gif`, `mp4`, or `all` (see [export targets](export-targets.md)).
   Pass several at once (`demo export gif,mp4`) — and **omit it entirely to build
   every supported format** (`demo export` ≡ `demo export all`).
-- `[input]` — the recording to render; defaults to `demo.cast`. Accepts a `.cast`
+- `[input]` — the recording to render; defaults to `demo.rec`. Accepts a `.rec`
   from `demo record`, or a raw capture (`macro.raw.toml`) to render the live
   session directly (faithful playback — handles interactive tools, secrets and
   side effects that re-execution can't).
@@ -160,5 +160,5 @@ Each format is written to its default path `<output_dir>/<name>.<ext>`.
 For a **multi-pane stage**, the pixel targets (`gif`/`mp4`) composite the recorded
 terminal with its browser panes — each captured via headless Chromium
 (auto-provisioned) and revealed at the moment the timeline focuses it. The
-text targets (`cast`/`html`) carry only the terminal stream (browser panes are
-dropped — they can't be represented as text).
+text target (`html`) carries only the terminal stream (browser panes are dropped
+— they can't be represented as text).
