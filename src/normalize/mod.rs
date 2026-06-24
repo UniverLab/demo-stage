@@ -11,7 +11,7 @@ pub mod salt;
 pub use rng::Rng;
 
 use crate::model::{DemoMeta, Layout, Pane, PaneKind, Score, Step, Typing};
-use crate::model::{RawEvent, RawMacro};
+use crate::model::{RawEvent, RawMacro, ScrollDirection, Velocity};
 use edit::Action;
 
 /// Knobs for normalization (humanized-typing params are stored in the score).
@@ -32,13 +32,18 @@ const MAX_TAIL_MS: u64 = 1500;
 const CELL_W: u32 = 10;
 const CELL_H: u32 = 20;
 
-/// Normalize a raw capture into a clean, single-pane score named `name`.
+/// Normalize a raw capture into a clean score named `name`. A capture with no
+/// `demo open` reveals yields a single terminal pane; each reveal adds a browser
+/// pane plus a focus (and scroll/hold) step, so a re-run via `demo record`
+/// reproduces the browser scene too.
 pub fn normalize(raw: &RawMacro, name: &str, opts: &Options) -> Score {
+    let reveals = collect_reveals(raw);
+
     let mut timeline = Vec::new();
     timeline.push(Step::Focus {
         pane: "main".to_string(),
     });
-    timeline.extend(terminal_steps(raw));
+    timeline.extend(terminal_steps(raw, &reveals));
     timeline.push(Step::Terminate);
 
     Score {
@@ -49,9 +54,64 @@ pub fn normalize(raw: &RawMacro, name: &str, opts: &Options) -> Score {
         },
         env: None,
         typing: Some(typing(opts)),
-        layout: default_layout(raw),
+        layout: layout_with_reveals(raw, &reveals),
         timeline,
     }
+}
+
+/// A `demo open` reveal lifted from the raw capture, with a stable scene id.
+struct Reveal {
+    t_ms: u64,
+    id: String,
+    url: String,
+    mode: String,
+    hold_ms: Option<u64>,
+    scroll: bool,
+}
+
+/// Default time a revealed browser scene is held on screen when no `--hold` was
+/// given — longer for a scrolling scene so the pan has time to read.
+const REVEAL_HOLD_MS: u64 = 2500;
+const SCROLL_HOLD_MS: u64 = 4000;
+
+fn reveal_hold_ms(hold: Option<u64>, scroll: bool) -> u64 {
+    hold.unwrap_or(if scroll {
+        SCROLL_HOLD_MS
+    } else {
+        REVEAL_HOLD_MS
+    })
+}
+
+/// Collect the capture's `demo open` reveals in time order, naming them
+/// `scene1`, `scene2`, … to match the panes built in [`layout_with_reveals`].
+fn collect_reveals(raw: &RawMacro) -> Vec<Reveal> {
+    let mut opens: Vec<(u64, String, String, Option<u64>, bool)> = raw
+        .events
+        .iter()
+        .filter_map(|e| match e {
+            RawEvent::Open {
+                t_ms,
+                url,
+                mode,
+                hold_ms,
+                scroll,
+            } => Some((*t_ms, url.clone(), mode.clone(), *hold_ms, *scroll)),
+            _ => None,
+        })
+        .collect();
+    opens.sort_by_key(|(t, ..)| *t);
+    opens
+        .into_iter()
+        .enumerate()
+        .map(|(i, (t_ms, url, mode, hold_ms, scroll))| Reveal {
+            t_ms,
+            id: format!("scene{}", i + 1),
+            url,
+            mode,
+            hold_ms,
+            scroll,
+        })
+        .collect()
 }
 
 /// Splice the captured terminal flow into a prepared `stage`, keeping its
@@ -65,7 +125,9 @@ pub fn merge_into_stage(mut stage: Score, raw: &RawMacro, opts: &Options) -> Sco
         .find(|p| p.kind == PaneKind::Terminal)
         .map(|p| p.id.clone());
 
-    let steps = terminal_steps(raw);
+    // A prepared stage already declares its own browser panes and trigger steps,
+    // so only splice the captured terminal flow (no capture-derived reveals).
+    let steps = terminal_steps(raw, &[]);
 
     let mut timeline = Vec::with_capacity(stage.timeline.len() + steps.len() + 1);
     let mut spliced = false;
@@ -105,8 +167,10 @@ fn typing(opts: &Options) -> Typing {
 
 /// Build the humanized terminal step sequence (Type / Keypress / Wait) from a
 /// raw capture — without any Focus/Terminate wrappers, so it can fill either a
-/// fresh score or a prepared stage's terminal pane.
-fn terminal_steps(raw: &RawMacro) -> Vec<Step> {
+/// fresh score or a prepared stage's terminal pane. Any `reveals` are interleaved
+/// by time: each opens its browser scene (a focus, an optional scroll, and a hold)
+/// at the point in the flow where the capture revealed it.
+fn terminal_steps(raw: &RawMacro, reveals: &[Reveal]) -> Vec<Step> {
     let inputs: Vec<(u64, &str)> = raw
         .events
         .iter()
@@ -129,8 +193,16 @@ fn terminal_steps(raw: &RawMacro) -> Vec<Step> {
         .max()
         .unwrap_or(0);
 
-    let mut steps = Vec::with_capacity(actions.len() * 2);
+    let mut steps = Vec::with_capacity(actions.len() * 2 + reveals.len() * 3);
+    let mut next_reveal = 0;
     for (i, action) in actions.iter().enumerate() {
+        // Open any reveal whose moment has arrived before this action; refocus the
+        // terminal afterwards, since more terminal input still follows.
+        while next_reveal < reveals.len() && reveals[next_reveal].t_ms <= action_start(action) {
+            push_reveal(&mut steps, &reveals[next_reveal], true);
+            next_reveal += 1;
+        }
+
         match action {
             Action::Type { text, .. } => steps.push(Step::Type {
                 text: text.clone(),
@@ -152,7 +224,34 @@ fn terminal_steps(raw: &RawMacro) -> Vec<Step> {
             steps.push(Step::Wait { duration_ms: wait });
         }
     }
+    // Any reveal after the last command — the common case (open once the demo is
+    // done) — closes out the demo, so it keeps focus and just holds.
+    for r in &reveals[next_reveal..] {
+        push_reveal(&mut steps, r, false);
+    }
     steps
+}
+
+/// Append the steps that reveal one browser scene: focus it, optionally scroll
+/// it, and hold it on screen. `refocus_main` returns focus to the terminal after
+/// (for a reveal in the middle of the flow, where typing continues).
+fn push_reveal(steps: &mut Vec<Step>, r: &Reveal, refocus_main: bool) {
+    let hold = reveal_hold_ms(r.hold_ms, r.scroll);
+    steps.push(Step::Focus { pane: r.id.clone() });
+    if r.scroll {
+        steps.push(Step::Scroll {
+            direction: ScrollDirection::Down,
+            velocity: Velocity::Constant,
+            duration_ms: hold,
+            pane: Some(r.id.clone()),
+        });
+    }
+    steps.push(Step::Wait { duration_ms: hold });
+    if refocus_main {
+        steps.push(Step::Focus {
+            pane: "main".to_string(),
+        });
+    }
 }
 
 fn action_start(a: &Action) -> u64 {
@@ -180,6 +279,57 @@ fn strip_trailing_stop(actions: &mut Vec<Action>) {
         actions.truncate(n - 2);
     } else if actions.last().is_some_and(is_stop) {
         actions.pop();
+    }
+}
+
+/// Build the layout for a capture: a terminal pane, plus one browser pane per
+/// `demo open` reveal — `replace` covers the canvas, `split` sits to the right of
+/// the terminal (doubling the canvas width). No reveals → the single-pane default.
+fn layout_with_reveals(raw: &RawMacro, reveals: &[Reveal]) -> Layout {
+    if reveals.is_empty() {
+        return default_layout(raw);
+    }
+    let tw = (raw.meta.cols as u32 * CELL_W).max(CELL_W);
+    let th = (raw.meta.rows as u32 * CELL_H).max(CELL_H);
+    let any_split = reveals.iter().any(|r| r.mode == "split");
+    let (canvas_w, canvas_h) = if any_split { (tw * 2, th) } else { (tw, th) };
+
+    let mut panes = vec![Pane {
+        id: "main".to_string(),
+        kind: PaneKind::Terminal,
+        x: 0,
+        y: 0,
+        width: tw,
+        height: th,
+        font_family: Some("monospace".to_string()),
+        font_size: Some(16),
+        url: None,
+    }];
+    for r in reveals {
+        let (x, y, w, h) = if r.mode == "split" {
+            (tw, 0, canvas_w - tw, th)
+        } else {
+            (0, 0, canvas_w, canvas_h)
+        };
+        panes.push(Pane {
+            id: r.id.clone(),
+            kind: PaneKind::Browser,
+            x,
+            y,
+            width: w,
+            height: h,
+            font_family: None,
+            font_size: None,
+            url: Some(r.url.clone()),
+        });
+    }
+    Layout {
+        width: canvas_w,
+        height: canvas_h,
+        fps: 15,
+        line_height: 1.2,
+        background: Some("#0b0f14".to_string()),
+        panes,
     }
 }
 
@@ -344,6 +494,55 @@ mod tests {
             })
             .collect();
         assert_eq!(typed, vec!["echo hi"]);
+    }
+
+    #[test]
+    fn a_capture_reveal_becomes_a_browser_pane_and_focus() {
+        // A `demo open --scroll` after the command adds a browser pane plus a
+        // focus + scroll + hold so `demo record` reproduces the scene.
+        let r = raw(vec![
+            RawEvent::Input {
+                t_ms: 0,
+                bytes: "ls\r".into(),
+            },
+            RawEvent::Output {
+                t_ms: 100,
+                data: "file.txt".into(),
+            },
+            RawEvent::Open {
+                t_ms: 500,
+                url: "https://example.com".into(),
+                mode: "replace".into(),
+                hold_ms: Some(5000),
+                scroll: true,
+            },
+        ]);
+        let score = normalize(&r, "demo", &opts());
+        assert!(crate::validate::validate(&score).is_empty());
+        // terminal + one browser scene.
+        assert_eq!(score.layout.panes.len(), 2);
+        let scene = &score.layout.panes[1];
+        assert_eq!(scene.kind, PaneKind::Browser);
+        assert_eq!(scene.url.as_deref(), Some("https://example.com"));
+        // The timeline focuses the scene, scrolls it, and holds for the requested
+        // duration before terminating.
+        assert!(score
+            .timeline
+            .iter()
+            .any(|s| matches!(s, Step::Focus { pane } if pane == &scene.id)));
+        assert!(score.timeline.iter().any(|s| matches!(
+            s,
+            Step::Scroll {
+                duration_ms: 5000,
+                direction: ScrollDirection::Down,
+                ..
+            }
+        )));
+        assert!(score
+            .timeline
+            .iter()
+            .any(|s| matches!(s, Step::Wait { duration_ms: 5000 })));
+        assert!(matches!(score.timeline.last(), Some(Step::Terminate)));
     }
 
     const STAGE: &str = r##"
