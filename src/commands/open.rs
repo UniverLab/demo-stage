@@ -30,6 +30,17 @@ struct Reveal {
 }
 
 pub fn run(args: OpenArgs) -> Result<()> {
+    // Running inside the captured shell (found via the env var, not the cwd)?
+    // Then the command's echo + wizard print into the recording — tell the
+    // recorder to mute from now, so it can excise them. From a second terminal
+    // there's nothing in the captured shell to mute, so skip it.
+    let in_session = std::env::var(control::CONTROL_ENV)
+        .map(|p| !p.is_empty() && std::path::Path::new(&p).exists())
+        .unwrap_or(false);
+    if in_session {
+        let _ = control::send(serde_json::json!({ "cmd": "open_begin" }));
+    }
+
     let r = resolve(args)?;
 
     control::send(serde_json::json!({

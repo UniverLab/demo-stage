@@ -44,6 +44,21 @@ pub struct RawMeta {
     /// the captured flow into that stage unless `--stage` overrides it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stage: Option<String>,
+    /// `(start_ms, end_ms)` spans of meta-command activity (`demo open` and its
+    /// in-session wizard) that must be excised from the finished demo — both the
+    /// typed command/echo and the wizard output. Recorded live by `demo capture`;
+    /// `from_raw` drops output inside them and `normalize` drops input inside them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mute_spans: Vec<(u64, u64)>,
+}
+
+impl RawMeta {
+    /// Is `t_ms` inside any meta-command span (so it must not reach the demo)?
+    pub fn is_muted(&self, t_ms: u64) -> bool {
+        self.mute_spans
+            .iter()
+            .any(|(start, end)| t_ms >= *start && t_ms < *end)
+    }
 }
 
 /// One captured event, tagged by `kind`, timestamped from recording start.
@@ -82,6 +97,7 @@ mod tests {
                 rows: 30,
                 idle_timeout_ms: 3000,
                 stage: None,
+                mute_spans: vec![(150, 320)],
             },
             events: vec![
                 RawEvent::Input {

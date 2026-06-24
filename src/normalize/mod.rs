@@ -70,9 +70,9 @@ struct Reveal {
 }
 
 /// Default time a revealed browser scene is held on screen when no `--hold` was
-/// given — longer for a scrolling scene so the pan has time to read.
-const REVEAL_HOLD_MS: u64 = 2500;
-const SCROLL_HOLD_MS: u64 = 4000;
+/// given — long enough to read the page; longer for a scrolling scene.
+const REVEAL_HOLD_MS: u64 = 6000;
+const SCROLL_HOLD_MS: u64 = 8000;
 
 fn reveal_hold_ms(hold: Option<u64>, scroll: bool) -> u64 {
     hold.unwrap_or(if scroll {
@@ -171,11 +171,15 @@ fn typing(opts: &Options) -> Typing {
 /// by time: each opens its browser scene (a focus, an optional scroll, and a hold)
 /// at the point in the flow where the capture revealed it.
 fn terminal_steps(raw: &RawMacro, reveals: &[Reveal]) -> Vec<Step> {
+    // Drop input typed inside a `demo open` meta-command span (the command itself
+    // and its in-session wizard answers), so it never becomes demo typing.
     let inputs: Vec<(u64, &str)> = raw
         .events
         .iter()
         .filter_map(|e| match e {
-            RawEvent::Input { t_ms, bytes } => Some((*t_ms, bytes.as_str())),
+            RawEvent::Input { t_ms, bytes } if !raw.meta.is_muted(*t_ms) => {
+                Some((*t_ms, bytes.as_str()))
+            }
             _ => None,
         })
         .collect();
@@ -370,6 +374,7 @@ mod tests {
                 rows: 24,
                 idle_timeout_ms: 3000,
                 stage: None,
+                mute_spans: Vec::new(),
             },
             events,
         }
@@ -484,6 +489,37 @@ mod tests {
                 bytes: "demo stop\r".into(),
             },
         ]);
+        let score = normalize(&r, "demo", &opts());
+        let typed: Vec<&str> = score
+            .timeline
+            .iter()
+            .filter_map(|s| match s {
+                Step::Type { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(typed, vec!["echo hi"]);
+    }
+
+    #[test]
+    fn drops_input_typed_inside_a_meta_command_span() {
+        // The `demo open` command + its wizard answers (typed at 1000..3000) are
+        // excised, so they never become demo typing.
+        let mut r = raw(vec![
+            RawEvent::Input {
+                t_ms: 100,
+                bytes: "echo hi\r".into(),
+            },
+            RawEvent::Input {
+                t_ms: 1200,
+                bytes: "demo open\r".into(),
+            },
+            RawEvent::Input {
+                t_ms: 1800,
+                bytes: "https://example.com\r".into(),
+            },
+        ]);
+        r.meta.mute_spans = vec![(1000, 3000)];
         let score = normalize(&r, "demo", &opts());
         let typed: Vec<&str> = score
             .timeline

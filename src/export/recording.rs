@@ -192,18 +192,20 @@ const MAX_GAP_MS: f64 = 1200.0;
 /// How long the final frame is held after the last output, so the result is
 /// readable before the demo ends / loops (instead of cutting off abruptly).
 const TAIL_HOLD_MS: f64 = 1800.0;
-/// Default time a scrolling browser scene stays on screen when no explicit
-/// `--hold` is given — long enough for the scroll pan to read.
-const DEFAULT_SCROLL_HOLD_MS: f64 = 4000.0;
+/// Default time a browser scene stays on screen when no explicit `--hold` is
+/// given — long enough to actually read the page (a plain reveal near the end of
+/// the capture otherwise just flashes by); longer still when scrolling.
+const DEFAULT_REVEAL_HOLD_MS: f64 = 6000.0;
+const DEFAULT_SCROLL_HOLD_MS: f64 = 8000.0;
 
 /// How long a reveal should keep its scene on screen, in milliseconds: an
 /// explicit `--hold`, else a longer default for scrolling scenes, else the
-/// regular tail hold.
+/// standard reveal hold.
 fn reveal_hold_ms(hold: Option<u64>, scroll: bool) -> f64 {
     match hold {
         Some(h) => h as f64,
         None if scroll => DEFAULT_SCROLL_HOLD_MS,
-        None => TAIL_HOLD_MS,
+        None => DEFAULT_REVEAL_HOLD_MS,
     }
 }
 
@@ -230,6 +232,12 @@ pub fn from_raw(raw: &RawMacro, name: &str) -> (Recording, Layout, Vec<Step>) {
             RawEvent::Input { .. } => continue,
         };
         if cutoff.is_some_and(|c| t_ms >= c) {
+            continue;
+        }
+        // Drop output inside a `demo open` meta-command span (the echo + wizard)
+        // without advancing the clock, so the region collapses away. Reveal (Open)
+        // events sit at the span's end and are kept.
+        if matches!(e, RawEvent::Output { .. }) && raw.meta.is_muted(t_ms) {
             continue;
         }
         let gap = match prev_ms {
@@ -489,9 +497,44 @@ data = "file.txt\n"
                 rows: 24,
                 idle_timeout_ms: 0,
                 stage: None,
+                mute_spans: Vec::new(),
             },
             events,
         }
+    }
+
+    #[test]
+    fn from_raw_excises_muted_output() {
+        // A `demo open` wizard span (200..900) is dropped from the playback stream,
+        // but the reveal that opens at its end survives.
+        let mut r = raw(vec![
+            RawEvent::Output {
+                t_ms: 100,
+                data: "real".into(),
+            },
+            RawEvent::Output {
+                t_ms: 300,
+                data: "demo open — reveal a browser scene".into(),
+            },
+            RawEvent::Output {
+                t_ms: 500,
+                data: "Show as: replace".into(),
+            },
+            RawEvent::Open {
+                t_ms: 900,
+                url: "https://example.com".into(),
+                mode: "replace".into(),
+                hold_ms: None,
+                scroll: false,
+            },
+        ]);
+        r.meta.mute_spans = vec![(200, 900)];
+        let (rec, layout, _) = from_raw(&r, "t");
+        // Only the real output remains; the wizard chatter is gone.
+        assert_eq!(rec.events.len(), 1);
+        assert_eq!(rec.events[0].1, "real");
+        // The browser scene was still built from the reveal.
+        assert_eq!(layout.panes.len(), 2);
     }
 
     #[test]

@@ -9,7 +9,7 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 #[command(
     name = "demo",
     version,
-    about = "Demos as Code — record, normalize, check and export terminal demos"
+    about = "Demos as Code — capture, record and export terminal demos"
 )]
 pub struct Cli {
     #[command(subcommand)]
@@ -115,11 +115,20 @@ pub struct CaptureArgs {
     #[arg(short = 'o', long = "raw", value_name = "FILE")]
     pub output: Option<PathBuf>,
 
-    /// Also write the normalized demo score here — the editable "demo as code"
-    /// (`demo.toml`) you can re-run with `demo record`. Omitted by default (a
-    /// stage capture via `--into` defaults it to `demo.toml`).
-    #[arg(short = 'O', long = "score", value_name = "FILE")]
-    pub normalized_output: Option<PathBuf>,
+    /// Where to write the normalized demo score — the editable "demo as code"
+    /// you can re-run with `demo record`. Defaults to `demo.toml`; `--no-score`
+    /// skips it if you only want the recording.
+    #[arg(
+        short = 'O',
+        long = "score",
+        default_value = "demo.toml",
+        value_name = "FILE"
+    )]
+    pub normalized_output: PathBuf,
+
+    /// Don't write the `demo.toml` score — leave only the recording.
+    #[arg(long, conflicts_with = "normalized_output")]
+    pub no_score: bool,
 
     /// Force a clean PS1 in the captured shell (default: the built-in realistic
     /// prompt), so the demo shows a tidy prompt instead of your real one. Pass a

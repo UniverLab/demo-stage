@@ -46,6 +46,11 @@ type PendingAfter = Arc<Mutex<Vec<Reveal>>>;
 /// an `--after` reveal fires (i.e. the shell is back at the prompt).
 const AFTER_QUIET_MS: u64 = 800;
 
+/// When a `demo open` wizard's start has to be inferred from its `open_begin`
+/// marker (input detection missed the typed command), back-date the excision span
+/// by this much so the wizard's first lines (already printed) are still removed.
+const OPEN_BEGIN_BACKDATE_MS: u64 = 800;
+
 fn ms(t0: Instant) -> u64 {
     t0.elapsed().as_millis() as u64
 }
@@ -122,6 +127,47 @@ impl DebugLog {
     }
 }
 
+/// Decide the captured shell's prompt: `--keep-prompt` keeps yours, `--prompt`
+/// forces a given `PS1`, and with neither a quick wizard asks before recording.
+/// Returns `(force_prompt, ps1)`.
+fn choose_prompt(args: &CaptureArgs) -> Result<(bool, String)> {
+    if args.keep_prompt {
+        return Ok((false, DEFAULT_PROMPT.to_string()));
+    }
+    if let Some(p) = &args.prompt {
+        return Ok((true, p.clone()));
+    }
+    let choice = inquire::Select::new(
+        "Prompt for this demo:",
+        vec![
+            "Clean demo prompt  (user@demo:~$)",
+            "Customize…",
+            "Keep my real shell prompt",
+        ],
+    )
+    .prompt()
+    .map_err(|e| Error::Export(format!("prompt wizard: {e}")))?;
+    if choice.starts_with("Keep") {
+        Ok((false, DEFAULT_PROMPT.to_string()))
+    } else if choice.starts_with("Customize") {
+        let ps1 = inquire::Text::new("Custom PS1 (bash prompt syntax):")
+            .with_help_message(r"e.g. \u@\h:\w\$ — colours via \[\e[..m\]; blank = default")
+            .prompt()
+            .map_err(|e| Error::Export(format!("prompt wizard: {e}")))?;
+        let ps1 = ps1.trim();
+        Ok((
+            true,
+            if ps1.is_empty() {
+                DEFAULT_PROMPT.to_string()
+            } else {
+                ps1.to_string()
+            },
+        ))
+    } else {
+        Ok((true, DEFAULT_PROMPT.to_string()))
+    }
+}
+
 pub fn run(args: CaptureArgs) -> Result<()> {
     if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
         return Err(Error::Export(
@@ -190,13 +236,16 @@ pub fn run(args: CaptureArgs) -> Result<()> {
     // the recorder receives it (or a safety timeout).
     let muting = Arc::new(AtomicBool::new(false));
     let mute_since = Arc::new(Mutex::new(Instant::now()));
+    // Recorded meta-command spans `(start_ms, end_ms)` for the finished demo:
+    // each `demo open` (its echo + in-session wizard) is excised in post, so the
+    // result is clean even if the live mute raced. `mute_start` holds the open
+    // span's start until its control command arrives and closes it.
+    let mute_spans: Arc<Mutex<Vec<(u64, u64)>>> = Arc::new(Mutex::new(Vec::new()));
+    let mute_start: Arc<Mutex<Option<u64>>> = Arc::new(Mutex::new(None));
     // Force a clean prompt (unless --keep-prompt): recording doesn't begin until
     // the shell echoes a readiness marker, so its rc/PS1-setup chatter is dropped.
-    let force_prompt = !args.keep_prompt;
-    let forced_ps1 = args
-        .prompt
-        .clone()
-        .unwrap_or_else(|| DEFAULT_PROMPT.to_string());
+    // With neither flag a quick wizard asks how to set it before recording.
+    let (force_prompt, forced_ps1) = choose_prompt(&args)?;
     let ready = Arc::new(AtomicBool::new(!force_prompt));
     let t0 = Instant::now();
 
@@ -355,6 +404,7 @@ pub fn run(args: CaptureArgs) -> Result<()> {
         let debug = debug.clone();
         let muting = muting.clone();
         let mute_since = mute_since.clone();
+        let mute_start = mute_start.clone();
         let ready = ready.clone();
         let after_opens = after_opens.clone();
         let after_running = after_running.clone();
@@ -386,6 +436,14 @@ pub fn run(args: CaptureArgs) -> Result<()> {
                                 if t.starts_with("demo open") || t.starts_with("demo stop") {
                                     *mute_since.lock().unwrap() = Instant::now();
                                     muting.store(true, Ordering::SeqCst);
+                                    // Record the open span's precise start (the typed
+                                    // command), so its echo + wizard are excised.
+                                    if t.starts_with("demo open") {
+                                        let mut s = mute_start.lock().unwrap();
+                                        if s.is_none() {
+                                            *s = Some(ms(t0));
+                                        }
+                                    }
                                 } else if !t.is_empty()
                                     && !after_opens.lock().unwrap().is_empty()
                                     && !after_running.load(Ordering::SeqCst)
@@ -446,6 +504,8 @@ pub fn run(args: CaptureArgs) -> Result<()> {
             &pending_opens,
             &after_opens,
             &muting,
+            &mute_start,
+            &mute_spans,
             t0,
             debug.as_deref(),
         ) {
@@ -479,6 +539,10 @@ pub fn run(args: CaptureArgs) -> Result<()> {
             && mute_since.lock().unwrap().elapsed() > Duration::from_secs(90)
         {
             muting.store(false, Ordering::SeqCst);
+            // Close a stranded open span so it doesn't swallow the rest of the demo.
+            if let Some(start) = mute_start.lock().unwrap().take() {
+                mute_spans.lock().unwrap().push((start, ms(t0)));
+            }
         }
         // Safety: if the readiness marker never arrives (odd shell), start
         // recording anyway rather than capturing nothing.
@@ -502,6 +566,11 @@ pub fn run(args: CaptureArgs) -> Result<()> {
     let _ = std::fs::remove_file(&control_abs);
 
     let events = events.lock().unwrap().clone();
+    let mut mute_spans = mute_spans.lock().unwrap().clone();
+    // Close a span still open at stop time (e.g. a wizard cut short by `demo stop`).
+    if let Some(start) = mute_start.lock().unwrap().take() {
+        mute_spans.push((start, ms(t0)));
+    }
     let raw = RawMacro {
         meta: RawMeta {
             shell,
@@ -509,6 +578,7 @@ pub fn run(args: CaptureArgs) -> Result<()> {
             rows,
             idle_timeout_ms: idle,
             stage: args.into.as_ref().map(|p| p.display().to_string()),
+            mute_spans,
         },
         events,
     };
@@ -566,11 +636,11 @@ pub fn run(args: CaptureArgs) -> Result<()> {
         Some(path) => merge_into_stage(Score::load(path)?, &raw, &opts),
         None => normalize(&raw, name, &opts),
     };
-    let score_path = args.normalized_output.clone().or_else(|| {
-        args.into
-            .as_ref()
-            .map(|_| std::path::PathBuf::from("demo.toml"))
-    });
+    let score_path = if args.no_score {
+        None
+    } else {
+        Some(args.normalized_output.clone())
+    };
     if let Some(p) = &score_path {
         score.save(p)?;
     }
@@ -583,7 +653,7 @@ pub fn run(args: CaptureArgs) -> Result<()> {
             cast_path.display()
         ),
         None => println!(
-            "next: demo export {}   (add --score to also write demo.toml for `demo record`)",
+            "next: demo export {}   (--no-score set, so `demo record` won't have a score)",
             cast_path.display()
         ),
     }
@@ -600,6 +670,8 @@ fn read_control(
     pending: &PendingWhen,
     after: &PendingAfter,
     muting: &Arc<AtomicBool>,
+    mute_start: &Arc<Mutex<Option<u64>>>,
+    mute_spans: &Arc<Mutex<Vec<(u64, u64)>>>,
     t0: Instant,
     debug: Option<&DebugLog>,
 ) -> Option<&'static str> {
@@ -615,12 +687,27 @@ fn read_control(
         let Ok(v) = serde_json::from_str::<serde_json::Value>(line.trim()) else {
             continue;
         };
-        // The control command arrived → the typed command's output is done; stop
-        // muting so real demo output is recorded again.
-        muting.store(false, Ordering::SeqCst);
         match v.get("cmd").and_then(|c| c.as_str()) {
-            Some("stop") => stop = Some("demo stop"),
+            // A `demo open` is starting in the captured shell → mute its wizard.
+            // If input detection didn't already mark the start, fall back to a
+            // little before now so the wizard's first output is still excised.
+            Some("open_begin") => {
+                muting.store(true, Ordering::SeqCst);
+                let mut s = mute_start.lock().unwrap();
+                if s.is_none() {
+                    *s = Some(ms(t0).saturating_sub(OPEN_BEGIN_BACKDATE_MS));
+                }
+            }
+            Some("stop") => {
+                muting.store(false, Ordering::SeqCst);
+                stop = Some("demo stop");
+            }
             Some("open") => {
+                // The command finished → stop muting and close its excision span.
+                muting.store(false, Ordering::SeqCst);
+                if let Some(start) = mute_start.lock().unwrap().take() {
+                    mute_spans.lock().unwrap().push((start, ms(t0)));
+                }
                 let url = v.get("url").and_then(|u| u.as_str()).unwrap_or("");
                 if url.is_empty() {
                     continue;
