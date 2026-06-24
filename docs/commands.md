@@ -1,6 +1,6 @@
 ---
 title: Commands
-description: Reference for demo capture, open, record, check and export and their flags.
+description: Reference for demo capture, open, record and export and their flags.
 order: 5
 ---
 
@@ -8,21 +8,29 @@ order: 5
 
 ## `demo capture`
 
-Capture a live interactive session into a raw macro, then normalize it into a
-clean `demo.toml`. Needs a real terminal.
+Capture a live interactive session and save it as a **recording** (`demo.rec`) —
+the one file `demo export` plays back. Needs a real terminal.
 
 ```sh
-demo capture [-o macro.raw.toml] [-O demo.toml] [--no-normalize] [--debug] [--idle-timeout-ms 0] [--shell /bin/bash] [--into demo.toml]
+demo capture [-r demo.rec] [--score demo.toml] [--raw macro.raw.toml] [--no-normalize] [--prompt "<PS1>" | --keep-prompt] [--debug] [--idle-timeout-ms 0] [--shell /bin/bash] [--into demo.toml]
 ```
 
-- `-o, --output` — where to write the raw macro.
-- `-O, --normalized-output` — where the automatic normalize writes the clean score
-  (default `demo.toml`).
-- `--no-normalize` — keep only the raw macro (no clean score). Useful when you'll
-  render the capture directly — `demo export gif macro.raw.toml` — instead of
-  re-executing it.
-- `--debug` — write a timestamped diagnostic log next to the raw macro
-  (`<output>.debug.log`): every input/output chunk in escaped + hex form (secret
+- `-r, --rec` — where to write the recording (default `demo.rec`). This is the
+  one artifact a capture needs, and **`demo export` works straight after**, with
+  no re-execution.
+- `--score <file>` (`-O`) — **also** write the editable demo score (`demo.toml`) —
+  the "demo as code" source you can re-run with `demo record`. Off by default.
+- `--raw <file>` (`-o`) — **also** write the low-level raw macro, a debugging
+  intermediate. Off by default.
+- `--no-normalize` — skip the normalize pass, so no score is derived (the
+  recording is faithful either way).
+- `--prompt "<PS1>"` — force a clean prompt in the captured shell so the demo
+  shows a tidy prompt instead of your real `user@host`. **On by default** with a
+  built-in realistic prompt (`user@demo:~$`, green/blue); pass a value (bash `PS1`
+  syntax) to customize.
+- `--keep-prompt` — keep your shell's real prompt (don't force a clean one).
+- `--debug` — write a timestamped diagnostic log next to the recording
+  (`<rec>.debug.log`): every input/output chunk in escaped + hex form (secret
   keystrokes are logged only as a byte count, never their value) and why the
   capture stopped. Use it when a capture behaves oddly (e.g. a wizard mis-reads a
   keystroke).
@@ -32,7 +40,8 @@ demo capture [-o macro.raw.toml] [-O demo.toml] [--no-normalize] [--debug] [--id
   trimmed when normalizing.
 - `--shell` — shell to run (defaults to `$SHELL`).
 - `--into` — splice this capture into a hand-authored stage score's timeline
-  instead of building a fresh single-pane score (advanced).
+  instead of building a fresh single-pane score (advanced); defaults `--score` to
+  `demo.toml`.
 
 To add a **browser scene** (show a repo, a PDF, a localhost page) during a
 capture, use [`demo open`](#demo-open) — no layout to author up front.
@@ -40,13 +49,13 @@ capture, use [`demo open`](#demo-open) — no layout to author up front.
 **Ending a capture.** Run `demo stop` (from inside the session or another shell in
 the same directory) — the clean way to finish, even mid-wizard. (`exit` / Ctrl-D
 still work; a positive `--idle-timeout-ms` also stops after that long with no
-output.) The `demo stop` you type is dropped from the normalized score.
+output.) The `demo stop` you type is dropped from the recording.
 
-`capture` **normalizes automatically** when it finishes **and** saves a faithful
-recording of the real session, so a single `demo capture` gives you
-`macro.raw.toml`, a clean `demo.toml`, and a `demo.rec` — meaning **`demo export`
-works straight after `capture`**, with no re-execution. (Run `demo record` later
-only if you want to re-execute the score for a fresh take.)
+`capture` saves a **faithful** recording of the real session and (unless
+`--no-normalize`) normalizes it in memory — so a single `demo capture` leaves just
+`demo.rec` and **`demo export` works immediately**, with no re-execution. Add
+`--score` if you also want the editable `demo.toml` (to tweak by hand or re-run via
+`demo record` for a fresh, humanized take).
 
 Arrow keys and other special keys (Home/End, function keys) pressed inside an
 interactive wizard are recorded as control sequences and **swallowed by the
@@ -56,12 +65,12 @@ keep a wizard's exact navigation, render the raw capture directly with `export`.
 **Secrets are redacted.** When a program shows a secret prompt — a line ending in
 `:` or `?` that mentions *password*, *passphrase*, *passcode*, *secret*, *token*,
 *api key*, *access key*, *credential*, `[sudo]`, … — the keystrokes you type are
-forwarded to the program but **never written to `macro.raw.toml`** (nor the
-`--debug` log, which records only the byte count there). Notes:
+forwarded to the program but **never written to the recording** (nor the raw macro
+or the `--debug` log, which records only the byte count there). Notes:
 
 - Secret prompts disable echo, so the secret isn't in the output either — but the
   detector is a **heuristic** (keyword + a `:`/`?` ending). A prompt without one of
-  those keywords **won't** be caught, so **review the macro/score before sharing**,
+  those keywords **won't** be caught, so **review the recording before sharing**,
   and prefer non-interactive bypasses (e.g. export `GITHUB_TOKEN` so ghScaff skips
   its vault passphrase — nothing is typed at all).
 - A program that *prints* a secret to stdout (a token in its output) is **not**
@@ -75,11 +84,11 @@ another terminal in the same directory** — the latter lets you trigger a revea
 live even while a full-screen TUI owns the captured shell.
 
 ```sh
-demo open [url] [--replace | --split] [--when "<line>"] [--wizard]
+demo open [url] [--replace | --split] [--when "<line>" | --after] [--hold <ms>] [--scroll] [--wizard]
 ```
 
 Run it with no URL (on a terminal) — or with `--wizard` — for a small prompt that
-asks the URL, the mode, and whether to reveal now or on a cue line. From a second
+asks the URL, the mode, when to reveal, and whether to scroll. From a second
 terminal the wizard's prompts stay out of the recording.
 
 - `[url]` — what to show. Omit for the wizard.
@@ -88,14 +97,25 @@ terminal the wizard's prompts stay out of the recording.
 - `--when "<line>"` — **defer** the reveal until that substring appears in the
   terminal output. Arm it *before* running the program, so the scene opens on a cue
   line (e.g. when a build prints a URL) without you watching.
+- `--after` — **defer** the reveal until the current foreground command finishes
+  (its output goes quiet and the shell is back at the prompt). Arm it, then run
+  your command; the scene opens the moment it returns. Doesn't need a cue line —
+  handy for a wizard whose final output you can't predict. (Conflicts with
+  `--when`.)
+- `--hold <ms>` — keep the scene on screen at least this long after it opens, so a
+  reveal near the end of the capture doesn't just flash by. Defaults to a few
+  seconds (longer when `--scroll` is set).
+- `--scroll` — slowly pan the page down while the scene is shown (pairs with
+  `--hold`). At `export` the page is scrolled across the window it's visible for.
 
 The reveal is baked into the recording and **composited at `export`** (the browser
-is captured via headless Chromium). Example — open the repo when ghScaff prints it:
+is captured via headless Chromium). Example — open the repo once ghScaff finishes,
+and scroll it:
 
 ```sh
 demo capture
-demo open https://github.com/me/new-repo --when "github.com/me/new-repo"
-ghscaff            # the scene opens when the URL appears
+demo open https://github.com/me/new-repo --after --scroll
+ghscaff            # the scene opens when ghScaff returns to the prompt
 demo stop
 demo export gif
 ```
@@ -138,20 +158,12 @@ killed after a short grace period rather than blocking; end such a step with
 pane** is executed and recorded; `export` composites the browser panes around it.
 
 > Don't want to re-execute (interactive tool, needs secrets, has side effects)?
-> Skip `record` and render the live capture directly: `demo export gif macro.raw.toml`.
+> Skip `record` and render the live capture directly — `demo export` plays back
+> the `demo.rec` that `capture` already wrote.
 
-## `demo check`
-
-Statically validate a score. Exit `0` if valid, `1` otherwise; problems are listed
-on stderr.
-
-```sh
-demo check [demo.toml]
-```
-
-Checks: canvas/fps sane, pane ids unique and inside the canvas, browser panes have
-a `url`, and every timeline step targets the right kind of pane (e.g. you can't
-`type` without a focused terminal, or `scroll` a terminal).
+The score `record` runs is validated first (canvas/fps sane, pane ids unique and
+inside the canvas, browser panes have a `url`, every step targets the right kind of
+pane); it refuses to run an invalid score.
 
 ## `demo export`
 
@@ -167,9 +179,10 @@ demo export [fmt[,fmt…]] [demo.rec] [--speed 2x]
   Pass several at once (`demo export gif,mp4`) — and **omit it entirely to build
   every supported format** (`demo export` ≡ `demo export all`).
 - `[input]` — the recording to render; defaults to `demo.rec`. Accepts a `.rec`
-  from `demo record`, or a raw capture (`macro.raw.toml`) to render the live
-  session directly (faithful playback — handles interactive tools, secrets and
-  side effects that re-execution can't).
+  from `demo capture` (faithful — handles interactive tools, secrets and side
+  effects that re-execution can't) or from `demo record` (a re-executed, humanized
+  take), or a raw capture (`macro.raw.toml`, if you kept one with `--raw`) to
+  render it directly.
 - `--speed` — retimes the recording: `2x`, `3x`, `0.5x` (a bare number works too).
   `1x` (the default) keeps the recorded pace.
 

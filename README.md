@@ -31,35 +31,38 @@ cargo install --path .          # from this repo
 ## The loop
 
 ```
-demo capture  ──>  macro.raw.toml + demo.toml + demo.rec   (capture live, normalize,
-                       │                                       record the real session)
+demo capture  ──>  demo.rec   (capture the real session live — one file)
+                       │       (add --score for demo.toml, --raw for the macro)
                        ▼
-demo export   ──>  dist/  (gif · mp4)                        (render — never executes)
+demo export   ──>  dist/  (gif · mp4)            (render — never executes)
 
-                   demo record  ──>  demo.rec   (optional: re-run the score for a
+                   demo record  ──>  demo.rec   (optional: re-run demo.toml for a
                                                    fresh take when the app changes)
 ```
 
 ```sh
 demo capture                      # capture a session, then type `demo stop` to finish
-                                  # → macro.raw.toml + demo.toml + demo.rec
+                                  # → demo.rec  (the one file export needs)
 demo export                       # no args → every format (gif, mp4)
 demo export gif,mp4 --speed 2x        # several at once, retimed 2× faster
 ```
 
-**Capture** runs the demo live, **normalizes automatically**, and saves a faithful
-recording (`demo.rec`) of the real session — so **`demo export` works straight after
-`capture`**, with no re-execution. **Export** is pure playback: it renders a recording
-and never executes anything (great for interactive tools, secrets, side effects).
+**Capture** runs the demo live and saves a faithful recording (`demo.rec`) of the
+real session — so **`demo export` works straight after `capture`**, with no
+re-execution, and it forces a clean prompt so your real `user@host` never shows.
+**Export** is pure playback: it renders a recording and never executes anything
+(great for interactive tools, secrets, side effects).
 
 **Record** is optional: it re-executes the clean `demo.toml` to refresh `demo.rec` —
-use it for deterministic demos you want to keep current as the app changes. You can
-also **author `demo.toml` by hand**, then `record` + `export`.
+use it for deterministic demos you want to keep current as the app changes. Capture
+writes `demo.toml` only with `--score`; you can also **author it by hand**, then
+`record` + `export`.
 
 **Multi-scene.** To show a **browser scene** (a repo page, a PDF, a localhost
 server) during a capture, run `demo open <url>` — from the captured shell or
-another terminal in the same directory (handy mid-TUI). `--when "<line>"` defers
-the reveal until a cue line appears. The scene is composited into the gif/mp4.
+another terminal in the same directory (handy mid-TUI). Reveal it now, when a cue
+line appears (`--when "<line>"`), or when the running command finishes (`--after`);
+`--scroll` pans the page. The scene is composited into the gif/mp4.
 
 ## What makes it different
 
@@ -68,7 +71,8 @@ the reveal until a cue line appears. The scene is composited into the gif/mp4.
   human, not a robotic paste (reproducible with `[typing].seed`).
 - **Idle trimming** — dead time between commands is clamped; the trailing idle that
   stops the recording is dropped.
-- **Clean prompt** — export forces `PS1='$ '`, so demos never leak `user@host`.
+- **Clean prompt** — capture forces a realistic generic prompt (`user@demo:~$`),
+  so demos never leak your real `user@host` (`--keep-prompt`/`--prompt` to override).
 
 ## Export targets
 

@@ -41,7 +41,8 @@ requires = ["GITHUB_TOKEN"]   # env vars export needs; values come from your she
 `requires` lists environment variables the export run needs — typically a token
 that lets a flow skip a secret prompt (so the demo stays reproducible without
 storing the secret). The values come from whoever runs `export`; the score never
-holds them. `check` fails if a required variable is unset.
+holds them. `demo record` validates the score before running and fails if a
+required variable is unset.
 
 ## `[typing]` (optional)
 
@@ -87,10 +88,10 @@ background = "#0b0f14"
   url = "file:///tmp/demo-sandbox/output.pdf"   # browser requires a url
 ```
 
-`check` verifies pane ids are unique, panes fit the canvas, and browser panes have
-a `url`.
+`demo record` validates the score before it runs: pane ids are unique, panes fit
+the canvas, and browser panes have a `url`.
 
-`line_height` (optional, default `1.0`) is the line spacing as a multiple of the
+`line_height` (optional, default `1.2`) is the line spacing as a multiple of the
 font size. `1.0` makes box-drawing characters (`│ ─ ┌ ┘ …`) join into continuous
 lines for TUIs; raise it (e.g. `1.25`) for airier, prose-style spacing.
 

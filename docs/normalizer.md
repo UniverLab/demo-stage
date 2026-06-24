@@ -46,5 +46,5 @@ Timing is derived from the raw timestamps:
 
 ## Result
 
-The output is a `demo.toml` that already passes `demo check` and is ready to
-`export` — or to hand-edit.
+The output is a `demo.toml` (written by `capture --score`, or in memory otherwise)
+that is already valid and ready to `record` + `export` — or to hand-edit.
