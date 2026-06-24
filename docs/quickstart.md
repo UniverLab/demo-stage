@@ -10,8 +10,8 @@ order: 3
 
 ```sh
 # 1. Capture a live session. Run your demo, then type `demo stop` to finish
-#    (`exit` / Ctrl-D still work too). capture saves a faithful recording, so you
-#    get demo.rec — the one file export needs (add --score for an editable demo.toml).
+#    (`exit` / Ctrl-D still work too). capture saves demo.rec (export plays it) and
+#    demo.toml (record re-runs it); pass --no-score for just the recording.
 demo capture
 
 # 2. Render the recording (playback — never executes). Omit the format for all.
@@ -24,9 +24,9 @@ interactive tools, secrets and side effects (no re-running).
 
 ### Optional: refresh the recording by re-running
 
-For a deterministic demo you want to keep current as the app changes, capture it
-with `--score` (or author `demo.toml` by hand) and re-execute that clean score to
-produce a fresh `demo.rec`:
+For a deterministic demo you want to keep current as the app changes, re-execute
+the `demo.toml` capture wrote (or one you authored by hand) to produce a fresh
+`demo.rec`:
 
 ```sh
 demo record            # validate + execute demo.toml → demo.rec

@@ -31,10 +31,10 @@ cargo install --path .          # from this repo
 ## The loop
 
 ```
-demo capture  ──>  demo.rec   (capture the real session live — one file)
-                       │       (add --score for demo.toml, --raw for the macro)
+demo capture  ──>  demo.rec + demo.toml   (capture the real session live)
+                       │                   (--raw also keeps the low-level macro)
                        ▼
-demo export   ──>  dist/  (gif · mp4)            (render — never executes)
+demo export   ──>  dist/  (gif · mp4)      (render — never executes)
 
                    demo record  ──>  demo.rec   (optional: re-run demo.toml for a
                                                    fresh take when the app changes)
@@ -42,7 +42,7 @@ demo export   ──>  dist/  (gif · mp4)            (render — never executes
 
 ```sh
 demo capture                      # capture a session, then type `demo stop` to finish
-                                  # → demo.rec  (the one file export needs)
+                                  # → demo.rec (export plays it) + demo.toml (record re-runs it)
 demo export                       # no args → every format (gif, mp4)
 demo export gif,mp4 --speed 2x        # several at once, retimed 2× faster
 ```
@@ -53,9 +53,9 @@ re-execution, and it forces a clean prompt so your real `user@host` never shows.
 **Export** is pure playback: it renders a recording and never executes anything
 (great for interactive tools, secrets, side effects).
 
-**Record** is optional: it re-executes the clean `demo.toml` to refresh `demo.rec` —
-use it for deterministic demos you want to keep current as the app changes. Capture
-writes `demo.toml` only with `--score`; you can also **author it by hand**, then
+**Record** is optional: it re-executes the clean `demo.toml` (also written by
+capture) to refresh `demo.rec` — use it for deterministic demos you want to keep
+current as the app changes. You can also **author `demo.toml` by hand**, then
 `record` + `export`.
 
 **Multi-scene.** To show a **browser scene** (a repo page, a PDF, a localhost

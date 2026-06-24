@@ -17,8 +17,8 @@ any other source file.
 ## The pipeline
 
 ```
-demo capture  ──>  demo.rec  ──>  demo export  ──>  dist/
-               (capture the real session)    (render — no re-run)
+demo capture  ──>  demo.rec + demo.toml  ──>  demo export  ──>  dist/
+               (capture the real session)         (render — no re-run)
 
                    demo record  ──>  demo.rec   (optional: re-execute demo.toml
                                                    for a fresh, deterministic take)
@@ -26,7 +26,7 @@ demo capture  ──>  demo.rec  ──>  demo export  ──>  dist/
 
 | Command | In | Out | Does |
 |---|---|---|---|
-| `capture`   | TTY               | `demo.rec` (`--score` adds `demo.toml`, `--raw` the macro) | Capture a live session and save a faithful recording (forces a clean prompt). |
+| `capture`   | TTY               | `demo.rec` + `demo.toml` (`--raw` adds the macro) | Capture a live session and save a faithful recording + editable score (forces a clean prompt). |
 | `record`    | `demo.toml`       | `demo.rec`      | *(Optional)* Validate, then re-execute the score in a PTY → a fresh recording. |
 | `export`    | `demo.rec`       | `dist/…`         | Render the recording to `gif` or `mp4`. Never executes. |
 

@@ -8,18 +8,19 @@ order: 5
 
 ## `demo capture`
 
-Capture a live interactive session and save it as a **recording** (`demo.rec`) —
-the one file `demo export` plays back. Needs a real terminal.
+Capture a live interactive session and save it as a **recording** (`demo.rec`,
+played back by `demo export`) plus the editable **score** (`demo.toml`, re-run by
+`demo record`). Needs a real terminal.
 
 ```sh
-demo capture [-r demo.rec] [--score demo.toml] [--raw macro.raw.toml] [--no-normalize] [--prompt "<PS1>" | --keep-prompt] [--debug] [--idle-timeout-ms 0] [--shell /bin/bash] [--into demo.toml]
+demo capture [-r demo.rec] [-O demo.toml | --no-score] [--raw macro.raw.toml] [--no-normalize] [--prompt "<PS1>" | --keep-prompt] [--debug] [--idle-timeout-ms 0] [--shell /bin/bash] [--into demo.toml]
 ```
 
-- `-r, --rec` — where to write the recording (default `demo.rec`). This is the
-  one artifact a capture needs, and **`demo export` works straight after**, with
-  no re-execution.
-- `--score <file>` (`-O`) — **also** write the editable demo score (`demo.toml`) —
-  the "demo as code" source you can re-run with `demo record`. Off by default.
+- `-r, --rec` — where to write the recording (default `demo.rec`). **`demo export`
+  works straight after**, with no re-execution.
+- `-O, --score <file>` — where to write the demo score (default `demo.toml`) — the
+  "demo as code" source you can hand-edit or re-run with `demo record`.
+- `--no-score` — leave only the recording (skip writing `demo.toml`).
 - `--raw <file>` (`-o`) — **also** write the low-level raw macro, a debugging
   intermediate. Off by default.
 - `--no-normalize` — skip the normalize pass, so no score is derived (the
@@ -27,7 +28,8 @@ demo capture [-r demo.rec] [--score demo.toml] [--raw macro.raw.toml] [--no-norm
 - `--prompt "<PS1>"` — force a clean prompt in the captured shell so the demo
   shows a tidy prompt instead of your real `user@host`. **On by default** with a
   built-in realistic prompt (`user@demo:~$`, green/blue); pass a value (bash `PS1`
-  syntax) to customize.
+  syntax) to customize. With neither `--prompt` nor `--keep-prompt`, a quick
+  one-question wizard asks (clean / customize / keep yours) before recording.
 - `--keep-prompt` — keep your shell's real prompt (don't force a clean one).
 - `--debug` — write a timestamped diagnostic log next to the recording
   (`<rec>.debug.log`): every input/output chunk in escaped + hex form (secret
@@ -51,11 +53,15 @@ the same directory) — the clean way to finish, even mid-wizard. (`exit` / Ctrl
 still work; a positive `--idle-timeout-ms` also stops after that long with no
 output.) The `demo stop` you type is dropped from the recording.
 
-`capture` saves a **faithful** recording of the real session and (unless
-`--no-normalize`) normalizes it in memory — so a single `demo capture` leaves just
-`demo.rec` and **`demo export` works immediately**, with no re-execution. Add
-`--score` if you also want the editable `demo.toml` (to tweak by hand or re-run via
-`demo record` for a fresh, humanized take).
+`capture` saves a **faithful** recording of the real session, so **`demo export`
+works immediately**, with no re-execution — the right path for interactive tools,
+secrets and side effects (a `demo record` re-run would repeat them). It also writes
+the normalized `demo.toml` (unless `--no-score`) for hand-editing or a humanized
+re-take via `demo record`. The raw macro is dropped unless you pass `--raw`.
+
+A `demo open` you run **inside** the capture (its typed command and wizard
+prompts) is automatically excised from both the recording and the score, so the
+meta-command never shows up in the finished demo.
 
 Arrow keys and other special keys (Home/End, function keys) pressed inside an
 interactive wizard are recorded as control sequences and **swallowed by the
