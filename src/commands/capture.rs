@@ -156,6 +156,12 @@ pub fn run(args: CaptureArgs) -> Result<()> {
     // Browser reveals armed by `demo open --when <pat>`: (url, mode, pattern),
     // fired by the output thread when the pattern appears.
     let pending_opens: PendingOpens = Arc::new(Mutex::new(Vec::new()));
+    // True while a control command (`demo open` / `demo stop`) typed inside the
+    // capture is running: its output (wizard, confirmation) is NOT recorded, so
+    // it never leaks into the demo. Set when the command is typed, cleared when
+    // the recorder receives it (or a safety timeout).
+    let muting = Arc::new(AtomicBool::new(false));
+    let mute_since = Arc::new(Mutex::new(Instant::now()));
     let t0 = Instant::now();
 
     // Optional diagnostic log (`--debug`): every chunk in/out with hex, plus
@@ -198,10 +204,14 @@ pub fn run(args: CaptureArgs) -> Result<()> {
         let sensitive = sensitive.clone();
         let debug = debug.clone();
         let pending_opens = pending_opens.clone();
+        let muting = muting.clone();
         thread::spawn(move || {
             let mut buf = [0u8; 4096];
             let mut stdout = std::io::stdout();
             let mut line = String::new();
+            // Rolling recent output, for matching `demo open --when` cues across
+            // chunk/line boundaries (a per-line check misses a cue then a newline).
+            let mut recent = String::new();
             loop {
                 match reader.read(&mut buf) {
                     Ok(0) => break,
@@ -219,14 +229,21 @@ pub fn run(args: CaptureArgs) -> Result<()> {
                         let text = String::from_utf8_lossy(&buf[..n]).into_owned();
                         track_line(&mut line, &text);
                         sensitive.store(is_secret_prompt(&line), Ordering::SeqCst);
+                        // While a typed `demo open`/`demo stop` is running, drop its
+                        // output entirely (no record, no cue-matching) so it never
+                        // appears in the demo.
+                        if muting.load(Ordering::SeqCst) {
+                            continue;
+                        }
                         let now = ms(t0);
-                        // Fire any `demo open --when <pat>` whose cue line just appeared.
+                        recent.push_str(&text);
+                        // Fire any `demo open --when <pat>` whose cue just appeared.
                         {
                             let mut pend = pending_opens.lock().unwrap();
                             if !pend.is_empty() {
                                 let mut evs = events.lock().unwrap();
                                 pend.retain(|(url, mode, pat)| {
-                                    if line.contains(pat.as_str()) {
+                                    if recent.contains(pat.as_str()) {
                                         evs.push(RawEvent::Open {
                                             t_ms: now,
                                             url: url.clone(),
@@ -238,6 +255,9 @@ pub fn run(args: CaptureArgs) -> Result<()> {
                                     }
                                 });
                             }
+                        }
+                        if recent.len() > 8192 {
+                            recent.clear();
                         }
                         events.lock().unwrap().push(RawEvent::Output {
                             t_ms: now,
@@ -258,9 +278,12 @@ pub fn run(args: CaptureArgs) -> Result<()> {
         let stop = stop.clone();
         let sensitive = sensitive.clone();
         let debug = debug.clone();
+        let muting = muting.clone();
+        let mute_since = mute_since.clone();
         thread::spawn(move || {
             let mut buf = [0u8; 1024];
             let mut stdin = std::io::stdin();
+            let mut cmd_line = String::new();
             while !stop.load(Ordering::SeqCst) {
                 match stdin.read(&mut buf) {
                     Ok(0) => break,
@@ -272,6 +295,20 @@ pub fn run(args: CaptureArgs) -> Result<()> {
                         }
                         let _ = writer.flush();
                         *last.lock().unwrap() = Instant::now();
+                        // Watch typed lines for a `demo open`/`demo stop` command and
+                        // start muting its output (cleared when the recorder gets it).
+                        for ch in String::from_utf8_lossy(&buf[..n]).chars() {
+                            if ch == '\r' || ch == '\n' {
+                                let t = cmd_line.trim_start();
+                                if t.starts_with("demo open") || t.starts_with("demo stop") {
+                                    *mute_since.lock().unwrap() = Instant::now();
+                                    muting.store(true, Ordering::SeqCst);
+                                }
+                                cmd_line.clear();
+                            } else if !ch.is_control() {
+                                cmd_line.push(ch);
+                            }
+                        }
                         // Secret prompt active → forward the keystrokes but do NOT
                         // record them; clear once the prompt is answered (Enter).
                         let masked = sensitive.load(Ordering::SeqCst);
@@ -316,10 +353,18 @@ pub fn run(args: CaptureArgs) -> Result<()> {
             &mut control_read,
             &events,
             &pending_opens,
+            &muting,
             t0,
             debug.as_deref(),
         ) {
             break r;
+        }
+        // Safety: an abandoned `demo open` (wizard cancelled, command never sent)
+        // shouldn't mute the rest of the demo forever.
+        if muting.load(Ordering::SeqCst)
+            && mute_since.lock().unwrap().elapsed() > Duration::from_secs(90)
+        {
+            muting.store(false, Ordering::SeqCst);
         }
         if idle > 0 && last_activity.lock().unwrap().elapsed() > Duration::from_millis(idle) {
             break "idle timeout";
@@ -407,6 +452,7 @@ fn read_control(
     read: &mut u64,
     events: &Arc<Mutex<Vec<RawEvent>>>,
     pending: &PendingOpens,
+    muting: &Arc<AtomicBool>,
     t0: Instant,
     debug: Option<&DebugLog>,
 ) -> Option<&'static str> {
@@ -422,6 +468,9 @@ fn read_control(
         let Ok(v) = serde_json::from_str::<serde_json::Value>(line.trim()) else {
             continue;
         };
+        // The control command arrived → the typed command's output is done; stop
+        // muting so real demo output is recorded again.
+        muting.store(false, Ordering::SeqCst);
         match v.get("cmd").and_then(|c| c.as_str()) {
             Some("stop") => stop = Some("demo stop"),
             Some("open") => {
