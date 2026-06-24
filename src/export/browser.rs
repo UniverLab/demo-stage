@@ -55,12 +55,19 @@ pub fn capture(pane: &Pane, scroll_keyframes: usize) -> Result<Scene> {
 
     let options = LaunchOptions::default_builder()
         .headless(true)
+        // Headless WSL/CI hosts usually run without a working Chromium sandbox,
+        // where it refuses to start — disable it.
+        .sandbox(false)
         .window_size(Some((pane.width, pane.height)))
         .build()
         .map_err(|e| Error::Export(format!("chromium launch options: {e}")))?;
     let browser = Browser::new(options).map_err(|e| {
         Error::Export(format!(
-            "launch chromium: {e}. Install Chromium or allow its download."
+            "launch chromium: {e}\n  A browser scene needs a working headless \
+             Chromium, which commonly fails on a headless WSL/server host. Fixes:\n  \
+             • install Chromium (e.g. `sudo apt install chromium`), or\n  \
+             • run the export on a host with a browser — the `.rec` is portable, so \
+             `demo export demo.rec` from Windows works."
         ))
     })?;
 

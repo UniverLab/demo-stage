@@ -22,9 +22,12 @@ use crate::normalize::Rng;
 /// Assumed monospace cell size (px), inverse of the normalizer's sizing.
 const CELL_W: u32 = 10;
 const CELL_H: u32 = 20;
-/// Built-in demo prompt (bash `PS1`): the plain Linux `$ `, used when the score
-/// pins none. Set `[demo] prompt` to customize (e.g. a green `❯`).
-pub const DEFAULT_PROMPT: &str = "$ ";
+/// Built-in demo prompt (bash `PS1`): a realistic, generic Linux prompt —
+/// `user@demo:~$` with the Ubuntu-style green user@host and blue path — used when
+/// the score pins none. Generic on purpose (never the real user/host). Set
+/// `[demo] prompt` to customize.
+pub const DEFAULT_PROMPT: &str =
+    "\\[\\e[1;32m\\]user@demo\\[\\e[0m\\]:\\[\\e[1;34m\\]~\\[\\e[0m\\]$ ";
 /// Default seed when the score pins none.
 const DEFAULT_SEED: u64 = 0xD370_5EED;
 /// Cap for `wait_for_stdout` so a missing match can't hang export.
@@ -456,12 +459,12 @@ mod tests {
 
     #[test]
     fn single_quotes_prompts_safely() {
-        assert_eq!(sh_single_quote(DEFAULT_PROMPT), "'$ '");
-        // A colour-escaped prompt is preserved verbatim inside the quotes.
+        // The default prompt (colour escapes and all) is wrapped verbatim.
         assert_eq!(
-            sh_single_quote("\\[\\e[32m\\]❯\\[\\e[0m\\] "),
-            "'\\[\\e[32m\\]❯\\[\\e[0m\\] '"
+            sh_single_quote(DEFAULT_PROMPT),
+            format!("'{DEFAULT_PROMPT}'")
         );
+        assert_eq!(sh_single_quote("$ "), "'$ '");
         // An embedded quote can't break out of the assignment.
         assert_eq!(sh_single_quote("a'b"), "'a'\\''b'");
     }

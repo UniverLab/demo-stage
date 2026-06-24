@@ -33,17 +33,23 @@ struct DemoStageMeta {
     captions: Vec<(f64, String)>,
     #[serde(default)]
     focuses: Vec<(f64, String)>,
+    /// `true` for a faithful capture (real output, typing/idle as recorded);
+    /// `false` for a `demo record` run (normalized typing & spacing).
+    #[serde(default)]
+    faithful: bool,
 }
 
 /// Serialize a recording plus its render config: a JSON header line (with the
-/// `demostage` render config) followed by timestamped output lines.
-pub fn write(rec: &Recording, score: &Score) -> Result<String> {
+/// `demostage` render config) followed by timestamped output lines. `faithful`
+/// marks a real capture (vs a normalized `record` run) so `export` can flag it.
+pub fn write(rec: &Recording, score: &Score, faithful: bool) -> Result<String> {
     let meta = DemoStageMeta {
         demo: score.demo.clone(),
         layout: score.layout.clone(),
         typing: score.typing.clone(),
         captions: rec.captions.clone(),
         focuses: rec.focuses.clone(),
+        faithful,
     };
     let header = json!({
         "version": 2,
@@ -67,16 +73,18 @@ pub fn write(rec: &Recording, score: &Score) -> Result<String> {
 /// or a raw capture (`macro.raw.toml`). Returns the recording plus a score that
 /// carries the layout/styling to render it (its timeline is empty — playback
 /// replays the recorded events, it never executes the timeline).
-pub fn read(path: &Path) -> Result<(Recording, Score)> {
+pub fn read(path: &Path) -> Result<(Recording, Score, bool)> {
     let text = std::fs::read_to_string(path).map_err(|e| Error::io(path, e))?;
     if text.trim_start().starts_with('{') {
         read_cast(&text)
     } else {
-        read_raw(path, &text)
+        // A raw capture is always faithful (real output, not re-typed).
+        let (rec, score) = read_raw(path, &text)?;
+        Ok((rec, score, true))
     }
 }
 
-fn read_cast(text: &str) -> Result<(Recording, Score)> {
+fn read_cast(text: &str) -> Result<(Recording, Score, bool)> {
     let mut lines = text.lines();
     let header: Value = lines
         .next()
@@ -109,7 +117,7 @@ fn read_cast(text: &str) -> Result<(Recording, Score)> {
 
     // Recover the demo-stage render config if this cast came from `demo record`;
     // otherwise fall back to a default single-terminal layout.
-    let (score, captions, focuses) = match header.get("demostage") {
+    let (score, captions, focuses, faithful) = match header.get("demostage") {
         Some(v) => {
             let meta: DemoStageMeta = serde_json::from_value(v.clone())
                 .map_err(|e| Error::Export(format!("cast demostage header: {e}")))?;
@@ -120,9 +128,14 @@ fn read_cast(text: &str) -> Result<(Recording, Score)> {
                 layout: meta.layout,
                 timeline: Vec::new(),
             };
-            (score, meta.captions, meta.focuses)
+            (score, meta.captions, meta.focuses, meta.faithful)
         }
-        None => (default_score("demo", cols, rows), Vec::new(), Vec::new()),
+        None => (
+            default_score("demo", cols, rows),
+            Vec::new(),
+            Vec::new(),
+            false,
+        ),
     };
 
     Ok((
@@ -136,6 +149,7 @@ fn read_cast(text: &str) -> Result<(Recording, Score)> {
             duration,
         },
         score,
+        faithful,
     ))
 }
 
@@ -362,13 +376,13 @@ mod tests {
     #[test]
     fn cast_round_trips_through_write_and_read() {
         let (rec, score) = sample();
-        let cast = write(&rec, &score).unwrap();
+        let cast = write(&rec, &score, false).unwrap();
         // First line is a valid JSON header carrying our config.
         assert!(cast.lines().next().unwrap().contains("\"demostage\""));
 
         let tmp = std::env::temp_dir().join(format!("rec-{}.cast", std::process::id()));
         std::fs::write(&tmp, &cast).unwrap();
-        let (back, back_score) = read(&tmp).unwrap();
+        let (back, back_score, _) = read(&tmp).unwrap();
         std::fs::remove_file(&tmp).ok();
 
         assert_eq!(back.events, rec.events);
@@ -397,7 +411,8 @@ data = "file.txt\n"
 "#;
         let tmp = std::env::temp_dir().join(format!("cap-{}.raw.toml", std::process::id()));
         std::fs::write(&tmp, raw).unwrap();
-        let (rec, score) = read(&tmp).unwrap();
+        let (rec, score, faithful) = read(&tmp).unwrap();
+        assert!(faithful, "a raw capture is faithful");
         std::fs::remove_file(&tmp).ok();
 
         // Only output events become the playback stream; input is ignored.

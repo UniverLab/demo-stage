@@ -533,7 +533,7 @@ fn write_faithful_cast(
         layout,
         timeline: Vec::new(),
     };
-    let cast = recording::write(&rec, &final_score)?;
+    let cast = recording::write(&rec, &final_score, true)?;
     if let Some(parent) = path.parent() {
         if !parent.as_os_str().is_empty() {
             std::fs::create_dir_all(parent).map_err(|e| Error::io(parent, e))?;

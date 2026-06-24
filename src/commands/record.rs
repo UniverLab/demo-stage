@@ -32,7 +32,8 @@ pub fn run(args: RecordArgs) -> Result<()> {
     } else {
         run::run_terminal(&score)?
     };
-    let cast = recording::write(&rec, &score)?;
+    // A `record` run is normalized (re-executed clean script), not faithful.
+    let cast = recording::write(&rec, &score, false)?;
     if let Some(parent) = args.output.parent() {
         if !parent.as_os_str().is_empty() {
             std::fs::create_dir_all(parent).map_err(|e| Error::io(parent, e))?;
