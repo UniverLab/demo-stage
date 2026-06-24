@@ -44,7 +44,8 @@ pub enum OpenMode {
 #[derive(Debug, Args)]
 pub struct OpenArgs {
     /// URL to show (e.g. a repo page, a `file://` PDF, a localhost server).
-    pub url: String,
+    /// Omit it (on a terminal) to be prompted by a small wizard.
+    pub url: Option<String>,
 
     /// Reveal full-canvas (`replace`, the default) or beside the terminal (`split`).
     #[arg(long, value_enum, default_value_t = OpenMode::Replace)]
@@ -58,6 +59,10 @@ pub struct OpenArgs {
     /// arm it before running the program, so the scene opens on a cue line.
     #[arg(long)]
     pub when: Option<String>,
+
+    /// Force the interactive wizard even if a URL/flags are given.
+    #[arg(short = 'w', long)]
+    pub wizard: bool,
 }
 
 #[derive(Debug, Args)]

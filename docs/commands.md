@@ -75,10 +75,14 @@ another terminal in the same directory** — the latter lets you trigger a revea
 live even while a full-screen TUI owns the captured shell.
 
 ```sh
-demo open <url> [--replace | --split] [--when "<line>"]
+demo open [url] [--replace | --split] [--when "<line>"] [--wizard]
 ```
 
-- `<url>` — what to show.
+Run it with no URL (on a terminal) — or with `--wizard` — for a small prompt that
+asks the URL, the mode, and whether to reveal now or on a cue line. From a second
+terminal the wizard's prompts stay out of the recording.
+
+- `[url]` — what to show. Omit for the wizard.
 - `--replace` (default) — the browser takes over the whole frame (a scene swap).
 - `--split` — the browser sits beside the terminal (which keeps showing).
 - `--when "<line>"` — **defer** the reveal until that substring appears in the
