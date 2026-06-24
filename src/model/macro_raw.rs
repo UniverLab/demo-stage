@@ -55,11 +55,17 @@ pub enum RawEvent {
     /// A chunk written to the PTY by the running program.
     Output { t_ms: u64, data: String },
     /// A browser scene revealed via `demo open` at this moment — `mode` is
-    /// `replace` (full-canvas) or `split` (beside the terminal).
+    /// `replace` (full-canvas) or `split` (beside the terminal). `hold_ms` keeps
+    /// the scene on screen at least that long; `scroll` pans the page down while
+    /// it is shown.
     Open {
         t_ms: u64,
         url: String,
         mode: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        hold_ms: Option<u64>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        scroll: bool,
     },
 }
 

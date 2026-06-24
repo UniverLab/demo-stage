@@ -27,8 +27,23 @@ use crate::model::{DemoMeta, RawEvent, RawMacro, RawMeta, Score};
 /// shell so the typed command doesn't itself match (only the printed output).
 const PROMPT_READY: &str = "demostage_capture_ready";
 
-/// Browser reveals armed by `demo open --when <pat>`: `(url, mode, pattern)`.
-type PendingOpens = Arc<Mutex<Vec<(String, String, String)>>>;
+/// A `demo open` reveal: where, how, and how long/whether to scroll.
+#[derive(Clone)]
+struct Reveal {
+    url: String,
+    mode: String,
+    hold_ms: Option<u64>,
+    scroll: bool,
+}
+
+/// Reveals armed by `demo open --when <pat>`, each with its cue pattern.
+type PendingWhen = Arc<Mutex<Vec<(Reveal, String)>>>;
+/// Reveals armed by `demo open --after`, fired when the running command finishes.
+type PendingAfter = Arc<Mutex<Vec<Reveal>>>;
+
+/// How long the output must stay quiet, after a command produced output, before
+/// an `--after` reveal fires (i.e. the shell is back at the prompt).
+const AFTER_QUIET_MS: u64 = 800;
 
 fn ms(t0: Instant) -> u64 {
     t0.elapsed().as_millis() as u64
@@ -159,9 +174,15 @@ pub fn run(args: CaptureArgs) -> Result<()> {
     // Set while the program is showing a password/passphrase prompt: input typed
     // during it is forwarded to the PTY but NEVER recorded.
     let sensitive = Arc::new(AtomicBool::new(false));
-    // Browser reveals armed by `demo open --when <pat>`: (url, mode, pattern),
-    // fired by the output thread when the pattern appears.
-    let pending_opens: PendingOpens = Arc::new(Mutex::new(Vec::new()));
+    // Browser reveals armed by `demo open --when <pat>`, fired by the output
+    // thread when the pattern appears.
+    let pending_opens: PendingWhen = Arc::new(Mutex::new(Vec::new()));
+    // Reveals armed by `demo open --after`: fired once the next foreground command
+    // produces output and then goes quiet (back at the prompt). `after_running`
+    // tracks that such a command is in flight; `after_last_out` its last output.
+    let after_opens: PendingAfter = Arc::new(Mutex::new(Vec::new()));
+    let after_running = Arc::new(AtomicBool::new(false));
+    let after_last_out = Arc::new(Mutex::new(Instant::now()));
     // True while a control command (`demo open` / `demo stop`) typed inside the
     // capture is running: its output (wizard, confirmation) is NOT recorded, so
     // it never leaks into the demo. Set when the command is typed, cleared when
@@ -229,6 +250,8 @@ pub fn run(args: CaptureArgs) -> Result<()> {
         let pending_opens = pending_opens.clone();
         let muting = muting.clone();
         let ready = ready.clone();
+        let after_running = after_running.clone();
+        let after_last_out = after_last_out.clone();
         thread::spawn(move || {
             let mut buf = [0u8; 4096];
             let mut stdout = std::io::stdout();
@@ -281,17 +304,24 @@ pub fn run(args: CaptureArgs) -> Result<()> {
                         }
                         let now = ms(t0);
                         recent.push_str(&text);
+                        // An `--after` command is in flight → note this output, so
+                        // the watchdog can fire once the stream goes quiet again.
+                        if after_running.load(Ordering::SeqCst) {
+                            *after_last_out.lock().unwrap() = Instant::now();
+                        }
                         // Fire any `demo open --when <pat>` whose cue just appeared.
                         {
                             let mut pend = pending_opens.lock().unwrap();
                             if !pend.is_empty() {
                                 let mut evs = events.lock().unwrap();
-                                pend.retain(|(url, mode, pat)| {
+                                pend.retain(|(r, pat)| {
                                     if recent.contains(pat.as_str()) {
                                         evs.push(RawEvent::Open {
                                             t_ms: now,
-                                            url: url.clone(),
-                                            mode: mode.clone(),
+                                            url: r.url.clone(),
+                                            mode: r.mode.clone(),
+                                            hold_ms: r.hold_ms,
+                                            scroll: r.scroll,
                                         });
                                         false
                                     } else {
@@ -325,6 +355,9 @@ pub fn run(args: CaptureArgs) -> Result<()> {
         let muting = muting.clone();
         let mute_since = mute_since.clone();
         let ready = ready.clone();
+        let after_opens = after_opens.clone();
+        let after_running = after_running.clone();
+        let after_last_out = after_last_out.clone();
         thread::spawn(move || {
             let mut buf = [0u8; 1024];
             let mut stdin = std::io::stdin();
@@ -352,6 +385,14 @@ pub fn run(args: CaptureArgs) -> Result<()> {
                                 if t.starts_with("demo open") || t.starts_with("demo stop") {
                                     *mute_since.lock().unwrap() = Instant::now();
                                     muting.store(true, Ordering::SeqCst);
+                                } else if !t.is_empty()
+                                    && !after_opens.lock().unwrap().is_empty()
+                                    && !after_running.load(Ordering::SeqCst)
+                                {
+                                    // A real command launched while an `--after`
+                                    // reveal is armed → watch for it to finish.
+                                    *after_last_out.lock().unwrap() = Instant::now();
+                                    after_running.store(true, Ordering::SeqCst);
                                 }
                                 cmd_line.clear();
                             } else if !ch.is_control() {
@@ -402,11 +443,34 @@ pub fn run(args: CaptureArgs) -> Result<()> {
             &mut control_read,
             &events,
             &pending_opens,
+            &after_opens,
             &muting,
             t0,
             debug.as_deref(),
         ) {
             break r;
+        }
+        // An `--after` command has finished (produced output, then went quiet) →
+        // fire its reveals now, at the moment the shell returned to the prompt.
+        if after_running.load(Ordering::SeqCst)
+            && after_last_out.lock().unwrap().elapsed() > Duration::from_millis(AFTER_QUIET_MS)
+        {
+            let drained: Vec<Reveal> = after_opens.lock().unwrap().drain(..).collect();
+            let now = ms(t0);
+            let mut evs = events.lock().unwrap();
+            for r in drained {
+                if let Some(d) = &debug {
+                    d.note(&format!("open (after): {} ({})", r.url, r.mode));
+                }
+                evs.push(RawEvent::Open {
+                    t_ms: now,
+                    url: r.url,
+                    mode: r.mode,
+                    hold_ms: r.hold_ms,
+                    scroll: r.scroll,
+                });
+            }
+            after_running.store(false, Ordering::SeqCst);
         }
         // Safety: an abandoned `demo open` (wizard cancelled, command never sent)
         // shouldn't mute the rest of the demo forever.
@@ -501,11 +565,13 @@ pub fn run(args: CaptureArgs) -> Result<()> {
 
 /// Read any new control-file commands (`demo open` / `demo stop`). Records
 /// immediate reveals, arms `--when` reveals, and returns `Some(reason)` on stop.
+#[allow(clippy::too_many_arguments)]
 fn read_control(
     path: &std::path::Path,
     read: &mut u64,
     events: &Arc<Mutex<Vec<RawEvent>>>,
-    pending: &PendingOpens,
+    pending: &PendingWhen,
+    after: &PendingAfter,
     muting: &Arc<AtomicBool>,
     t0: Instant,
     debug: Option<&DebugLog>,
@@ -533,30 +599,40 @@ fn read_control(
                     continue;
                 }
                 let mode = v.get("mode").and_then(|m| m.as_str()).unwrap_or("replace");
+                let hold_ms = v.get("hold").and_then(|h| h.as_u64());
+                let scroll = v.get("scroll").and_then(|s| s.as_bool()).unwrap_or(false);
+                let reveal = Reveal {
+                    url: url.into(),
+                    mode: mode.into(),
+                    hold_ms,
+                    scroll,
+                };
                 let when = v
                     .get("when")
                     .and_then(|w| w.as_str())
                     .filter(|s| !s.is_empty());
-                match when {
-                    Some(pat) => {
-                        if let Some(d) = debug {
-                            d.note(&format!("open armed: {url} ({mode}) when {pat:?}"));
-                        }
-                        pending
-                            .lock()
-                            .unwrap()
-                            .push((url.into(), mode.into(), pat.into()));
+                let after_flag = v.get("after").and_then(|a| a.as_bool()).unwrap_or(false);
+                if let Some(pat) = when {
+                    if let Some(d) = debug {
+                        d.note(&format!("open armed: {url} ({mode}) when {pat:?}"));
                     }
-                    None => {
-                        if let Some(d) = debug {
-                            d.note(&format!("open now: {url} ({mode})"));
-                        }
-                        events.lock().unwrap().push(RawEvent::Open {
-                            t_ms: ms(t0),
-                            url: url.into(),
-                            mode: mode.into(),
-                        });
+                    pending.lock().unwrap().push((reveal, pat.into()));
+                } else if after_flag {
+                    if let Some(d) = debug {
+                        d.note(&format!("open armed: {url} ({mode}) after command"));
                     }
+                    after.lock().unwrap().push(reveal);
+                } else {
+                    if let Some(d) = debug {
+                        d.note(&format!("open now: {url} ({mode})"));
+                    }
+                    events.lock().unwrap().push(RawEvent::Open {
+                        t_ms: ms(t0),
+                        url: reveal.url,
+                        mode: reveal.mode,
+                        hold_ms: reveal.hold_ms,
+                        scroll: reveal.scroll,
+                    });
                 }
             }
             _ => {}
@@ -574,8 +650,9 @@ fn write_faithful_cast(
 ) -> Result<()> {
     let name = score.map(|s| s.demo.name.as_str()).unwrap_or("demo");
     // The layout comes from the capture's `demo open` scenes (terminal + browser
-    // panes); the demo meta/typing come from the normalized score.
-    let (rec, layout) = recording::from_raw(raw, name);
+    // panes); the demo meta/typing come from the normalized score. The timeline
+    // carries only browser-scroll steps (it isn't executed — playback is faithful).
+    let (rec, layout, timeline) = recording::from_raw(raw, name);
     let final_score = Score {
         demo: score.map(|s| s.demo.clone()).unwrap_or_else(|| DemoMeta {
             name: name.to_string(),
@@ -585,7 +662,7 @@ fn write_faithful_cast(
         env: None,
         typing: score.and_then(|s| s.typing.clone()),
         layout,
-        timeline: Vec::new(),
+        timeline,
     };
     let cast = recording::write(&rec, &final_score, true)?;
     if let Some(parent) = path.parent() {

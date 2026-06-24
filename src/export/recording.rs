@@ -16,7 +16,10 @@ use serde_json::{json, Value};
 
 use super::run::Recording;
 use crate::error::{Error, Result};
-use crate::model::{DemoMeta, Layout, Pane, PaneKind, RawEvent, RawMacro, Score, Typing};
+use crate::model::{
+    DemoMeta, Layout, Pane, PaneKind, RawEvent, RawMacro, Score, ScrollDirection, Step, Typing,
+    Velocity,
+};
 
 /// Assumed monospace cell size (px), matching the recorder's geometry.
 const CELL_W: u32 = 10;
@@ -161,12 +164,14 @@ fn read_raw(path: &Path, text: &str) -> Result<(Recording, Score)> {
         .and_then(|s| s.to_str())
         .map(|s| s.strip_suffix(".raw").unwrap_or(s))
         .unwrap_or("demo");
-    let (rec, layout) = from_raw(&raw, name);
-    Ok((rec, score_with_layout(name, layout)))
+    let (rec, layout, timeline) = from_raw(&raw, name);
+    Ok((rec, score_with_layout(name, layout, timeline)))
 }
 
-/// Wrap a layout in a playback score (no timeline — playback replays the events).
-fn score_with_layout(name: &str, layout: Layout) -> Score {
+/// Wrap a layout in a playback score. The timeline carries only browser-scene
+/// scroll steps (which drive how many scroll keyframes the stage captures);
+/// playback never executes it — it replays the recorded events.
+fn score_with_layout(name: &str, layout: Layout, timeline: Vec<Step>) -> Score {
     Score {
         demo: DemoMeta {
             name: name.to_string(),
@@ -176,7 +181,7 @@ fn score_with_layout(name: &str, layout: Layout) -> Score {
         env: None,
         typing: None,
         layout,
-        timeline: Vec::new(),
+        timeline,
     }
 }
 
@@ -187,6 +192,20 @@ const MAX_GAP_MS: f64 = 1200.0;
 /// How long the final frame is held after the last output, so the result is
 /// readable before the demo ends / loops (instead of cutting off abruptly).
 const TAIL_HOLD_MS: f64 = 1800.0;
+/// Default time a scrolling browser scene stays on screen when no explicit
+/// `--hold` is given — long enough for the scroll pan to read.
+const DEFAULT_SCROLL_HOLD_MS: f64 = 4000.0;
+
+/// How long a reveal should keep its scene on screen, in milliseconds: an
+/// explicit `--hold`, else a longer default for scrolling scenes, else the
+/// regular tail hold.
+fn reveal_hold_ms(hold: Option<u64>, scroll: bool) -> f64 {
+    match hold {
+        Some(h) => h as f64,
+        None if scroll => DEFAULT_SCROLL_HOLD_MS,
+        None => TAIL_HOLD_MS,
+    }
+}
 
 /// Build a playback recording from a raw capture's real output stream, with its
 /// **timing normalized**: the trailing `demo stop` you typed is dropped, and idle
@@ -195,14 +214,14 @@ const TAIL_HOLD_MS: f64 = 1800.0;
 /// Note: typo-pruning and re-humanized typing can't be applied to a faithful
 /// recording (the keystrokes are already baked into the output) — those need
 /// re-execution via `demo record`. Timing is what we can clean here.
-pub fn from_raw(raw: &RawMacro, name: &str) -> (Recording, Layout) {
+pub fn from_raw(raw: &RawMacro, name: &str) -> (Recording, Layout, Vec<Step>) {
     let cutoff = stop_cutoff_ms(raw);
     let cap = MAX_GAP_MS / 1000.0;
 
     // Walk output + `demo open` reveals in order, trimming idle gaps; the reveals
     // ride the same trimmed clock so they fire at the right composited moment.
     let mut events: Vec<(f64, String)> = Vec::new();
-    let mut reveals: Vec<(f64, String, String)> = Vec::new(); // (t, url, mode)
+    let mut reveals: Vec<Reveal> = Vec::new();
     let mut acc = 0.0;
     let mut prev_ms: Option<u64> = None;
     for e in &raw.events {
@@ -221,19 +240,37 @@ pub fn from_raw(raw: &RawMacro, name: &str) -> (Recording, Layout) {
         prev_ms = Some(t_ms);
         match e {
             RawEvent::Output { data, .. } => events.push((acc, data.clone())),
-            RawEvent::Open { url, mode, .. } => reveals.push((acc, url.clone(), mode.clone())),
+            RawEvent::Open {
+                url,
+                mode,
+                hold_ms,
+                scroll,
+                ..
+            } => reveals.push(Reveal {
+                t: acc,
+                url: url.clone(),
+                mode: mode.clone(),
+                hold_ms: *hold_ms,
+                scroll: *scroll,
+            }),
             RawEvent::Input { .. } => {}
         }
     }
 
-    // Hold the final frame a moment so the last result is readable.
-    let duration = events
+    // Hold the final frame so the last result is readable, and keep any browser
+    // reveal on screen for at least its hold window past where it opened.
+    let tail = events
         .last()
         .map(|(t, _)| *t + TAIL_HOLD_MS / 1000.0)
         .unwrap_or(0.0);
+    let reveal_tail = reveals
+        .iter()
+        .map(|r| r.t + reveal_hold_ms(r.hold_ms, r.scroll) / 1000.0)
+        .fold(0.0_f64, f64::max);
+    let duration = tail.max(reveal_tail);
 
     let (cols, rows) = (raw.meta.cols, raw.meta.rows);
-    let (layout, focuses) = build_layout(cols, rows, &reveals);
+    let (layout, focuses, timeline) = build_layout(cols, rows, &reveals);
 
     (
         Recording {
@@ -246,34 +283,56 @@ pub fn from_raw(raw: &RawMacro, name: &str) -> (Recording, Layout) {
             duration,
         },
         layout,
+        timeline,
     )
 }
 
-/// Build the render layout (and the reveal focuses) from a capture's `demo open`
-/// scenes: a terminal pane plus one browser pane per reveal — `replace` covers
-/// the whole canvas, `split` sits to the right of the terminal.
+/// A `demo open` reveal, on the trimmed playback clock.
+struct Reveal {
+    t: f64,
+    url: String,
+    mode: String,
+    hold_ms: Option<u64>,
+    scroll: bool,
+}
+
+/// Build the render layout (the reveal focuses, and any browser-scroll steps)
+/// from a capture's `demo open` scenes: a terminal pane plus one browser pane per
+/// reveal — `replace` covers the whole canvas, `split` sits to the right of the
+/// terminal. A reveal marked `scroll` adds a focus + scroll step so the stage
+/// captures scroll keyframes for it.
 fn build_layout(
     cols: u16,
     rows: u16,
-    reveals: &[(f64, String, String)],
-) -> (Layout, Vec<(f64, String)>) {
+    reveals: &[Reveal],
+) -> (Layout, Vec<(f64, String)>, Vec<Step>) {
     let tw = (cols as u32 * CELL_W).max(CELL_W);
     let th = (rows as u32 * CELL_H).max(CELL_H);
     let mut panes = vec![terminal_pane(tw, th)];
     let mut focuses = Vec::new();
+    let mut timeline = Vec::new();
 
-    let any_split = reveals.iter().any(|(_, _, m)| m == "split");
+    let any_split = reveals.iter().any(|r| r.mode == "split");
     let (canvas_w, canvas_h) = if any_split { (tw * 2, th) } else { (tw, th) };
 
-    for (i, (t, url, mode)) in reveals.iter().enumerate() {
+    for (i, r) in reveals.iter().enumerate() {
         let id = format!("scene{}", i + 1);
-        let (x, y, w, h) = if mode == "split" {
+        let (x, y, w, h) = if r.mode == "split" {
             (tw, 0, canvas_w - tw, th)
         } else {
             (0, 0, canvas_w, canvas_h) // replace: full canvas
         };
-        panes.push(browser_pane(&id, url, x, y, w, h));
-        focuses.push((*t, id));
+        panes.push(browser_pane(&id, &r.url, x, y, w, h));
+        focuses.push((r.t, id.clone()));
+        if r.scroll {
+            timeline.push(Step::Focus { pane: id.clone() });
+            timeline.push(Step::Scroll {
+                direction: ScrollDirection::Down,
+                velocity: Velocity::Constant,
+                duration_ms: reveal_hold_ms(r.hold_ms, r.scroll) as u64,
+                pane: Some(id),
+            });
+        }
     }
 
     (
@@ -286,6 +345,7 @@ fn build_layout(
             panes,
         },
         focuses,
+        timeline,
     )
 }
 
@@ -352,8 +412,8 @@ fn stop_cutoff_ms(raw: &RawMacro) -> Option<u64> {
 /// A plain single-terminal score sized to a `cols`×`rows` capture, used to render
 /// a recording that carries no layout of its own.
 pub fn default_score(name: &str, cols: u16, rows: u16) -> Score {
-    let (layout, _) = build_layout(cols, rows, &[]);
-    score_with_layout(name, layout)
+    let (layout, _, timeline) = build_layout(cols, rows, &[]);
+    score_with_layout(name, layout, timeline)
 }
 
 #[cfg(test)]
@@ -447,7 +507,7 @@ data = "file.txt\n"
                 data: "b".into(),
             },
         ]);
-        let (rec, _) = from_raw(&r, "t");
+        let (rec, _, _) = from_raw(&r, "t");
         assert_eq!(rec.events[0].0, 0.0);
         assert!((rec.events[1].0 - 1.2).abs() < 1e-9, "{}", rec.events[1].0);
     }
@@ -473,7 +533,7 @@ data = "file.txt\n"
                 data: "● stopping recording…".into(),
             },
         ]);
-        let (rec, _) = from_raw(&r, "t");
+        let (rec, _, _) = from_raw(&r, "t");
         assert_eq!(rec.events.len(), 1);
         assert_eq!(rec.events[0].1, "real output");
     }
@@ -490,9 +550,11 @@ data = "file.txt\n"
                 t_ms: 500,
                 url: "https://example.com".into(),
                 mode: "replace".into(),
+                hold_ms: None,
+                scroll: false,
             },
         ]);
-        let (rec, layout) = from_raw(&r, "t");
+        let (rec, layout, _) = from_raw(&r, "t");
         // terminal + one browser scene pane.
         assert_eq!(layout.panes.len(), 2);
         let scene = &layout.panes[1];
@@ -504,5 +566,37 @@ data = "file.txt\n"
         assert_eq!(rec.focuses.len(), 1);
         assert_eq!(rec.focuses[0].1, scene.id);
         assert!((rec.focuses[0].0 - 0.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn scrolling_reveal_holds_and_emits_a_scroll_step() {
+        // A scrolling reveal near the end keeps the scene on screen for its hold
+        // window and adds a focus+scroll step so the stage captures keyframes.
+        let r = raw(vec![
+            RawEvent::Output {
+                t_ms: 0,
+                data: "done".into(),
+            },
+            RawEvent::Open {
+                t_ms: 100,
+                url: "https://example.com".into(),
+                mode: "replace".into(),
+                hold_ms: Some(5000),
+                scroll: true,
+            },
+        ]);
+        let (rec, _layout, timeline) = from_raw(&r, "t");
+        // reveal at ~0.1s + 5s hold → duration is at least ~5.1s (vs ~1.9s tail).
+        assert!(rec.duration >= 5.0, "duration={}", rec.duration);
+        // one focus + one scroll step for the scene.
+        assert!(matches!(timeline.first(), Some(Step::Focus { .. })));
+        assert!(matches!(
+            timeline.get(1),
+            Some(Step::Scroll {
+                direction: ScrollDirection::Down,
+                duration_ms: 5000,
+                ..
+            })
+        ));
     }
 }

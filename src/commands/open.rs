@@ -17,25 +17,51 @@ use crate::cli::{OpenArgs, OpenMode};
 use crate::commands::control;
 use crate::error::{Error, Result};
 
+/// A resolved reveal request: where, how, and when to open it.
+struct Reveal {
+    url: String,
+    mode: String,
+    /// Defer until this substring appears in the output.
+    when: Option<String>,
+    /// Defer until the current foreground command finishes.
+    after: bool,
+    hold_ms: Option<u64>,
+    scroll: bool,
+}
+
 pub fn run(args: OpenArgs) -> Result<()> {
-    let (url, mode, when) = resolve(args)?;
+    let r = resolve(args)?;
 
     control::send(serde_json::json!({
         "cmd": "open",
-        "url": url,
-        "mode": mode,
-        "when": when,
+        "url": r.url,
+        "mode": r.mode,
+        "when": r.when,
+        "after": r.after,
+        "hold": r.hold_ms,
+        "scroll": r.scroll,
     }))?;
 
-    match &when {
-        Some(pat) => println!("● will open {url} ({mode}) when output matches {pat:?}"),
-        None => println!("● opening {url} ({mode})"),
+    let how = if r.scroll {
+        format!("{}, scrolling", r.mode)
+    } else {
+        r.mode.clone()
+    };
+    if let Some(pat) = &r.when {
+        println!("● will open {} ({how}) when output matches {pat:?}", r.url);
+    } else if r.after {
+        println!(
+            "● will open {} ({how}) when the current command finishes",
+            r.url
+        );
+    } else {
+        println!("● opening {} ({how})", r.url);
     }
     Ok(())
 }
 
-/// Resolve (url, mode, when) from flags, or from the wizard when no URL is given.
-fn resolve(args: OpenArgs) -> Result<(String, String, Option<String>)> {
+/// Resolve a reveal from flags, or from the wizard when no URL is given.
+fn resolve(args: OpenArgs) -> Result<Reveal> {
     let mode = |a: &OpenArgs| {
         if a.split || a.mode == OpenMode::Split {
             "split"
@@ -46,7 +72,14 @@ fn resolve(args: OpenArgs) -> Result<(String, String, Option<String>)> {
     };
 
     match &args.url {
-        Some(url) if !args.wizard => Ok((url.clone(), mode(&args), args.when.clone())),
+        Some(url) if !args.wizard => Ok(Reveal {
+            url: url.clone(),
+            mode: mode(&args),
+            when: args.when.clone(),
+            after: args.after,
+            hold_ms: args.hold,
+            scroll: args.scroll,
+        }),
         _ => {
             if !std::io::stdin().is_terminal() {
                 return Err(Error::Export(
@@ -62,7 +95,7 @@ fn ask<T>(r: std::result::Result<T, inquire::InquireError>) -> Result<T> {
     r.map_err(|e| Error::Export(format!("wizard: {e}")))
 }
 
-fn wizard() -> Result<(String, String, Option<String>)> {
+fn wizard() -> Result<Reveal> {
     println!("\n  demo open — reveal a browser scene\n");
 
     let url = ask(Text::new("URL:")
@@ -83,15 +116,34 @@ fn wizard() -> Result<(String, String, Option<String>)> {
         "replace"
     };
 
-    let trigger =
-        ask(Select::new("Reveal:", vec!["now", "when a line appears in the output"]).prompt())?;
-    let when = if trigger.starts_with("when") {
+    let trigger = ask(Select::new(
+        "Reveal:",
+        vec![
+            "now",
+            "when the current command finishes",
+            "when a line appears in the output",
+        ],
+    )
+    .prompt())?;
+    let (when, after) = if trigger.starts_with("when the current") {
+        (None, true)
+    } else if trigger.starts_with("when a line") {
         let pat = ask(Text::new("Cue line (a substring of the output):").prompt())?;
         let pat = pat.trim();
-        (!pat.is_empty()).then(|| pat.to_string())
+        ((!pat.is_empty()).then(|| pat.to_string()), false)
     } else {
-        None
+        (None, false)
     };
 
-    Ok((url.trim().to_string(), mode.to_string(), when))
+    let scroll = ask(Select::new("Scroll the page while shown?", vec!["no", "yes"]).prompt())?
+        .starts_with("yes");
+
+    Ok(Reveal {
+        url: url.trim().to_string(),
+        mode: mode.to_string(),
+        when,
+        after,
+        hold_ms: None,
+        scroll,
+    })
 }

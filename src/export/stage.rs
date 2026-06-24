@@ -79,13 +79,9 @@ pub fn render_stage(rec: &Recording, score: &Score, mut on_frame: impl FnMut(&[u
         scenes.push((pane, browser::capture(pane, scrolls)?, reveal_at));
     }
 
+    let total = n as f64 / fps;
     for i in 0..n {
         let t = i as f64 / fps;
-        let progress = if n > 1 {
-            i as f64 / (n - 1) as f64
-        } else {
-            0.0
-        };
         let term_frame = term_src.next_frame().unwrap_or_default();
 
         let mut layers = vec![composite::Layer {
@@ -99,6 +95,11 @@ pub fn render_stage(rec: &Recording, score: &Score, mut on_frame: impl FnMut(&[u
             if t < *reveal_at {
                 continue; // not revealed yet
             }
+            // Scene-local progress: 0 at the reveal, 1 at the end — so a scene's
+            // scroll keyframes play across the window it's actually on screen,
+            // not across the whole demo (which would mostly be before it opened).
+            let span = (total - reveal_at).max(1e-6);
+            let progress = ((t - reveal_at) / span).clamp(0.0, 1.0);
             layers.push(composite::Layer {
                 x: pane.x as usize,
                 y: pane.y as usize,

@@ -58,6 +58,20 @@ pub struct OpenArgs {
     #[arg(long)]
     pub when: Option<String>,
 
+    /// Reveal when the current foreground command finishes — arm it, then run
+    /// your command; the scene opens once output goes quiet (back at the prompt).
+    #[arg(long, conflicts_with = "when")]
+    pub after: bool,
+
+    /// Hold the scene on screen at least this long, in milliseconds, after it
+    /// opens — so a reveal near the end of the capture doesn't just flash by.
+    #[arg(long, value_name = "MS")]
+    pub hold: Option<u64>,
+
+    /// Slowly scroll the page down while the scene is shown (pairs with --hold).
+    #[arg(long)]
+    pub scroll: bool,
+
     /// Force the interactive wizard even if a URL/flags are given.
     #[arg(short = 'w', long)]
     pub wizard: bool,
