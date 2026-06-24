@@ -79,9 +79,11 @@ pub struct OpenArgs {
 
 #[derive(Debug, Args)]
 pub struct CaptureArgs {
-    /// Where to write the captured raw macro.
-    #[arg(short, long, default_value = "macro.raw.toml")]
-    pub output: PathBuf,
+    /// Where to write the recording (`.rec`) — the one artifact a capture needs,
+    /// the thing `demo export` plays back. The raw macro and the editable score
+    /// are optional extras (`--raw` / `--score`).
+    #[arg(short = 'r', long, default_value = "demo.rec")]
+    pub rec: PathBuf,
 
     /// Auto-stop after this many milliseconds with no terminal output
     /// (0 disables — stop the capture yourself with `demo stop`).
@@ -92,23 +94,32 @@ pub struct CaptureArgs {
     #[arg(long)]
     pub shell: Option<String>,
 
-    /// Capture into a prepared stage: normalize will splice the captured
-    /// terminal flow into this stage's timeline instead of a fresh score.
+    /// Capture into a prepared stage: the captured terminal flow is spliced into
+    /// this stage's timeline (writes the resulting score to `--score`, default
+    /// `demo.toml`).
     #[arg(long)]
     pub into: Option<PathBuf>,
 
-    /// Skip the automatic normalize pass — keep only the raw macro.
+    /// Skip the normalize pass — don't derive a score (the recording is faithful
+    /// either way).
     #[arg(long)]
     pub no_normalize: bool,
 
     /// Write a timestamped diagnostic log of every input/output chunk (with hex)
-    /// next to the raw macro (`<output>.debug.log`), for debugging captures.
+    /// next to the recording (`<rec>.debug.log`), for debugging captures.
     #[arg(long)]
     pub debug: bool,
 
-    /// Where the automatic normalize writes the demo score.
-    #[arg(short = 'O', long, default_value = "demo.toml")]
-    pub normalized_output: PathBuf,
+    /// Also write the low-level raw capture macro here (an intermediate, for
+    /// inspection/debugging). Omitted by default.
+    #[arg(short = 'o', long = "raw", value_name = "FILE")]
+    pub output: Option<PathBuf>,
+
+    /// Also write the normalized demo score here — the editable "demo as code"
+    /// (`demo.toml`) you can re-run with `demo record`. Omitted by default (a
+    /// stage capture via `--into` defaults it to `demo.toml`).
+    #[arg(short = 'O', long = "score", value_name = "FILE")]
+    pub normalized_output: Option<PathBuf>,
 
     /// Force a clean PS1 in the captured shell (default: the built-in realistic
     /// prompt), so the demo shows a tidy prompt instead of your real one. Pass a

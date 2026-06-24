@@ -15,12 +15,13 @@ use std::time::{Duration, Instant};
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode, size};
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 
-use crate::cli::{CaptureArgs, NormalizeArgs};
+use crate::cli::CaptureArgs;
 use crate::commands::control;
 use crate::error::{Error, Result};
 use crate::export::recording;
 use crate::export::run::{sh_single_quote, DEFAULT_PROMPT};
 use crate::model::{DemoMeta, RawEvent, RawMacro, RawMeta, Score};
+use crate::normalize::{merge_into_stage, normalize, Options};
 
 /// Marker the captured shell echoes once it's at our forced prompt — recording
 /// starts after it, so the prompt-setup chatter is discarded. Assembled by the
@@ -202,7 +203,7 @@ pub fn run(args: CaptureArgs) -> Result<()> {
     // Optional diagnostic log (`--debug`): every chunk in/out with hex, plus
     // lifecycle notes, written next to the raw macro.
     let debug: Option<Arc<DebugLog>> = if args.debug {
-        let mut path = args.output.clone().into_os_string();
+        let mut path = args.rec.clone().into_os_string();
         path.push(".debug.log");
         let path = std::path::PathBuf::from(path);
         let log = Arc::new(DebugLog::create(&path, t0)?);
@@ -511,7 +512,11 @@ pub fn run(args: CaptureArgs) -> Result<()> {
         },
         events,
     };
-    raw.save(&args.output)?;
+    // Keep the raw macro only if the user asked for it (it's a pure intermediate
+    // — by default a capture leaves behind just the recording).
+    if let Some(raw_path) = &args.output {
+        raw.save(raw_path)?;
+    }
     if let Some(d) = &debug {
         let (ins, outs) = raw.events.iter().fold((0, 0), |(i, o), e| match e {
             RawEvent::Input { .. } => (i + 1, o),
@@ -519,47 +524,69 @@ pub fn run(args: CaptureArgs) -> Result<()> {
             RawEvent::Open { .. } => (i, o),
         });
         d.note(&format!(
-            "recorded {} events ({ins} input, {outs} output) → {}",
+            "recorded {} events ({ins} input, {outs} output)",
             raw.events.len(),
-            args.output.display()
         ));
     }
+
+    // The recording (.rec) of what actually happened, so `demo export` plays back
+    // the real session out of the box — no re-execution, which is what breaks
+    // interactive/secret/side-effecting tools. This is the one file a capture
+    // always leaves behind.
+    let cast_path = args.rec.clone();
+    let name = cast_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("demo");
     println!(
         "recorded {} events → {}",
         raw.events.len(),
-        args.output.display()
+        cast_path.display()
     );
 
-    // A recording (.rec) of what actually happened, so `demo export` plays back
-    // the real session out of the box — no re-execution, which is what breaks
-    // interactive/secret/side-effecting tools.
-    let cast_path = args.normalized_output.with_extension("rec");
-
-    // Normalizing is part of finishing a capture, not a separate command — run
-    // it automatically into a clean score unless the user opted out.
+    // Without a normalize pass there is no score — the recording stays faithful.
     if args.no_normalize {
         write_faithful_cast(&raw, None, &cast_path)?;
         println!(
-            "next: demo export   (renders {}, the live capture)",
+            "next: demo export {}   (renders the live capture)",
             cast_path.display()
         );
         return Ok(());
     }
 
-    crate::commands::normalize::run(NormalizeArgs {
-        input: args.output.clone(),
-        output: args.normalized_output.clone(),
-        seed: None,
+    // Normalize in memory into a clean score: it carries the demo name/meta for
+    // the recording, and is the source `demo record` re-runs — written to disk
+    // only when asked (`--score`, or a `--into` stage, which defaults it).
+    let opts = Options {
         typing_ms: 80,
         salt_ms: 15,
-        stage: None,
-    })?;
-    let score = Score::load(&args.normalized_output)?;
+        seed: None,
+    };
+    let score = match &args.into {
+        Some(path) => merge_into_stage(Score::load(path)?, &raw, &opts),
+        None => normalize(&raw, name, &opts),
+    };
+    let score_path = args.normalized_output.clone().or_else(|| {
+        args.into
+            .as_ref()
+            .map(|_| std::path::PathBuf::from("demo.toml"))
+    });
+    if let Some(p) = &score_path {
+        score.save(p)?;
+    }
     write_faithful_cast(&raw, Some(&score), &cast_path)?;
-    println!(
-        "next: demo export   (renders {})   |   demo record  to re-run the demo for a fresh take",
-        cast_path.display()
-    );
+
+    match &score_path {
+        Some(p) => println!(
+            "score → {}   |   next: demo export {}  (or `demo record` to re-run)",
+            p.display(),
+            cast_path.display()
+        ),
+        None => println!(
+            "next: demo export {}   (add --score to also write demo.toml for `demo record`)",
+            cast_path.display()
+        ),
+    }
     Ok(())
 }
 
