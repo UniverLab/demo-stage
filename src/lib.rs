@@ -27,8 +27,8 @@ use cli::{Cli, Command};
 /// surfaces problems as an [`Error`].
 pub fn run(cli: Cli) -> Result<ExitCode> {
     match cli.command {
-        Command::Prepare(args) => commands::prepare::run(args).map(|()| ExitCode::SUCCESS),
         Command::Capture(args) => commands::capture::run(args).map(|()| ExitCode::SUCCESS),
+        Command::Open(args) => commands::open::run(args).map(|()| ExitCode::SUCCESS),
         Command::Stop => commands::stop::run().map(|()| ExitCode::SUCCESS),
         Command::Record(args) => commands::record::run(args).map(|()| ExitCode::SUCCESS),
         Command::Check(args) => commands::check::run(args),

@@ -54,6 +54,13 @@ pub enum RawEvent {
     Input { t_ms: u64, bytes: String },
     /// A chunk written to the PTY by the running program.
     Output { t_ms: u64, data: String },
+    /// A browser scene revealed via `demo open` at this moment — `mode` is
+    /// `replace` (full-canvas) or `split` (beside the terminal).
+    Open {
+        t_ms: u64,
+        url: String,
+        mode: String,
+    },
 }
 
 #[cfg(test)]

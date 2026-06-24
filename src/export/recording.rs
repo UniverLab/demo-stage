@@ -147,8 +147,23 @@ fn read_raw(path: &Path, text: &str) -> Result<(Recording, Score)> {
         .and_then(|s| s.to_str())
         .map(|s| s.strip_suffix(".raw").unwrap_or(s))
         .unwrap_or("demo");
-    let (cols, rows) = (raw.meta.cols, raw.meta.rows);
-    Ok((from_raw(&raw, name), default_score(name, cols, rows)))
+    let (rec, layout) = from_raw(&raw, name);
+    Ok((rec, score_with_layout(name, layout)))
+}
+
+/// Wrap a layout in a playback score (no timeline — playback replays the events).
+fn score_with_layout(name: &str, layout: Layout) -> Score {
+    Score {
+        demo: DemoMeta {
+            name: name.to_string(),
+            output_dir: "./dist".into(),
+            prompt: None,
+        },
+        env: None,
+        typing: None,
+        layout,
+        timeline: Vec::new(),
+    }
 }
 
 /// Longest pause kept between consecutive output chunks when normalizing a
@@ -166,45 +181,125 @@ const TAIL_HOLD_MS: f64 = 1800.0;
 /// Note: typo-pruning and re-humanized typing can't be applied to a faithful
 /// recording (the keystrokes are already baked into the output) — those need
 /// re-execution via `demo record`. Timing is what we can clean here.
-pub fn from_raw(raw: &RawMacro, name: &str) -> Recording {
-    // Drop everything from the moment the user started typing the stop command.
+pub fn from_raw(raw: &RawMacro, name: &str) -> (Recording, Layout) {
     let cutoff = stop_cutoff_ms(raw);
-    let raw_events: Vec<(f64, String)> = raw
-        .events
-        .iter()
-        .filter_map(|e| match e {
-            RawEvent::Output { t_ms, data } if cutoff.is_none_or(|c| *t_ms < c) => {
-                Some((*t_ms as f64 / 1000.0, data.clone()))
-            }
-            _ => None,
-        })
-        .collect();
-
-    // Trim idle: cap the gap before each chunk (also trims leading dead air).
     let cap = MAX_GAP_MS / 1000.0;
-    let mut events = Vec::with_capacity(raw_events.len());
+
+    // Walk output + `demo open` reveals in order, trimming idle gaps; the reveals
+    // ride the same trimmed clock so they fire at the right composited moment.
+    let mut events: Vec<(f64, String)> = Vec::new();
+    let mut reveals: Vec<(f64, String, String)> = Vec::new(); // (t, url, mode)
     let mut acc = 0.0;
-    let mut prev = 0.0;
-    for (i, (t, data)) in raw_events.iter().enumerate() {
-        let gap = if i == 0 { *t } else { t - prev };
+    let mut prev_ms: Option<u64> = None;
+    for e in &raw.events {
+        let t_ms = match e {
+            RawEvent::Output { t_ms, .. } | RawEvent::Open { t_ms, .. } => *t_ms,
+            RawEvent::Input { .. } => continue,
+        };
+        if cutoff.is_some_and(|c| t_ms >= c) {
+            continue;
+        }
+        let gap = match prev_ms {
+            Some(p) => t_ms.saturating_sub(p) as f64 / 1000.0,
+            None => t_ms as f64 / 1000.0,
+        };
         acc += gap.clamp(0.0, cap);
-        prev = *t;
-        events.push((acc, data.clone()));
+        prev_ms = Some(t_ms);
+        match e {
+            RawEvent::Output { data, .. } => events.push((acc, data.clone())),
+            RawEvent::Open { url, mode, .. } => reveals.push((acc, url.clone(), mode.clone())),
+            RawEvent::Input { .. } => {}
+        }
     }
+
     // Hold the final frame a moment so the last result is readable.
     let duration = events
         .last()
         .map(|(t, _)| *t + TAIL_HOLD_MS / 1000.0)
         .unwrap_or(0.0);
 
-    Recording {
-        cols: raw.meta.cols,
-        rows: raw.meta.rows,
-        title: name.to_string(),
-        events,
-        captions: Vec::new(),
-        focuses: Vec::new(),
-        duration,
+    let (cols, rows) = (raw.meta.cols, raw.meta.rows);
+    let (layout, focuses) = build_layout(cols, rows, &reveals);
+
+    (
+        Recording {
+            cols,
+            rows,
+            title: name.to_string(),
+            events,
+            captions: Vec::new(),
+            focuses,
+            duration,
+        },
+        layout,
+    )
+}
+
+/// Build the render layout (and the reveal focuses) from a capture's `demo open`
+/// scenes: a terminal pane plus one browser pane per reveal — `replace` covers
+/// the whole canvas, `split` sits to the right of the terminal.
+fn build_layout(
+    cols: u16,
+    rows: u16,
+    reveals: &[(f64, String, String)],
+) -> (Layout, Vec<(f64, String)>) {
+    let tw = (cols as u32 * CELL_W).max(CELL_W);
+    let th = (rows as u32 * CELL_H).max(CELL_H);
+    let mut panes = vec![terminal_pane(tw, th)];
+    let mut focuses = Vec::new();
+
+    let any_split = reveals.iter().any(|(_, _, m)| m == "split");
+    let (canvas_w, canvas_h) = if any_split { (tw * 2, th) } else { (tw, th) };
+
+    for (i, (t, url, mode)) in reveals.iter().enumerate() {
+        let id = format!("scene{}", i + 1);
+        let (x, y, w, h) = if mode == "split" {
+            (tw, 0, canvas_w - tw, th)
+        } else {
+            (0, 0, canvas_w, canvas_h) // replace: full canvas
+        };
+        panes.push(browser_pane(&id, url, x, y, w, h));
+        focuses.push((*t, id));
+    }
+
+    (
+        Layout {
+            width: canvas_w,
+            height: canvas_h,
+            fps: 15,
+            line_height: 1.2,
+            background: Some("#0b0f14".to_string()),
+            panes,
+        },
+        focuses,
+    )
+}
+
+fn terminal_pane(width: u32, height: u32) -> Pane {
+    Pane {
+        id: "main".to_string(),
+        kind: PaneKind::Terminal,
+        x: 0,
+        y: 0,
+        width,
+        height,
+        font_family: Some("monospace".to_string()),
+        font_size: Some(16),
+        url: None,
+    }
+}
+
+fn browser_pane(id: &str, url: &str, x: u32, y: u32, width: u32, height: u32) -> Pane {
+    Pane {
+        id: id.to_string(),
+        kind: PaneKind::Browser,
+        x,
+        y,
+        width,
+        height,
+        font_family: None,
+        font_size: None,
+        url: Some(url.to_string()),
     }
 }
 
@@ -243,36 +338,8 @@ fn stop_cutoff_ms(raw: &RawMacro) -> Option<u64> {
 /// A plain single-terminal score sized to a `cols`×`rows` capture, used to render
 /// a recording that carries no layout of its own.
 pub fn default_score(name: &str, cols: u16, rows: u16) -> Score {
-    let width = cols as u32 * CELL_W;
-    let height = rows as u32 * CELL_H;
-    Score {
-        demo: DemoMeta {
-            name: name.to_string(),
-            output_dir: "./dist".into(),
-            prompt: None,
-        },
-        env: None,
-        typing: None,
-        layout: Layout {
-            width,
-            height,
-            fps: 15,
-            line_height: 1.2,
-            background: None,
-            panes: vec![Pane {
-                id: "main".to_string(),
-                kind: PaneKind::Terminal,
-                x: 0,
-                y: 0,
-                width,
-                height,
-                font_family: None,
-                font_size: None,
-                url: None,
-            }],
-        },
-        timeline: Vec::new(),
-    }
+    let (layout, _) = build_layout(cols, rows, &[]);
+    score_with_layout(name, layout)
 }
 
 #[cfg(test)]
@@ -365,7 +432,7 @@ data = "file.txt\n"
                 data: "b".into(),
             },
         ]);
-        let rec = from_raw(&r, "t");
+        let (rec, _) = from_raw(&r, "t");
         assert_eq!(rec.events[0].0, 0.0);
         assert!((rec.events[1].0 - 1.2).abs() < 1e-9, "{}", rec.events[1].0);
     }
@@ -391,8 +458,36 @@ data = "file.txt\n"
                 data: "● stopping recording…".into(),
             },
         ]);
-        let rec = from_raw(&r, "t");
+        let (rec, _) = from_raw(&r, "t");
         assert_eq!(rec.events.len(), 1);
         assert_eq!(rec.events[0].1, "real output");
+    }
+
+    #[test]
+    fn demo_open_builds_a_browser_scene() {
+        // A `demo open` reveal becomes a browser pane + a focus at its (trimmed) time.
+        let r = raw(vec![
+            RawEvent::Output {
+                t_ms: 0,
+                data: "building...".into(),
+            },
+            RawEvent::Open {
+                t_ms: 500,
+                url: "https://example.com".into(),
+                mode: "replace".into(),
+            },
+        ]);
+        let (rec, layout) = from_raw(&r, "t");
+        // terminal + one browser scene pane.
+        assert_eq!(layout.panes.len(), 2);
+        let scene = &layout.panes[1];
+        assert_eq!(scene.kind, PaneKind::Browser);
+        assert_eq!(scene.url.as_deref(), Some("https://example.com"));
+        // replace → full canvas.
+        assert_eq!(scene.width, layout.width);
+        // reveal focus targets the scene at t=0.5s.
+        assert_eq!(rec.focuses.len(), 1);
+        assert_eq!(rec.focuses[0].1, scene.id);
+        assert!((rec.focuses[0].0 - 0.5).abs() < 1e-9);
     }
 }

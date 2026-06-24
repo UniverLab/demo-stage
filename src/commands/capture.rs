@@ -16,10 +16,13 @@ use crossterm::terminal::{disable_raw_mode, enable_raw_mode, size};
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 
 use crate::cli::{CaptureArgs, NormalizeArgs};
-use crate::commands::stop::STOP_FILE_ENV;
+use crate::commands::control;
 use crate::error::{Error, Result};
 use crate::export::recording;
-use crate::model::{RawEvent, RawMacro, RawMeta, Score};
+use crate::model::{DemoMeta, RawEvent, RawMacro, RawMeta, Score};
+
+/// Browser reveals armed by `demo open --when <pat>`: `(url, mode, pattern)`.
+type PendingOpens = Arc<Mutex<Vec<(String, String, String)>>>;
 
 fn ms(t0: Instant) -> u64 {
     t0.elapsed().as_millis() as u64
@@ -119,13 +122,14 @@ pub fn run(args: CaptureArgs) -> Result<()> {
             pixel_height: 0,
         })
         .map_err(|e| Error::Export(format!("openpty: {e}")))?;
-    // Sentinel the captured shell can touch (via `demo stop`) to end the
-    // capture without typing `exit` mid-demo. Unique per recorder process.
-    let stopfile =
-        std::env::temp_dir().join(format!("demo-stage-record-{}.stop", std::process::id()));
-    let _ = std::fs::remove_file(&stopfile);
+    // Control file in the cwd: `demo open` / `demo stop` — run inside the capture
+    // OR from another terminal in this directory — append commands here; the
+    // watchdog reads them. The env var lets the captured shell find it directly.
+    let control_path = std::path::PathBuf::from(control::CONTROL_FILE);
+    std::fs::File::create(&control_path).map_err(|e| Error::io(&control_path, e))?;
+    let control_abs = std::fs::canonicalize(&control_path).unwrap_or_else(|_| control_path.clone());
     let mut command = CommandBuilder::new(&shell);
-    command.env(STOP_FILE_ENV, &stopfile);
+    command.env(control::CONTROL_ENV, &control_abs);
 
     let mut child = pair
         .slave
@@ -149,6 +153,9 @@ pub fn run(args: CaptureArgs) -> Result<()> {
     // Set while the program is showing a password/passphrase prompt: input typed
     // during it is forwarded to the PTY but NEVER recorded.
     let sensitive = Arc::new(AtomicBool::new(false));
+    // Browser reveals armed by `demo open --when <pat>`: (url, mode, pattern),
+    // fired by the output thread when the pattern appears.
+    let pending_opens: PendingOpens = Arc::new(Mutex::new(Vec::new()));
     let t0 = Instant::now();
 
     // Optional diagnostic log (`--debug`): every chunk in/out with hex, plus
@@ -159,9 +166,9 @@ pub fn run(args: CaptureArgs) -> Result<()> {
         let path = std::path::PathBuf::from(path);
         let log = Arc::new(DebugLog::create(&path, t0)?);
         log.note(&format!(
-            "record start — shell={shell} cols={cols} rows={rows} idle_timeout_ms={} stopfile={}",
+            "capture start — shell={shell} cols={cols} rows={rows} idle_timeout_ms={} control={}",
             args.idle_timeout_ms,
-            stopfile.display()
+            control_abs.display()
         ));
         println!("  (debug log → {})", path.display());
         Some(log)
@@ -190,6 +197,7 @@ pub fn run(args: CaptureArgs) -> Result<()> {
         let exited = shell_exited.clone();
         let sensitive = sensitive.clone();
         let debug = debug.clone();
+        let pending_opens = pending_opens.clone();
         thread::spawn(move || {
             let mut buf = [0u8; 4096];
             let mut stdout = std::io::stdout();
@@ -211,8 +219,28 @@ pub fn run(args: CaptureArgs) -> Result<()> {
                         let text = String::from_utf8_lossy(&buf[..n]).into_owned();
                         track_line(&mut line, &text);
                         sensitive.store(is_secret_prompt(&line), Ordering::SeqCst);
+                        let now = ms(t0);
+                        // Fire any `demo open --when <pat>` whose cue line just appeared.
+                        {
+                            let mut pend = pending_opens.lock().unwrap();
+                            if !pend.is_empty() {
+                                let mut evs = events.lock().unwrap();
+                                pend.retain(|(url, mode, pat)| {
+                                    if line.contains(pat.as_str()) {
+                                        evs.push(RawEvent::Open {
+                                            t_ms: now,
+                                            url: url.clone(),
+                                            mode: mode.clone(),
+                                        });
+                                        false
+                                    } else {
+                                        true
+                                    }
+                                });
+                            }
+                        }
                         events.lock().unwrap().push(RawEvent::Output {
-                            t_ms: ms(t0),
+                            t_ms: now,
                             data: text,
                         });
                     }
@@ -272,8 +300,10 @@ pub fn run(args: CaptureArgs) -> Result<()> {
         });
     }
 
-    // Watchdog: stop on shell exit or idle timeout.
+    // Watchdog: read control commands (`demo open` / `demo stop`), stop on shell
+    // exit or idle timeout.
     let idle = args.idle_timeout_ms;
+    let mut control_read = 0u64;
     let reason = loop {
         if shell_exited.load(Ordering::SeqCst) {
             break "reader closed (shell exited)";
@@ -281,9 +311,15 @@ pub fn run(args: CaptureArgs) -> Result<()> {
         if matches!(child.try_wait(), Ok(Some(_))) {
             break "shell process exited";
         }
-        // `demo stop`, run inside the capture, touches this file.
-        if stopfile.exists() {
-            break "demo stop";
+        if let Some(r) = read_control(
+            &control_abs,
+            &mut control_read,
+            &events,
+            &pending_opens,
+            t0,
+            debug.as_deref(),
+        ) {
+            break r;
         }
         if idle > 0 && last_activity.lock().unwrap().elapsed() > Duration::from_millis(idle) {
             break "idle timeout";
@@ -299,7 +335,7 @@ pub fn run(args: CaptureArgs) -> Result<()> {
     let _ = child.wait();
     let _ = out_handle.join();
     let _ = disable_raw_mode();
-    let _ = std::fs::remove_file(&stopfile);
+    let _ = std::fs::remove_file(&control_abs);
 
     let events = events.lock().unwrap().clone();
     let raw = RawMacro {
@@ -317,6 +353,7 @@ pub fn run(args: CaptureArgs) -> Result<()> {
         let (ins, outs) = raw.events.iter().fold((0, 0), |(i, o), e| match e {
             RawEvent::Input { .. } => (i + 1, o),
             RawEvent::Output { .. } => (i, o + 1),
+            RawEvent::Open { .. } => (i, o),
         });
         d.note(&format!(
             "recorded {} events ({ins} input, {outs} output) → {}",
@@ -363,6 +400,68 @@ pub fn run(args: CaptureArgs) -> Result<()> {
     Ok(())
 }
 
+/// Read any new control-file commands (`demo open` / `demo stop`). Records
+/// immediate reveals, arms `--when` reveals, and returns `Some(reason)` on stop.
+fn read_control(
+    path: &std::path::Path,
+    read: &mut u64,
+    events: &Arc<Mutex<Vec<RawEvent>>>,
+    pending: &PendingOpens,
+    t0: Instant,
+    debug: Option<&DebugLog>,
+) -> Option<&'static str> {
+    let data = std::fs::read(path).ok()?;
+    if data.len() as u64 <= *read {
+        return None;
+    }
+    let new = String::from_utf8_lossy(&data[*read as usize..]).into_owned();
+    *read = data.len() as u64;
+
+    let mut stop = None;
+    for line in new.lines() {
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(line.trim()) else {
+            continue;
+        };
+        match v.get("cmd").and_then(|c| c.as_str()) {
+            Some("stop") => stop = Some("demo stop"),
+            Some("open") => {
+                let url = v.get("url").and_then(|u| u.as_str()).unwrap_or("");
+                if url.is_empty() {
+                    continue;
+                }
+                let mode = v.get("mode").and_then(|m| m.as_str()).unwrap_or("replace");
+                let when = v
+                    .get("when")
+                    .and_then(|w| w.as_str())
+                    .filter(|s| !s.is_empty());
+                match when {
+                    Some(pat) => {
+                        if let Some(d) = debug {
+                            d.note(&format!("open armed: {url} ({mode}) when {pat:?}"));
+                        }
+                        pending
+                            .lock()
+                            .unwrap()
+                            .push((url.into(), mode.into(), pat.into()));
+                    }
+                    None => {
+                        if let Some(d) = debug {
+                            d.note(&format!("open now: {url} ({mode})"));
+                        }
+                        events.lock().unwrap().push(RawEvent::Open {
+                            t_ms: ms(t0),
+                            url: url.into(),
+                            mode: mode.into(),
+                        });
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    stop
+}
+
 /// Write a faithful recording of the captured session (its real output) to
 /// `path`, so `demo export` can play it back without re-executing anything.
 fn write_faithful_cast(
@@ -371,16 +470,21 @@ fn write_faithful_cast(
     path: &std::path::Path,
 ) -> Result<()> {
     let name = score.map(|s| s.demo.name.as_str()).unwrap_or("demo");
-    let rec = recording::from_raw(raw, name);
-    let fallback;
-    let score = match score {
-        Some(s) => s,
-        None => {
-            fallback = recording::default_score(name, raw.meta.cols, raw.meta.rows);
-            &fallback
-        }
+    // The layout comes from the capture's `demo open` scenes (terminal + browser
+    // panes); the demo meta/typing come from the normalized score.
+    let (rec, layout) = recording::from_raw(raw, name);
+    let final_score = Score {
+        demo: score.map(|s| s.demo.clone()).unwrap_or_else(|| DemoMeta {
+            name: name.to_string(),
+            output_dir: "./dist".into(),
+            prompt: None,
+        }),
+        env: None,
+        typing: score.and_then(|s| s.typing.clone()),
+        layout,
+        timeline: Vec::new(),
     };
-    let cast = recording::write(&rec, score)?;
+    let cast = recording::write(&rec, &final_score)?;
     if let Some(parent) = path.parent() {
         if !parent.as_os_str().is_empty() {
             std::fs::create_dir_all(parent).map_err(|e| Error::io(parent, e))?;

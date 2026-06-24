@@ -112,7 +112,7 @@ fn terminal_steps(raw: &RawMacro) -> Vec<Step> {
         .iter()
         .filter_map(|e| match e {
             RawEvent::Input { t_ms, bytes } => Some((*t_ms, bytes.as_str())),
-            RawEvent::Output { .. } => None,
+            _ => None,
         })
         .collect();
 
@@ -124,7 +124,7 @@ fn terminal_steps(raw: &RawMacro) -> Vec<Step> {
         .iter()
         .filter_map(|e| match e {
             RawEvent::Output { t_ms, .. } => Some(*t_ms),
-            RawEvent::Input { .. } => None,
+            _ => None,
         })
         .max()
         .unwrap_or(0);

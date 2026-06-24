@@ -18,10 +18,10 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
-    /// Scaffold a stage (layout, panes, triggers) to record into.
-    Prepare(PrepareArgs),
     /// Capture a live interactive session, then normalize it to a demo score.
     Capture(CaptureArgs),
+    /// Reveal a browser scene in the running capture (from here or another shell).
+    Open(OpenArgs),
     /// End the in-progress capture — run this inside a `demo capture` session.
     Stop,
     /// Execute a demo score in a PTY to (re)produce a recording (a .rec).
@@ -32,54 +32,32 @@ pub enum Command {
     Export(ExportArgs),
 }
 
-/// Canvas layouts a stage can be scaffolded with.
+/// How a `demo open` browser scene sits on the canvas.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-pub enum Preset {
-    /// One terminal pane filling the canvas.
-    Single,
-    /// Terminal on the left, a browser pane (e.g. a PDF) on the right.
+pub enum OpenMode {
+    /// Full-canvas: the browser takes over the whole frame (a scene swap).
+    Replace,
+    /// Beside the terminal (terminal keeps showing, browser to the right).
     Split,
-    /// Terminal on top, a browser pane below.
-    Stacked,
 }
 
 #[derive(Debug, Args)]
-pub struct PrepareArgs {
-    /// Force the interactive wizard. (It also runs by default when `prepare` is
-    /// called with no flags on a terminal; with flags or no TTY it's non-interactive.)
-    #[arg(short = 'w', long)]
-    pub wizard: bool,
+pub struct OpenArgs {
+    /// URL to show (e.g. a repo page, a `file://` PDF, a localhost server).
+    pub url: String,
 
-    /// Where to write the stage score.
-    #[arg(short, long, default_value = "demo.toml")]
-    pub output: PathBuf,
+    /// Reveal full-canvas (`replace`, the default) or beside the terminal (`split`).
+    #[arg(long, value_enum, default_value_t = OpenMode::Replace)]
+    pub mode: OpenMode,
 
-    /// Canvas layout to scaffold.
-    #[arg(long, value_enum, default_value_t = Preset::Single)]
-    pub preset: Preset,
+    /// Shortcut for `--mode split`.
+    #[arg(long, conflicts_with = "mode")]
+    pub split: bool,
 
-    /// Demo name.
-    #[arg(long, default_value = "demo")]
-    pub name: String,
-
-    /// A local file to show in the browser pane (turned into a `file://` URL) —
-    /// e.g. the PDF the demo builds. Used by `split`/`stacked`.
+    /// Defer the reveal until this substring appears in the terminal output —
+    /// arm it before running the program, so the scene opens on a cue line.
     #[arg(long)]
-    pub pdf: Option<PathBuf>,
-
-    /// A URL to show in the browser pane (overrides `--pdf`).
-    #[arg(long)]
-    pub url: Option<String>,
-
-    /// Canvas width in pixels.
-    #[arg(long, default_value_t = 1280)]
-    pub width: u32,
-    /// Canvas height in pixels.
-    #[arg(long, default_value_t = 720)]
-    pub height: u32,
-    /// Frame rate for pixel targets.
-    #[arg(long, default_value_t = 15)]
-    pub fps: u32,
+    pub when: Option<String>,
 }
 
 #[derive(Debug, Args)]
