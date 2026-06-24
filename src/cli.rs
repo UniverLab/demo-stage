@@ -26,8 +26,6 @@ pub enum Command {
     Stop,
     /// Execute a demo score in a PTY to (re)produce a recording (a .rec).
     Record(RecordArgs),
-    /// Statically validate a demo score (exit 0 = ok, 1 = invalid).
-    Check(CheckArgs),
     /// Render a recording to one or more formats (playback — never executes).
     Export(ExportArgs),
 }
@@ -97,6 +95,16 @@ pub struct CaptureArgs {
     /// Where the automatic normalize writes the demo score.
     #[arg(short = 'O', long, default_value = "demo.toml")]
     pub normalized_output: PathBuf,
+
+    /// Force a clean PS1 in the captured shell (default: the built-in realistic
+    /// prompt), so the demo shows a tidy prompt instead of your real one. Pass a
+    /// value to customize.
+    #[arg(long, value_name = "PS1")]
+    pub prompt: Option<String>,
+
+    /// Keep your shell's real prompt during capture (don't force a clean one).
+    #[arg(long, conflicts_with = "prompt")]
+    pub keep_prompt: bool,
 }
 
 #[derive(Debug, Args)]
@@ -136,13 +144,6 @@ pub struct NormalizeArgs {
     /// and trigger steps). Defaults to the stage stamped by `record --into`.
     #[arg(long)]
     pub stage: Option<PathBuf>,
-}
-
-#[derive(Debug, Args)]
-pub struct CheckArgs {
-    /// The demo score to validate.
-    #[arg(default_value = "demo.toml")]
-    pub input: PathBuf,
 }
 
 #[derive(Debug, Args)]

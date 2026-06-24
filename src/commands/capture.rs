@@ -19,7 +19,13 @@ use crate::cli::{CaptureArgs, NormalizeArgs};
 use crate::commands::control;
 use crate::error::{Error, Result};
 use crate::export::recording;
+use crate::export::run::{sh_single_quote, DEFAULT_PROMPT};
 use crate::model::{DemoMeta, RawEvent, RawMacro, RawMeta, Score};
+
+/// Marker the captured shell echoes once it's at our forced prompt — recording
+/// starts after it, so the prompt-setup chatter is discarded. Assembled by the
+/// shell so the typed command doesn't itself match (only the printed output).
+const PROMPT_READY: &str = "demostage_capture_ready";
 
 /// Browser reveals armed by `demo open --when <pat>`: `(url, mode, pattern)`.
 type PendingOpens = Arc<Mutex<Vec<(String, String, String)>>>;
@@ -162,6 +168,14 @@ pub fn run(args: CaptureArgs) -> Result<()> {
     // the recorder receives it (or a safety timeout).
     let muting = Arc::new(AtomicBool::new(false));
     let mute_since = Arc::new(Mutex::new(Instant::now()));
+    // Force a clean prompt (unless --keep-prompt): recording doesn't begin until
+    // the shell echoes a readiness marker, so its rc/PS1-setup chatter is dropped.
+    let force_prompt = !args.keep_prompt;
+    let forced_ps1 = args
+        .prompt
+        .clone()
+        .unwrap_or_else(|| DEFAULT_PROMPT.to_string());
+    let ready = Arc::new(AtomicBool::new(!force_prompt));
     let t0 = Instant::now();
 
     // Optional diagnostic log (`--debug`): every chunk in/out with hex, plus
@@ -196,6 +210,15 @@ pub fn run(args: CaptureArgs) -> Result<()> {
 
     enable_raw_mode().map_err(|e| Error::Export(format!("raw mode: {e}")))?;
 
+    // Pre-roll: force the prompt over the rc files, then echo the readiness marker.
+    // The output thread discards everything until it sees the marker, so none of
+    // this (nor a leaked `user@host`) lands in the recording.
+    if force_prompt {
+        let _ = writeln!(writer, "PS1={}; clear", sh_single_quote(&forced_ps1));
+        let _ = writeln!(writer, "printf 'demostage_capture_%s\\n' ready");
+        let _ = writer.flush();
+    }
+
     // PTY → stdout, recorded as output events.
     let out_handle = {
         let events = events.clone();
@@ -205,6 +228,7 @@ pub fn run(args: CaptureArgs) -> Result<()> {
         let debug = debug.clone();
         let pending_opens = pending_opens.clone();
         let muting = muting.clone();
+        let ready = ready.clone();
         thread::spawn(move || {
             let mut buf = [0u8; 4096];
             let mut stdout = std::io::stdout();
@@ -212,6 +236,8 @@ pub fn run(args: CaptureArgs) -> Result<()> {
             // Rolling recent output, for matching `demo open --when` cues across
             // chunk/line boundaries (a per-line check misses a cue then a newline).
             let mut recent = String::new();
+            // Pre-roll buffer: output before the readiness marker (prompt setup).
+            let mut pre = String::new();
             loop {
                 match reader.read(&mut buf) {
                     Ok(0) => break,
@@ -229,6 +255,24 @@ pub fn run(args: CaptureArgs) -> Result<()> {
                         let text = String::from_utf8_lossy(&buf[..n]).into_owned();
                         track_line(&mut line, &text);
                         sensitive.store(is_secret_prompt(&line), Ordering::SeqCst);
+                        // Pre-roll: discard prompt-setup output until the readiness
+                        // marker; record only what follows it (the clean prompt).
+                        if !ready.load(Ordering::SeqCst) {
+                            pre.push_str(&text);
+                            if let Some(idx) = pre.find(PROMPT_READY) {
+                                let after = pre[idx + PROMPT_READY.len()..].to_string();
+                                pre.clear();
+                                ready.store(true, Ordering::SeqCst);
+                                if !after.is_empty() {
+                                    recent.push_str(&after);
+                                    events.lock().unwrap().push(RawEvent::Output {
+                                        t_ms: ms(t0),
+                                        data: after,
+                                    });
+                                }
+                            }
+                            continue;
+                        }
                         // While a typed `demo open`/`demo stop` is running, drop its
                         // output entirely (no record, no cue-matching) so it never
                         // appears in the demo.
@@ -280,6 +324,7 @@ pub fn run(args: CaptureArgs) -> Result<()> {
         let debug = debug.clone();
         let muting = muting.clone();
         let mute_since = mute_since.clone();
+        let ready = ready.clone();
         thread::spawn(move || {
             let mut buf = [0u8; 1024];
             let mut stdin = std::io::stdin();
@@ -295,6 +340,10 @@ pub fn run(args: CaptureArgs) -> Result<()> {
                         }
                         let _ = writer.flush();
                         *last.lock().unwrap() = Instant::now();
+                        // Don't record input during the prompt-setup pre-roll.
+                        if !ready.load(Ordering::SeqCst) {
+                            continue;
+                        }
                         // Watch typed lines for a `demo open`/`demo stop` command and
                         // start muting its output (cleared when the recorder gets it).
                         for ch in String::from_utf8_lossy(&buf[..n]).chars() {
@@ -365,6 +414,11 @@ pub fn run(args: CaptureArgs) -> Result<()> {
             && mute_since.lock().unwrap().elapsed() > Duration::from_secs(90)
         {
             muting.store(false, Ordering::SeqCst);
+        }
+        // Safety: if the readiness marker never arrives (odd shell), start
+        // recording anyway rather than capturing nothing.
+        if !ready.load(Ordering::SeqCst) && t0.elapsed() > Duration::from_secs(4) {
+            ready.store(true, Ordering::SeqCst);
         }
         if idle > 0 && last_activity.lock().unwrap().elapsed() > Duration::from_millis(idle) {
             break "idle timeout";

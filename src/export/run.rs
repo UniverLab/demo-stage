@@ -394,7 +394,7 @@ fn settle(
 /// Wrap a string in POSIX single quotes for safe substitution into a shell
 /// command (each embedded `'` becomes `'\''`), so an arbitrary configured prompt
 /// can't break out of the `PS1=…` assignment.
-fn sh_single_quote(s: &str) -> String {
+pub fn sh_single_quote(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 2);
     out.push('\'');
     for ch in s.chars() {
