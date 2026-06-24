@@ -1,32 +1,10 @@
 ---
 title: Commands
-description: Reference for demo prepare, capture, record, check and export and their flags.
+description: Reference for demo capture, open, record, check and export and their flags.
 order: 5
 ---
 
 # Commands
-
-## `demo prepare`
-
-Scaffold a **stage** — the canvas, its panes, and the trigger steps — to record
-into. Use it when a demo is more than one terminal: e.g. a terminal beside a
-browser pane showing the PDF the demo builds. The layout is authored once here,
-not re-recorded.
-
-```sh
-demo prepare [-o demo.toml] [--preset single|split|stacked] [--pdf FILE | --url URL] [--name demo]
-```
-
-- `--preset` — `single` (one terminal), `split` (terminal left, browser right),
-  `stacked` (terminal top, browser below).
-- `--pdf` — a local file shown in the browser pane (turned into a `file://` URL);
-  `--url` overrides it. The artifact need not exist yet — the demo builds it.
-- `--width` / `--height` / `--fps` — canvas size and frame rate.
-
-The generated timeline focuses the terminal first — that `focus` is the **anchor**
-where `record --into` splices the captured flow — then, for multi-pane presets,
-reveals and scrolls the browser pane. Replace the wait after the terminal with a
-`wait_for_stdout` step to drive the reveal off a real output line.
 
 ## `demo capture`
 
@@ -53,13 +31,16 @@ demo capture [-o macro.raw.toml] [-O demo.toml] [--no-normalize] [--debug] [--id
   short; set a positive value for an unattended capture. Any trailing idle is
   trimmed when normalizing.
 - `--shell` — shell to run (defaults to `$SHELL`).
-- `--into` — capture into a prepared stage: normalize then splices this capture
-  into that stage's timeline instead of building a fresh single-pane score.
+- `--into` — splice this capture into a hand-authored stage score's timeline
+  instead of building a fresh single-pane score (advanced).
 
-**Ending a capture.** Run `demo stop` inside the captured session — it's the
-clean way to finish, even mid-wizard. (`exit` / Ctrl-D still work; a positive
-`--idle-timeout-ms` also stops after that long with no output.) The `demo stop`
-you type is dropped from the normalized score.
+To add a **browser scene** (show a repo, a PDF, a localhost page) during a
+capture, use [`demo open`](#demo-open) — no layout to author up front.
+
+**Ending a capture.** Run `demo stop` (from inside the session or another shell in
+the same directory) — the clean way to finish, even mid-wizard. (`exit` / Ctrl-D
+still work; a positive `--idle-timeout-ms` also stops after that long with no
+output.) The `demo stop` you type is dropped from the normalized score.
 
 `capture` **normalizes automatically** when it finishes **and** saves a faithful
 recording of the real session, so a single `demo capture` gives you
@@ -86,18 +67,48 @@ forwarded to the program but **never written to `macro.raw.toml`** (nor the
 - A program that *prints* a secret to stdout (a token in its output) is **not**
   redacted — edit it out, since it lands in the recording and the gif/mp4.
 
+## `demo open`
+
+Reveal a **browser scene** in the running capture — show a repo page, a `file://`
+PDF, a localhost server. Run it **inside** the capture (between commands) **or from
+another terminal in the same directory** — the latter lets you trigger a reveal
+live even while a full-screen TUI owns the captured shell.
+
+```sh
+demo open <url> [--replace | --split] [--when "<line>"]
+```
+
+- `<url>` — what to show.
+- `--replace` (default) — the browser takes over the whole frame (a scene swap).
+- `--split` — the browser sits beside the terminal (which keeps showing).
+- `--when "<line>"` — **defer** the reveal until that substring appears in the
+  terminal output. Arm it *before* running the program, so the scene opens on a cue
+  line (e.g. when a build prints a URL) without you watching.
+
+The reveal is baked into the recording and **composited at `export`** (the browser
+is captured via headless Chromium). Example — open the repo when ghScaff prints it:
+
+```sh
+demo capture
+demo open https://github.com/me/new-repo --when "github.com/me/new-repo"
+ghscaff            # the scene opens when the URL appears
+demo stop
+demo export gif
+```
+
 ## `demo stop`
 
-End the in-progress capture. Run it **inside** a `demo capture` session:
+End the in-progress capture. Run it **inside** a `demo capture` session, or from
+another terminal in the same directory:
 
 ```sh
 demo stop
 ```
 
-`capture` exports a sentinel path into the captured shell; `demo stop` touches it,
-which the recorder notices and uses to end the capture. Outside a capture it
-errors. The command is dropped from the normalized score, so it never appears in
-the finished demo.
+The recorder writes a control file (`.demo-capture`) in its directory and exports
+its path to the captured shell; `demo open`/`demo stop` append a command to it
+(found by that env var, or by the cwd from another terminal). Outside a capture it
+errors. The `demo stop` you type is dropped from the normalized score.
 
 > **Normalizing** (prune typos, humanize typing, trim idle — see
 > [the normalizer](normalizer.md)) is **not a separate command**: it runs

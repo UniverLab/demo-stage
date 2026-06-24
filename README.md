@@ -56,6 +56,11 @@ and never executes anything (great for interactive tools, secrets, side effects)
 use it for deterministic demos you want to keep current as the app changes. You can
 also **author `demo.toml` by hand**, then `record` + `export`.
 
+**Multi-scene.** To show a **browser scene** (a repo page, a PDF, a localhost
+server) during a capture, run `demo open <url>` — from the captured shell or
+another terminal in the same directory (handy mid-TUI). `--when "<line>"` defers
+the reveal until a cue line appears. The scene is composited into the gif/mp4.
+
 ## What makes it different
 
 - **Backspace pruning** — typos corrected while recording never reach the demo.
