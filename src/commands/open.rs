@@ -56,16 +56,9 @@ pub fn run(args: OpenArgs) -> Result<()> {
         return run_view(&r);
     }
 
-    control::send(serde_json::json!({
-        "cmd": "open",
-        "url": r.url,
-        "mode": r.mode,
-        "when": r.when,
-        "after": r.after,
-        "hold": r.hold_ms,
-        "scroll": r.scroll,
-    }))?;
-
+    // Print the confirmation BEFORE signalling the recorder: in-session, the
+    // control command closes the mute span, so a line printed after it would leak
+    // into the demo. Printed before, it's still inside the muted span (excised).
     let how = if r.scroll {
         format!("{}, scrolling", r.mode)
     } else if let Some(ms) = r.hold_ms {
@@ -83,6 +76,16 @@ pub fn run(args: OpenArgs) -> Result<()> {
     } else {
         println!("● opening {} ({how})", r.url);
     }
+
+    control::send(serde_json::json!({
+        "cmd": "open",
+        "url": r.url,
+        "mode": r.mode,
+        "when": r.when,
+        "after": r.after,
+        "hold": r.hold_ms,
+        "scroll": r.scroll,
+    }))?;
     Ok(())
 }
 
@@ -106,6 +109,8 @@ fn run_view(r: &Reveal) -> Result<()> {
     }
     let hold_ms = (n as u64 * 1000) / crate::export::browser::VIEW_FPS as u64;
 
+    // Confirm before signalling (see `run`): keeps the line out of the recording.
+    println!("● recorded {n} frames → {dir} ({hold_ms} ms scene)");
     control::send(serde_json::json!({
         "cmd": "open",
         "url": crate::model::view_frames_url(&dir),
@@ -115,7 +120,6 @@ fn run_view(r: &Reveal) -> Result<()> {
         "hold": hold_ms,
         "scroll": false,
     }))?;
-    println!("● recorded {n} frames → {dir} ({hold_ms} ms scene)");
     Ok(())
 }
 
