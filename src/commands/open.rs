@@ -7,15 +7,22 @@
 //!
 //! With a URL + flags it's non-interactive; with no URL (on a terminal) it runs a
 //! small wizard. Running it from a second terminal keeps the prompts out of the
-//! recording.
+//! recording. `--view` instead opens a real (headed) browser you drive yourself
+//! and records it until you close the window.
 
 use std::io::IsTerminal;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use inquire::{Select, Text};
 
 use crate::cli::{OpenArgs, OpenMode};
 use crate::commands::control;
 use crate::error::{Error, Result};
+
+/// Monospace cell size assumed by the renderer (matches `export::recording`), so a
+/// `--view` recording is sized to the terminal canvas it'll be composited onto.
+const CELL_W: u32 = 10;
+const CELL_H: u32 = 20;
 
 /// A resolved reveal request: where, how, and when to open it.
 struct Reveal {
@@ -27,6 +34,8 @@ struct Reveal {
     after: bool,
     hold_ms: Option<u64>,
     scroll: bool,
+    /// Open a headed browser, navigate live, and record until the window closes.
+    view: bool,
 }
 
 pub fn run(args: OpenArgs) -> Result<()> {
@@ -43,6 +52,10 @@ pub fn run(args: OpenArgs) -> Result<()> {
 
     let r = resolve(args)?;
 
+    if r.view {
+        return run_view(&r);
+    }
+
     control::send(serde_json::json!({
         "cmd": "open",
         "url": r.url,
@@ -55,6 +68,8 @@ pub fn run(args: OpenArgs) -> Result<()> {
 
     let how = if r.scroll {
         format!("{}, scrolling", r.mode)
+    } else if let Some(ms) = r.hold_ms {
+        format!("{}, hold {ms}ms", r.mode)
     } else {
         r.mode.clone()
     };
@@ -68,6 +83,39 @@ pub fn run(args: OpenArgs) -> Result<()> {
     } else {
         println!("● opening {} ({how})", r.url);
     }
+    Ok(())
+}
+
+/// `--view`: open a headed browser, record the user's session to a frames dir,
+/// then reveal that pre-recorded scene (no headless Chromium needed at export).
+fn run_view(r: &Reveal) -> Result<()> {
+    let (cols, rows) = crossterm::terminal::size().unwrap_or((80, 24));
+    let (w, h) = (cols as u32 * CELL_W, rows as u32 * CELL_H);
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    let dir = format!("demo-scenes/scene-{ts}");
+
+    let n = crate::export::browser::record_view(&r.url, w, h, std::path::Path::new(&dir))?;
+    if n == 0 {
+        return Err(Error::Export(
+            "no frames were recorded (the browser window closed before anything rendered)"
+                .to_string(),
+        ));
+    }
+    let hold_ms = (n as u64 * 1000) / crate::export::browser::VIEW_FPS as u64;
+
+    control::send(serde_json::json!({
+        "cmd": "open",
+        "url": crate::model::view_frames_url(&dir),
+        "mode": "replace",
+        "when": serde_json::Value::Null,
+        "after": false,
+        "hold": hold_ms,
+        "scroll": false,
+    }))?;
+    println!("● recorded {n} frames → {dir} ({hold_ms} ms scene)");
     Ok(())
 }
 
@@ -90,6 +138,7 @@ fn resolve(args: OpenArgs) -> Result<Reveal> {
             after: args.after,
             hold_ms: args.hold,
             scroll: args.scroll,
+            view: args.view,
         }),
         _ => {
             if !std::io::stdin().is_terminal() {
@@ -113,8 +162,44 @@ fn wizard() -> Result<Reveal> {
         .with_help_message("a repo page, a file:// PDF, http://localhost…")
         .prompt())?;
 
+    // How to present it — a static hold, a scroll, or an interactive view. These
+    // are mutually exclusive, so they're one question.
+    let behavior = ask(Select::new(
+        "Show it as:",
+        vec![
+            "Static — hold for a few seconds",
+            "Scroll the page down (pan)",
+            "Interactive — open a real browser, navigate, record until you close it",
+        ],
+    )
+    .prompt())?;
+    let view = behavior.starts_with("Interactive");
+    let scroll = behavior.starts_with("Scroll");
+    let hold_ms = if behavior.starts_with("Static") {
+        let secs = ask(Text::new("Hold for how many seconds?")
+            .with_default("6")
+            .prompt())?;
+        let secs: f64 = secs.trim().parse().unwrap_or(6.0);
+        Some((secs.max(0.5) * 1000.0) as u64)
+    } else {
+        None
+    };
+
+    // An interactive view always takes over the whole frame and opens immediately.
+    if view {
+        return Ok(Reveal {
+            url: url.trim().to_string(),
+            mode: "replace".to_string(),
+            when: None,
+            after: false,
+            hold_ms: None,
+            scroll: false,
+            view: true,
+        });
+    }
+
     let mode = ask(Select::new(
-        "Show as:",
+        "Place it:",
         vec![
             "replace — full screen (scene swap)",
             "split — beside the terminal",
@@ -146,15 +231,13 @@ fn wizard() -> Result<Reveal> {
         (None, false)
     };
 
-    let scroll = ask(Select::new("Scroll the page while shown?", vec!["no", "yes"]).prompt())?
-        .starts_with("yes");
-
     Ok(Reveal {
         url: url.trim().to_string(),
         mode: mode.to_string(),
         when,
         after,
-        hold_ms: None,
+        hold_ms,
         scroll,
+        view: false,
     })
 }

@@ -60,17 +60,25 @@ pub struct OpenArgs {
 
     /// Reveal when the current foreground command finishes — arm it, then run
     /// your command; the scene opens once output goes quiet (back at the prompt).
-    #[arg(long, conflicts_with = "when")]
+    #[arg(long, conflicts_with_all = ["when", "view"])]
     pub after: bool,
 
-    /// Hold the scene on screen at least this long, in milliseconds, after it
-    /// opens — so a reveal near the end of the capture doesn't just flash by.
-    #[arg(long, value_name = "MS")]
+    /// Hold the scene on screen this long, in milliseconds, after it opens — so a
+    /// reveal near the end of the capture doesn't just flash by. Mutually
+    /// exclusive with `--scroll`.
+    #[arg(long, value_name = "MS", conflicts_with_all = ["scroll", "view"])]
     pub hold: Option<u64>,
 
-    /// Slowly scroll the page down while the scene is shown (pairs with --hold).
-    #[arg(long)]
+    /// Slowly scroll the page down while the scene is shown, instead of holding a
+    /// static frame. Mutually exclusive with `--hold`.
+    #[arg(long, conflicts_with_all = ["hold", "view"])]
     pub scroll: bool,
+
+    /// Open a **real (headed) browser** you drive yourself — navigate freely; the
+    /// session is recorded until you close the window, then composited into the
+    /// demo. No headless Chromium is needed at export. Reveals immediately.
+    #[arg(long, conflicts_with_all = ["when", "after", "scroll", "hold"])]
+    pub view: bool,
 
     /// Force the interactive wizard even if a URL/flags are given.
     #[arg(short = 'w', long)]

@@ -149,7 +149,9 @@ pub struct Pane {
     pub font_family: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub font_size: Option<u32>,
-    // browser-only
+    // browser-only. For an interactive `--view` scene this is a `viewframes:<dir>`
+    // pointer to pre-recorded frames; `export` plays those back instead of
+    // capturing the page via headless Chromium (see [`super::view_frames_dir`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
 }

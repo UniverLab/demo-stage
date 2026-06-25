@@ -7,6 +7,7 @@
 //! suite or in the restricted dev sandbox; it is verified on a machine with
 //! Chromium available (or network to fetch it).
 
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -15,7 +16,10 @@ use headless_chrome::{Browser, LaunchOptions, Tab};
 
 use super::provision;
 use crate::error::{Error, Result};
-use crate::model::Pane;
+use crate::model::{view_frames_dir, Pane};
+
+/// Frame rate an interactive `--view` session is recorded at.
+pub const VIEW_FPS: u32 = 8;
 
 /// A captured browser scene: RGBA keyframes keyed by timeline progress in
 /// `[0.0, 1.0]`. Frames between keyframes hold the latest one.
@@ -48,6 +52,11 @@ pub fn capture(pane: &Pane, scroll_keyframes: usize) -> Result<Scene> {
         .as_deref()
         .ok_or_else(|| Error::Export(format!("browser pane '{}' has no url", pane.id)))?;
     let (w, h) = (pane.width as usize, pane.height as usize);
+
+    // A `--view` scene is already recorded — play its frames back, no Chromium.
+    if let Some(dir) = view_frames_dir(url) {
+        return load_frames(Path::new(dir), w, h);
+    }
 
     if provision::find_chromium().is_none() {
         eprintln!("demo: Chromium not found — fetching a managed copy (one time)…");
@@ -97,6 +106,97 @@ pub fn capture(pane: &Pane, scroll_keyframes: usize) -> Result<Scene> {
     Ok(Scene {
         width: w,
         height: h,
+        keyframes,
+    })
+}
+
+/// Record an **interactive** browsing session: open a real (headed) browser at
+/// `url`, let the user navigate, and save a PNG frame every `1/`[`VIEW_FPS`] until
+/// they close the window. Frames are written `0001.png`, `0002.png`, … into
+/// `out_dir`; returns how many were captured. Used by `demo open --view`.
+pub fn record_view(url: &str, width: u32, height: u32, out_dir: &Path) -> Result<usize> {
+    std::fs::create_dir_all(out_dir).map_err(|e| Error::io(out_dir, e))?;
+    if provision::find_chromium().is_none() {
+        eprintln!("demo: Chromium not found — fetching a managed copy (one time)…");
+    }
+
+    let options = LaunchOptions::default_builder()
+        .headless(false)
+        .sandbox(false)
+        .window_size(Some((width, height)))
+        .build()
+        .map_err(|e| Error::Export(format!("chromium launch options: {e}")))?;
+    let browser = Browser::new(options).map_err(|e| {
+        Error::Export(format!(
+            "launch a visible browser: {e}\n  `--view` opens a real (headed) \
+             browser, so it needs a graphical display — on WSL that means WSLg (a \
+             recent Windows 11). On a headless host, use a plain `demo open <url>` \
+             (a headless screenshot) instead."
+        ))
+    })?;
+
+    let tab = browser
+        .new_tab()
+        .map_err(|e| Error::Export(format!("open tab: {e}")))?;
+    tab.navigate_to(url)
+        .and_then(|t| t.wait_until_navigated())
+        .map_err(|e| Error::Export(format!("navigate to {url}: {e}")))?;
+
+    eprintln!("● recording the browser — navigate freely, then CLOSE THE WINDOW to finish the scene");
+    let delay = Duration::from_millis((1000 / VIEW_FPS.max(1)) as u64);
+    let max_frames = VIEW_FPS as usize * 300; // 5-minute safety cap
+    let mut n = 0usize;
+    loop {
+        // A failed screenshot means the tab/window was closed — that's the cue to
+        // stop recording.
+        let Ok(png) = tab.capture_screenshot(CaptureScreenshotFormatOption::Png, None, None, true)
+        else {
+            break;
+        };
+        let path = out_dir.join(format!("{:04}.png", n + 1));
+        if std::fs::write(&path, &png).is_err() {
+            break;
+        }
+        n += 1;
+        if n >= max_frames {
+            break;
+        }
+        std::thread::sleep(delay);
+    }
+    Ok(n)
+}
+
+/// Load a `--view` scene's pre-recorded PNG frames (`NNNN.png`, sorted) as a
+/// time-spread keyframe sequence sized to `tw`×`th`.
+fn load_frames(dir: &Path, tw: usize, th: usize) -> Result<Scene> {
+    let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(dir)
+        .map_err(|e| Error::io(dir, e))?
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("png"))
+        .collect();
+    files.sort();
+    if files.is_empty() {
+        return Err(Error::Export(format!(
+            "no recorded frames in {} (was the --view window closed before anything rendered?)",
+            dir.display()
+        )));
+    }
+
+    let count = files.len();
+    let mut keyframes = Vec::with_capacity(count);
+    for (i, f) in files.iter().enumerate() {
+        let bytes = std::fs::read(f).map_err(|e| Error::io(f, e))?;
+        let rgba = png_to_rgba(&bytes, tw, th)?;
+        let progress = if count > 1 {
+            i as f64 / (count - 1) as f64
+        } else {
+            0.0
+        };
+        keyframes.push((progress, rgba));
+    }
+    Ok(Scene {
+        width: tw,
+        height: th,
         keyframes,
     })
 }

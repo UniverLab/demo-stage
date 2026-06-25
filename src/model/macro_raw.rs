@@ -72,7 +72,9 @@ pub enum RawEvent {
     /// A browser scene revealed via `demo open` at this moment — `mode` is
     /// `replace` (full-canvas) or `split` (beside the terminal). `hold_ms` keeps
     /// the scene on screen at least that long; `scroll` pans the page down while
-    /// it is shown.
+    /// it is shown. For an interactive `--view` session, `url` is a
+    /// `viewframes:<dir>` pointer to pre-recorded frames (see
+    /// [`crate::model::view_frames_dir`]).
     Open {
         t_ms: u64,
         url: String,
