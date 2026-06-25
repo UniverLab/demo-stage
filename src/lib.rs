@@ -32,6 +32,7 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
         Command::Stop => commands::stop::run().map(|()| ExitCode::SUCCESS),
         Command::Record(args) => commands::record::run(args).map(|()| ExitCode::SUCCESS),
         Command::Export(args) => commands::export::run(args).map(|()| ExitCode::SUCCESS),
+        Command::Doctor(args) => commands::doctor::run(args).map(|()| ExitCode::SUCCESS),
     }
 }
 

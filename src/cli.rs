@@ -28,6 +28,16 @@ pub enum Command {
     Record(RecordArgs),
     /// Render a recording to one or more formats (playback — never executes).
     Export(ExportArgs),
+    /// Check the environment for browser/video dependencies and report fixes.
+    Doctor(DoctorArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct DoctorArgs {
+    /// Try to install what's missing (Linux/apt: a non-snap Google Chrome).
+    /// Without it, `doctor` only reports and prints the commands to run.
+    #[arg(long)]
+    pub fix: bool,
 }
 
 /// How a `demo open` browser scene sits on the canvas.
