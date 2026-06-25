@@ -11,6 +11,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
+use headless_chrome::protocol::cdp::Emulation::{MediaFeature, SetEmulatedMedia};
 use headless_chrome::protocol::cdp::Page::CaptureScreenshotFormatOption;
 use headless_chrome::{Browser, LaunchOptions, Tab};
 
@@ -83,6 +84,7 @@ pub fn capture(pane: &Pane, scroll_keyframes: usize) -> Result<Scene> {
     let tab = browser
         .new_tab()
         .map_err(|e| Error::Export(format!("open tab: {e}")))?;
+    emulate_theme(&tab, pane.theme.as_deref());
     tab.navigate_to(url)
         .and_then(|t| t.wait_until_navigated())
         .map_err(|e| Error::Export(format!("navigate to {url}: {e}")))?;
@@ -114,7 +116,13 @@ pub fn capture(pane: &Pane, scroll_keyframes: usize) -> Result<Scene> {
 /// `url`, let the user navigate, and save a PNG frame every `1/`[`VIEW_FPS`] until
 /// they close the window. Frames are written `0001.png`, `0002.png`, … into
 /// `out_dir`; returns how many were captured. Used by `demo open --view`.
-pub fn record_view(url: &str, width: u32, height: u32, out_dir: &Path) -> Result<usize> {
+pub fn record_view(
+    url: &str,
+    width: u32,
+    height: u32,
+    theme: Option<&str>,
+    out_dir: &Path,
+) -> Result<usize> {
     std::fs::create_dir_all(out_dir).map_err(|e| Error::io(out_dir, e))?;
     if provision::find_chromium().is_none() {
         eprintln!("demo: Chromium not found — fetching a managed copy (one time)…");
@@ -138,11 +146,14 @@ pub fn record_view(url: &str, width: u32, height: u32, out_dir: &Path) -> Result
     let tab = browser
         .new_tab()
         .map_err(|e| Error::Export(format!("open tab: {e}")))?;
+    emulate_theme(&tab, theme);
     tab.navigate_to(url)
         .and_then(|t| t.wait_until_navigated())
         .map_err(|e| Error::Export(format!("navigate to {url}: {e}")))?;
 
-    eprintln!("● recording the browser — navigate freely, then CLOSE THE WINDOW to finish the scene");
+    eprintln!(
+        "● recording the browser — navigate freely, then CLOSE THE WINDOW to finish the scene"
+    );
     let delay = Duration::from_millis((1000 / VIEW_FPS.max(1)) as u64);
     let max_frames = VIEW_FPS as usize * 300; // 5-minute safety cap
     let mut n = 0usize;
@@ -199,6 +210,20 @@ fn load_frames(dir: &Path, tw: usize, th: usize) -> Result<Scene> {
         height: th,
         keyframes,
     })
+}
+
+/// Emulate `prefers-color-scheme` (`light`/`dark`) so theme-aware pages render the
+/// chosen theme. A no-op when `theme` is `None`; failures are non-fatal.
+fn emulate_theme(tab: &Arc<Tab>, theme: Option<&str>) {
+    if let Some(scheme) = theme {
+        let _ = tab.call_method(SetEmulatedMedia {
+            media: None,
+            features: Some(vec![MediaFeature {
+                name: "prefers-color-scheme".to_string(),
+                value: scheme.to_string(),
+            }]),
+        });
+    }
 }
 
 fn shot(tab: &Arc<Tab>, w: usize, h: usize) -> Result<Vec<u8>> {

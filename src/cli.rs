@@ -39,6 +39,23 @@ pub enum OpenMode {
     Split,
 }
 
+/// Browser colour scheme to emulate for a `demo open` scene (`prefers-color-scheme`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum ColorScheme {
+    Light,
+    Dark,
+}
+
+impl ColorScheme {
+    /// The `prefers-color-scheme` value Chromium expects.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ColorScheme::Light => "light",
+            ColorScheme::Dark => "dark",
+        }
+    }
+}
+
 #[derive(Debug, Args)]
 pub struct OpenArgs {
     /// URL to show (e.g. a repo page, a `file://` PDF, a localhost server).
@@ -79,6 +96,11 @@ pub struct OpenArgs {
     /// demo. No headless Chromium is needed at export. Reveals immediately.
     #[arg(long, conflicts_with_all = ["when", "after", "scroll", "hold"])]
     pub view: bool,
+
+    /// Emulate the browser colour scheme so theme-aware pages (GitHub, …) render
+    /// `light` or `dark` instead of guessing. Omit for the page/browser default.
+    #[arg(long, value_enum)]
+    pub theme: Option<ColorScheme>,
 
     /// Force the interactive wizard even if a URL/flags are given.
     #[arg(short = 'w', long)]

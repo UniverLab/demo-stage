@@ -83,6 +83,9 @@ pub enum RawEvent {
         hold_ms: Option<u64>,
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         scroll: bool,
+        /// Emulated colour scheme (`light`/`dark`), or `None` for the page default.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        theme: Option<String>,
     },
 }
 

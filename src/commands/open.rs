@@ -36,6 +36,8 @@ struct Reveal {
     scroll: bool,
     /// Open a headed browser, navigate live, and record until the window closes.
     view: bool,
+    /// Emulated colour scheme (`light`/`dark`), or `None` for the page default.
+    theme: Option<String>,
 }
 
 pub fn run(args: OpenArgs) -> Result<()> {
@@ -85,6 +87,7 @@ pub fn run(args: OpenArgs) -> Result<()> {
         "after": r.after,
         "hold": r.hold_ms,
         "scroll": r.scroll,
+        "theme": r.theme,
     }))?;
     Ok(())
 }
@@ -100,7 +103,13 @@ fn run_view(r: &Reveal) -> Result<()> {
         .unwrap_or(0);
     let dir = format!("demo-scenes/scene-{ts}");
 
-    let n = crate::export::browser::record_view(&r.url, w, h, std::path::Path::new(&dir))?;
+    let n = crate::export::browser::record_view(
+        &r.url,
+        w,
+        h,
+        r.theme.as_deref(),
+        std::path::Path::new(&dir),
+    )?;
     if n == 0 {
         return Err(Error::Export(
             "no frames were recorded (the browser window closed before anything rendered)"
@@ -143,6 +152,7 @@ fn resolve(args: OpenArgs) -> Result<Reveal> {
             hold_ms: args.hold,
             scroll: args.scroll,
             view: args.view,
+            theme: args.theme.map(|t| t.as_str().to_string()),
         }),
         _ => {
             if !std::io::stdin().is_terminal() {
@@ -165,6 +175,13 @@ fn wizard() -> Result<Reveal> {
     let url = ask(Text::new("URL:")
         .with_help_message("a repo page, a file:// PDF, http://localhost…")
         .prompt())?;
+
+    let theme = ask(Select::new("Browser theme:", vec!["default", "light", "dark"]).prompt())?;
+    let theme = match theme {
+        "light" => Some("light".to_string()),
+        "dark" => Some("dark".to_string()),
+        _ => None,
+    };
 
     // How to present it — a static hold, a scroll, or an interactive view. These
     // are mutually exclusive, so they're one question.
@@ -199,6 +216,7 @@ fn wizard() -> Result<Reveal> {
             hold_ms: None,
             scroll: false,
             view: true,
+            theme,
         });
     }
 
@@ -243,5 +261,6 @@ fn wizard() -> Result<Reveal> {
         hold_ms,
         scroll,
         view: false,
+        theme,
     })
 }

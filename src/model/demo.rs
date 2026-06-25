@@ -154,6 +154,10 @@ pub struct Pane {
     // capturing the page via headless Chromium (see [`super::view_frames_dir`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
+    /// Colour scheme to emulate when capturing the page (`light`/`dark`), so
+    /// theme-aware sites render the chosen theme. `None` = the page default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub theme: Option<String>,
 }
 
 /// The kind of renderer backing a pane.

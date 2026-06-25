@@ -28,13 +28,14 @@ use crate::normalize::{merge_into_stage, normalize, Options};
 /// shell so the typed command doesn't itself match (only the printed output).
 const PROMPT_READY: &str = "demostage_capture_ready";
 
-/// A `demo open` reveal: where, how, and how long/whether to scroll.
+/// A `demo open` reveal: where, how, how long/whether to scroll, and theme.
 #[derive(Clone)]
 struct Reveal {
     url: String,
     mode: String,
     hold_ms: Option<u64>,
     scroll: bool,
+    theme: Option<String>,
 }
 
 /// Reveals armed by `demo open --when <pat>`, each with its cue pattern.
@@ -372,6 +373,7 @@ pub fn run(args: CaptureArgs) -> Result<()> {
                                             mode: r.mode.clone(),
                                             hold_ms: r.hold_ms,
                                             scroll: r.scroll,
+                                            theme: r.theme.clone(),
                                         });
                                         false
                                     } else {
@@ -529,6 +531,7 @@ pub fn run(args: CaptureArgs) -> Result<()> {
                     mode: r.mode,
                     hold_ms: r.hold_ms,
                     scroll: r.scroll,
+                    theme: r.theme,
                 });
             }
             after_running.store(false, Ordering::SeqCst);
@@ -715,11 +718,16 @@ fn read_control(
                 let mode = v.get("mode").and_then(|m| m.as_str()).unwrap_or("replace");
                 let hold_ms = v.get("hold").and_then(|h| h.as_u64());
                 let scroll = v.get("scroll").and_then(|s| s.as_bool()).unwrap_or(false);
+                let theme = v
+                    .get("theme")
+                    .and_then(|t| t.as_str())
+                    .map(|s| s.to_string());
                 let reveal = Reveal {
                     url: url.into(),
                     mode: mode.into(),
                     hold_ms,
                     scroll,
+                    theme,
                 };
                 let when = v
                     .get("when")
@@ -746,6 +754,7 @@ fn read_control(
                         mode: reveal.mode,
                         hold_ms: reveal.hold_ms,
                         scroll: reveal.scroll,
+                        theme: reveal.theme,
                     });
                 }
             }

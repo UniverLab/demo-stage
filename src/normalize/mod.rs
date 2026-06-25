@@ -67,6 +67,7 @@ struct Reveal {
     mode: String,
     hold_ms: Option<u64>,
     scroll: bool,
+    theme: Option<String>,
 }
 
 /// Default time a revealed browser scene is held on screen when no `--hold` was
@@ -85,7 +86,8 @@ fn reveal_hold_ms(hold: Option<u64>, scroll: bool) -> u64 {
 /// Collect the capture's `demo open` reveals in time order, naming them
 /// `scene1`, `scene2`, … to match the panes built in [`layout_with_reveals`].
 fn collect_reveals(raw: &RawMacro) -> Vec<Reveal> {
-    let mut opens: Vec<(u64, String, String, Option<u64>, bool)> = raw
+    #[allow(clippy::type_complexity)]
+    let mut opens: Vec<(u64, String, String, Option<u64>, bool, Option<String>)> = raw
         .events
         .iter()
         .filter_map(|e| match e {
@@ -95,7 +97,15 @@ fn collect_reveals(raw: &RawMacro) -> Vec<Reveal> {
                 mode,
                 hold_ms,
                 scroll,
-            } => Some((*t_ms, url.clone(), mode.clone(), *hold_ms, *scroll)),
+                theme,
+            } => Some((
+                *t_ms,
+                url.clone(),
+                mode.clone(),
+                *hold_ms,
+                *scroll,
+                theme.clone(),
+            )),
             _ => None,
         })
         .collect();
@@ -103,13 +113,14 @@ fn collect_reveals(raw: &RawMacro) -> Vec<Reveal> {
     opens
         .into_iter()
         .enumerate()
-        .map(|(i, (t_ms, url, mode, hold_ms, scroll))| Reveal {
+        .map(|(i, (t_ms, url, mode, hold_ms, scroll, theme))| Reveal {
             t_ms,
             id: format!("scene{}", i + 1),
             url,
             mode,
             hold_ms,
             scroll,
+            theme,
         })
         .collect()
 }
@@ -308,6 +319,7 @@ fn layout_with_reveals(raw: &RawMacro, reveals: &[Reveal]) -> Layout {
         font_family: Some("monospace".to_string()),
         font_size: Some(16),
         url: None,
+        theme: None,
     }];
     for r in reveals {
         let (x, y, w, h) = if r.mode == "split" {
@@ -325,6 +337,7 @@ fn layout_with_reveals(raw: &RawMacro, reveals: &[Reveal]) -> Layout {
             font_family: None,
             font_size: None,
             url: Some(r.url.clone()),
+            theme: r.theme.clone(),
         });
     }
     Layout {
@@ -357,6 +370,7 @@ fn default_layout(raw: &RawMacro) -> Layout {
             font_family: Some("monospace".to_string()),
             font_size: Some(16),
             url: None,
+            theme: None,
         }],
     }
 }
@@ -551,6 +565,7 @@ mod tests {
                 mode: "replace".into(),
                 hold_ms: Some(5000),
                 scroll: true,
+                theme: None,
             },
         ]);
         let score = normalize(&r, "demo", &opts());

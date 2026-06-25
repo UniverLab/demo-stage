@@ -253,13 +253,15 @@ pub fn from_raw(raw: &RawMacro, name: &str) -> (Recording, Layout, Vec<Step>) {
                 mode,
                 hold_ms,
                 scroll,
-                ..
+                theme,
+                t_ms: _,
             } => reveals.push(Reveal {
                 t: acc,
                 url: url.clone(),
                 mode: mode.clone(),
                 hold_ms: *hold_ms,
                 scroll: *scroll,
+                theme: theme.clone(),
             }),
             RawEvent::Input { .. } => {}
         }
@@ -302,6 +304,7 @@ struct Reveal {
     mode: String,
     hold_ms: Option<u64>,
     scroll: bool,
+    theme: Option<String>,
 }
 
 /// Build the render layout (the reveal focuses, and any browser-scroll steps)
@@ -330,7 +333,7 @@ fn build_layout(
         } else {
             (0, 0, canvas_w, canvas_h) // replace: full canvas
         };
-        panes.push(browser_pane(&id, &r.url, x, y, w, h));
+        panes.push(browser_pane(&id, &r.url, x, y, w, h, r.theme.clone()));
         focuses.push((r.t, id.clone()));
         if r.scroll {
             timeline.push(Step::Focus { pane: id.clone() });
@@ -368,10 +371,19 @@ fn terminal_pane(width: u32, height: u32) -> Pane {
         font_family: Some("monospace".to_string()),
         font_size: Some(16),
         url: None,
+        theme: None,
     }
 }
 
-fn browser_pane(id: &str, url: &str, x: u32, y: u32, width: u32, height: u32) -> Pane {
+fn browser_pane(
+    id: &str,
+    url: &str,
+    x: u32,
+    y: u32,
+    width: u32,
+    height: u32,
+    theme: Option<String>,
+) -> Pane {
     Pane {
         id: id.to_string(),
         kind: PaneKind::Browser,
@@ -382,6 +394,7 @@ fn browser_pane(id: &str, url: &str, x: u32, y: u32, width: u32, height: u32) ->
         font_family: None,
         font_size: None,
         url: Some(url.to_string()),
+        theme,
     }
 }
 
@@ -526,6 +539,7 @@ data = "file.txt\n"
                 mode: "replace".into(),
                 hold_ms: None,
                 scroll: false,
+                theme: None,
             },
         ]);
         r.meta.mute_spans = vec![(200, 900)];
@@ -595,6 +609,7 @@ data = "file.txt\n"
                 mode: "replace".into(),
                 hold_ms: None,
                 scroll: false,
+                theme: None,
             },
         ]);
         let (rec, layout, _) = from_raw(&r, "t");
@@ -612,6 +627,21 @@ data = "file.txt\n"
     }
 
     #[test]
+    fn reveal_theme_threads_into_the_browser_pane() {
+        let r = raw(vec![RawEvent::Open {
+            t_ms: 100,
+            url: "https://github.com/x".into(),
+            mode: "replace".into(),
+            hold_ms: None,
+            scroll: false,
+            theme: Some("dark".into()),
+        }]);
+        let (_rec, layout, _) = from_raw(&r, "t");
+        let scene = &layout.panes[1];
+        assert_eq!(scene.theme.as_deref(), Some("dark"));
+    }
+
+    #[test]
     fn scrolling_reveal_holds_and_emits_a_scroll_step() {
         // A scrolling reveal near the end keeps the scene on screen for its hold
         // window and adds a focus+scroll step so the stage captures keyframes.
@@ -626,6 +656,7 @@ data = "file.txt\n"
                 mode: "replace".into(),
                 hold_ms: Some(5000),
                 scroll: true,
+                theme: None,
             },
         ]);
         let (rec, _layout, timeline) = from_raw(&r, "t");
