@@ -95,7 +95,9 @@ line appears (`--when "<line>"`), or when the running command finishes (`--after
 
 `gif` works fully offline. `mp4` and multi-scene **browser panes** provision
 their tool **tectonic-style** — the first export downloads a managed ffmpeg /
-Chromium into a cache (a system install is used if present).
+Chromium into a cache (a system install is used if present). Run **`demo doctor`**
+to check these and get platform-specific fixes (`--fix` installs them on apt-based
+Linux; it also flags the snap Chromium, which can't be driven headless).
 
 ## Documentation
 

@@ -1,6 +1,6 @@
 ---
 title: Commands
-description: Reference for demo capture, open, record and export and their flags.
+description: Reference for demo capture, open, record, export and doctor and their flags.
 order: 5
 ---
 
@@ -69,15 +69,19 @@ interactive wizard are recorded as control sequences and **swallowed by the
 normalizer** — they won't leak into the clean score as stray `[A`/`[B` text. (To
 keep a wizard's exact navigation, render the raw capture directly with `export`.)
 
-**Secrets are redacted.** When a program shows a secret prompt — a line ending in
-`:` or `?` that mentions *password*, *passphrase*, *passcode*, *secret*, *token*,
-*api key*, *access key*, *credential*, `[sudo]`, … — the keystrokes you type are
-forwarded to the program but **never written to the recording** (nor the raw macro
-or the `--debug` log, which records only the byte count there). Notes:
+**Secrets are redacted, and re-asked at `record`.** When a program shows a secret
+prompt — a line ending in `:` or `?` that mentions *password*, *passphrase*,
+*passcode*, *secret*, *token*, *api key*, *access key*, *credential*, `[sudo]`, …
+— the keystrokes you type are forwarded to the program but **never written
+anywhere** (not the recording, the score, the raw macro, nor the `--debug` log,
+which records only the byte count). Only the prompt's **label** is kept, so a later
+`demo record` knows it needs that secret: it asks for each up front, keeps them
+**only in memory** for the run, and types them at the matching prompt (verifying
+the prompt is showing first, so a secret never lands in the wrong field). The
+captured demo shows only the program's mask (`********`). Notes:
 
-- Secret prompts disable echo, so the secret isn't in the output either — but the
-  detector is a **heuristic** (keyword + a `:`/`?` ending). A prompt without one of
-  those keywords **won't** be caught, so **review the recording before sharing**,
+- The detector is a **heuristic** (keyword + a `:`/`?` ending). A prompt without one
+  of those keywords **won't** be caught, so **review the recording before sharing**,
   and prefer non-interactive bypasses (e.g. export `GITHUB_TOKEN` so ghScaff skips
   its vault passphrase — nothing is typed at all).
 - A program that *prints* a secret to stdout (a token in its output) is **not**
@@ -216,3 +220,29 @@ Each format is written to its default path `<output_dir>/<name>.<ext>`.
 For a **multi-pane stage**, `gif`/`mp4` composite the recorded terminal with its
 browser panes — each captured via headless Chromium (auto-provisioned) and
 revealed at the moment the timeline focuses it.
+
+## `demo doctor`
+
+Check the environment for the optional dependencies that browser scenes
+(`demo open`) and the `mp4` target need, and report exactly how to fix what's
+missing on your platform. The core pipeline (`capture` → `record` → `export gif`)
+is pure Rust and needs none of this.
+
+```sh
+demo doctor [--fix]
+```
+
+It reports three checks:
+
+- **chromium** — a browser the automation can drive. It flags the Ubuntu **snap**
+  Chromium specifically: its sandbox blocks the remote-debug port, so it can't be
+  driven (the `no available ports … for debugging` error). `demo` prefers a
+  non-snap Google Chrome automatically.
+- **ffmpeg** — needed for `mp4`. Missing is only a warning: `mp4` auto-downloads a
+  managed copy on first use.
+- **display** — `demo open --view` (a headed browser) needs a graphical display
+  (on WSL, WSLg). Headless reveals don't.
+
+`--fix` installs what's missing on apt-based Linux (a non-snap Google Chrome, and
+ffmpeg) — it runs `sudo`, so it prompts in your terminal. On other platforms it
+prints the exact `fix:` commands to run yourself.

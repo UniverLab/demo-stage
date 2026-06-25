@@ -35,8 +35,14 @@ curl -fsSL https://get.univerlab.org/demo-stage | sh
 - **`mp4`** → [ffmpeg](https://ffmpeg.org/). You don't have to install it: the
   first `mp4` export **auto-downloads a managed static ffmpeg** (tectonic-style)
   into a cache and reuses it. A system ffmpeg on your `PATH` is used if present.
-- **browser panes** (PDF / web scenes, composited into `gif`/`mp4`) → Chromium.
-  Like ffmpeg, it's **auto-downloaded** on first use if not on your system.
+- **browser panes** (`demo open`, composited into `gif`/`mp4`) → Chromium/Chrome.
+  A system browser is used if present, otherwise a managed one is fetched.
+
+Run **`demo doctor`** to check all of this and get platform-specific fixes
+(`demo doctor --fix` installs them on apt-based Linux). One gotcha it flags: on
+Ubuntu/WSL the default Chromium is a **snap**, whose sandbox blocks the debug port
+the automation needs — install a non-snap Google Chrome (picked automatically), or
+just run `demo doctor --fix`.
 
 If a download can't run (offline), `demo export` fails with a clear message; the
 pure-Rust targets keep working regardless.
