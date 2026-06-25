@@ -73,11 +73,18 @@ pub fn capture(pane: &Pane, scroll_keyframes: usize) -> Result<Scene> {
         .map_err(|e| Error::Export(format!("chromium launch options: {e}")))?;
     let browser = Browser::new(options).map_err(|e| {
         Error::Export(format!(
-            "launch chromium: {e}\n  A browser scene needs a working headless \
-             Chromium, which commonly fails on a headless WSL/server host. Fixes:\n  \
-             • install Chromium (e.g. `sudo apt install chromium`), or\n  \
-             • run the export on a host with a browser — the `.rec` is portable, so \
-             `demo export demo.rec` from Windows works."
+            "launch chromium: {e}\n  \
+             • If this says \"no available ports … for debugging\", you have the \
+             *snap* Chromium (Ubuntu's default). Its sandbox blocks the remote-debug \
+             port, so it can't drive headless. Install the non-snap Google Chrome \
+             instead:\n      \
+             wget https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb\n      \
+             sudo apt install ./google-chrome-stable_current_amd64.deb\n    \
+             (it's picked automatically over the snap).\n  \
+             • Or run the export on a host with a browser — the `.rec` is portable, \
+             so `demo export demo.rec` from Windows works.\n  \
+             • Or capture the scene with `demo open --view` (records frames up front, \
+             so export needs no browser)."
         ))
     })?;
 
@@ -136,10 +143,14 @@ pub fn record_view(
         .map_err(|e| Error::Export(format!("chromium launch options: {e}")))?;
     let browser = Browser::new(options).map_err(|e| {
         Error::Export(format!(
-            "launch a visible browser: {e}\n  `--view` opens a real (headed) \
-             browser, so it needs a graphical display — on WSL that means WSLg (a \
-             recent Windows 11). On a headless host, use a plain `demo open <url>` \
-             (a headless screenshot) instead."
+            "launch a visible browser: {e}\n  \
+             • `--view` opens a real (headed) browser, so it needs a graphical \
+             display — on WSL that means WSLg (a recent Windows 11).\n  \
+             • If it says \"no available ports … for debugging\", you have the \
+             *snap* Chromium — its sandbox blocks the debug port `--view` drives it \
+             through. Install the non-snap Google Chrome:\n      \
+             wget https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb\n      \
+             sudo apt install ./google-chrome-stable_current_amd64.deb"
         ))
     })?;
 
