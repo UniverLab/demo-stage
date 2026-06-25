@@ -15,16 +15,20 @@ All notable changes to DemoStage are documented here. Format loosely follows
   configurable `prompt`, `[env]`, `[typing]`, `[layout]` + panes with `line_height`,
   `[[timeline]]` actions: focus/type/keypress/wait/wait_for_stdout/scroll/caption/
   terminate).
-- **Faithful capture**: `capture` saves a `.rec` of the *real* session, so
-  `demo export` works straight after — handling interactive tools, secrets and side
-  effects that re-execution can't. By default a capture leaves just `demo.rec`; add
-  `--score` for the editable `demo.toml`, `--raw` for the low-level macro.
+- **Faithful capture**: `capture` saves a `.rec` of the *real* session — handling
+  interactive tools, secrets and side effects that re-execution can't — alongside
+  the editable `demo.toml`. `demo export` renders a faithful capture only with
+  `--force` (so the clean `demo record` path is the default); `--raw` also keeps the
+  low-level macro, `--no-score` drops `demo.toml`.
+- **Prompt wizard**: with neither `--prompt` nor `--keep-prompt`, `demo capture`
+  asks a one-question wizard (clean / customize / keep yours) before recording.
 - **`demo open`** reveals a **browser scene** (repo page, `file://` PDF, localhost)
   during a capture — from the captured shell *or another terminal in the same
   directory* (via a `.demo-capture` control file), so it works mid-TUI. Reveal now,
   `--when "<line>"` (on a cue line), or `--after` (when the running command
   finishes); `--replace`/`--split` placement; `--hold <ms>` and `--scroll` to keep
-  the scene up and pan it. A small wizard runs when no URL is given.
+  the scene up and pan it. A small wizard runs when no URL is given. An in-session
+  `demo open` (its echo + wizard) is excised from the recording and the score.
 - **Export targets**: `gif` — pure Rust rasterizer (vt100 + embedded DejaVu Sans
   Mono, with procedurally-drawn block/box-drawing glyphs so banners/TUIs stay solid);
   `mp4` — H.264 via ffmpeg. `--speed` retimes playback.

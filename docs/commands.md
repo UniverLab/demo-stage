@@ -16,8 +16,9 @@ played back by `demo export`) plus the editable **score** (`demo.toml`, re-run b
 demo capture [-r demo.rec] [-O demo.toml | --no-score] [--raw macro.raw.toml] [--no-normalize] [--prompt "<PS1>" | --keep-prompt] [--debug] [--idle-timeout-ms 0] [--shell /bin/bash] [--into demo.toml]
 ```
 
-- `-r, --rec` — where to write the recording (default `demo.rec`). **`demo export`
-  works straight after**, with no re-execution.
+- `-r, --rec` — where to write the recording (default `demo.rec`). It's a faithful
+  take, so `demo export --force` renders it directly; the clean path is
+  `demo record` (re-run the score) then `demo export`.
 - `-O, --score <file>` — where to write the demo score (default `demo.toml`) — the
   "demo as code" source you can hand-edit or re-run with `demo record`.
 - `--no-score` — leave only the recording (skip writing `demo.toml`).
@@ -53,11 +54,11 @@ the same directory) — the clean way to finish, even mid-wizard. (`exit` / Ctrl
 still work; a positive `--idle-timeout-ms` also stops after that long with no
 output.) The `demo stop` you type is dropped from the recording.
 
-`capture` saves a **faithful** recording of the real session, so **`demo export`
-works immediately**, with no re-execution — the right path for interactive tools,
-secrets and side effects (a `demo record` re-run would repeat them). It also writes
-the normalized `demo.toml` (unless `--no-score`) for hand-editing or a humanized
-re-take via `demo record`. The raw macro is dropped unless you pass `--raw`.
+`capture` writes the normalized `demo.toml` (unless `--no-score`) for the clean
+`demo record` → `demo export` path, **and** a **faithful** `demo.rec` of the real
+session. For interactive tools, secrets and side effects (a `demo record` re-run
+would repeat them), render that faithful recording directly with
+`demo export --force`. The raw macro is dropped unless you pass `--raw`.
 
 A `demo open` you run **inside** the capture (its typed command and wizard
 prompts) is automatically excised from both the recording and the score, so the
@@ -123,7 +124,7 @@ demo capture
 demo open https://github.com/me/new-repo --after --scroll
 ghscaff            # the scene opens when ghScaff returns to the prompt
 demo stop
-demo export gif
+demo export gif --force   # ghScaff can't be re-run, so render the capture as-is
 ```
 
 ## `demo stop`
@@ -164,8 +165,8 @@ killed after a short grace period rather than blocking; end such a step with
 pane** is executed and recorded; `export` composites the browser panes around it.
 
 > Don't want to re-execute (interactive tool, needs secrets, has side effects)?
-> Skip `record` and render the live capture directly — `demo export` plays back
-> the `demo.rec` that `capture` already wrote.
+> Skip `record` and render the faithful capture directly with `demo export --force`
+> (the `demo.rec` that `capture` already wrote).
 
 The score `record` runs is validated first (canvas/fps sane, pane ids unique and
 inside the canvas, browser panes have a `url`, every step targets the right kind of
@@ -191,6 +192,12 @@ demo export [fmt[,fmt…]] [demo.rec] [--speed 2x]
   render it directly.
 - `--speed` — retimes the recording: `2x`, `3x`, `0.5x` (a bare number works too).
   `1x` (the default) keeps the recorded pace.
+- `--force` — render a **faithful capture** as-is. By default `export` refuses a
+  capture's `.rec` (its typing/idle aren't humanized) and points you at
+  `demo record` for a clean re-take; pass `--force` to render the live capture
+  directly anyway. This is the path for **interactive / side-effecting demos**
+  (a wizard that creates a repo, a flow needing secrets) that a `demo record`
+  re-run would repeat or desync — there, faithful + `--force` is the only option.
 
 Each format is written to its default path `<output_dir>/<name>.<ext>`.
 

@@ -8,15 +8,28 @@ use crate::export::{recording, render, scale_recording};
 
 pub fn run(args: ExportArgs) -> Result<()> {
     let (mut rec, score, faithful) = recording::read(&args.input)?;
+
+    // A faithful capture renders the real session as-is — typing and spacing are
+    // exactly as recorded, NOT humanized. Require `--force` to render one, so the
+    // clean path (`demo record`) is the default; but keep it possible, since
+    // interactive / side-effecting demos (ghScaff, secrets) can't be re-executed.
+    if faithful && !args.force {
+        return Err(crate::error::Error::Export(format!(
+            "{} is a faithful capture — its typing/idle are as recorded, not \
+             humanized. Run `demo record` first for a clean, re-humanized take, \
+             then export its `.rec`. Or pass `--force` to render this capture \
+             as-is (needed for interactive/side-effecting demos that can't be \
+             re-executed).",
+            args.input.display()
+        )));
+    }
+
     scale_recording(&mut rec, args.speed);
 
-    // A faithful capture renders the real session as-is — the typing and spacing
-    // are exactly as recorded, NOT humanized. Say so, and how to get a clean take.
     if faithful {
         eprintln!(
-            "note: rendering a faithful capture — typing and idle are as recorded, \
-             not normalized. For humanized typing/spacing, run `demo record` first \
-             (re-executes the demo), then export its `.rec`."
+            "note: rendering a faithful capture as-is (--force) — typing/idle are \
+             as recorded; `demo record` would re-humanize them."
         );
     }
 

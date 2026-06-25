@@ -6,32 +6,35 @@ order: 3
 
 # Quickstart
 
-## Capture → export
+## Capture → record → export
 
 ```sh
 # 1. Capture a live session. Run your demo, then type `demo stop` to finish
-#    (`exit` / Ctrl-D still work too). capture saves demo.rec (export plays it) and
-#    demo.toml (record re-runs it); pass --no-score for just the recording.
+#    (`exit` / Ctrl-D still work too). capture saves demo.rec (the faithful take)
+#    and demo.toml (the editable score); pass --no-score for just the recording.
 demo capture
 
-# 2. Render the recording (playback — never executes). Omit the format for all.
+# 2. Re-run the clean score to get a humanized recording (typing/idle normalized).
+demo record            # validate + execute demo.toml → demo.rec
+
+# 3. Render the recording (playback — never executes). Omit the format for all.
 demo export gif
 #   → dist/<name>.gif
 ```
 
-That's it — `export` plays back the recording `capture` just made, so it works for
-interactive tools, secrets and side effects (no re-running).
+### Interactive or side-effecting demos: export the capture directly
 
-### Optional: refresh the recording by re-running
-
-For a deterministic demo you want to keep current as the app changes, re-execute
-the `demo.toml` capture wrote (or one you authored by hand) to produce a fresh
-`demo.rec`:
+A demo you **can't re-run** — an interactive wizard, something that needs secrets
+or creates real resources (e.g. a tool that makes a GitHub repo) — should skip
+`record` (re-running would repeat or desync it) and render the faithful capture:
 
 ```sh
-demo record            # validate + execute demo.toml → demo.rec
-demo export            # render every format
+demo capture                 # run the demo, `demo stop`
+demo export gif --force      # render the capture as-is (typing not re-humanized)
 ```
+
+`export` refuses a faithful capture without `--force`, so the clean `record` path
+is the default; `--force` is the explicit escape hatch for these cases.
 
 ## Or author by hand
 

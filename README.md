@@ -31,32 +31,31 @@ cargo install --path .          # from this repo
 ## The loop
 
 ```
-demo capture  ──>  demo.rec + demo.toml   (capture the real session live)
-                       │                   (--raw also keeps the low-level macro)
-                       ▼
-demo export   ──>  dist/  (gif · mp4)      (render — never executes)
-
-                   demo record  ──>  demo.rec   (optional: re-run demo.toml for a
-                                                   fresh take when the app changes)
+demo capture  ──>  demo.toml ──> demo record ──> demo.rec ──> demo export ──> dist/
+                  (the editable score)  (re-run clean)     (render — never executes)
+                       └──────────────────────────────────────────┐
+                       demo.rec (faithful)  ──>  demo export --force ┘  (no re-run)
 ```
 
 ```sh
-demo capture                      # capture a session, then type `demo stop` to finish
-                                  # → demo.rec (export plays it) + demo.toml (record re-runs it)
+demo capture                      # run the demo, then type `demo stop` to finish
+                                  # → demo.toml (editable score) + demo.rec (faithful take)
+demo record                       # re-run demo.toml for a clean, humanized demo.rec
 demo export                       # no args → every format (gif, mp4)
 demo export gif,mp4 --speed 2x        # several at once, retimed 2× faster
 ```
 
-**Capture** runs the demo live and saves a faithful recording (`demo.rec`) of the
-real session — so **`demo export` works straight after `capture`**, with no
-re-execution, and it forces a clean prompt so your real `user@host` never shows.
-**Export** is pure playback: it renders a recording and never executes anything
-(great for interactive tools, secrets, side effects).
+**Capture** runs the demo live, writing an editable `demo.toml` score and a
+faithful `demo.rec` of the real session; it forces a clean prompt so your real
+`user@host` never shows. **Record** re-executes `demo.toml` for a clean, humanized
+recording — the default render path. **Export** is pure playback: it renders a
+recording and never executes anything.
 
-**Record** is optional: it re-executes the clean `demo.toml` (also written by
-capture) to refresh `demo.rec` — use it for deterministic demos you want to keep
-current as the app changes. You can also **author `demo.toml` by hand**, then
-`record` + `export`.
+**Can't re-run it?** Interactive tools, flows needing secrets, or demos that create
+real resources (a wizard that makes a repo) would be repeated or desynced by
+`record` — so skip it and render the faithful capture directly with
+`demo export --force` (typing isn't re-humanized, but nothing re-executes). Export
+refuses a faithful capture without `--force`, keeping the clean path the default.
 
 **Multi-scene.** To show a **browser scene** (a repo page, a PDF, a localhost
 server) during a capture, run `demo open <url>` — from the captured shell or

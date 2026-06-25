@@ -196,6 +196,13 @@ pub struct ExportArgs {
     /// (a bare number works too). `1x` keeps the recorded pace.
     #[arg(long, default_value = "1x", value_parser = parse_speed)]
     pub speed: f64,
+
+    /// Render a **faithful capture** as-is. By default `export` refuses one (its
+    /// typing/idle aren't humanized) and points you at `demo record`; pass this to
+    /// render the live capture directly anyway — needed for interactive tools and
+    /// side-effecting demos that can't be re-executed.
+    #[arg(long)]
+    pub force: bool,
 }
 
 /// One or more export targets parsed from a comma-separated token.

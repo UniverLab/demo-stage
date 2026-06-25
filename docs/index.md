@@ -17,21 +17,20 @@ any other source file.
 ## The pipeline
 
 ```
-demo capture  ──>  demo.rec + demo.toml  ──>  demo export  ──>  dist/
-               (capture the real session)         (render — no re-run)
-
-                   demo record  ──>  demo.rec   (optional: re-execute demo.toml
-                                                   for a fresh, deterministic take)
+demo capture  ──>  demo.toml  ──>  demo record  ──>  demo.rec  ──>  demo export  ──>  dist/
+              (editable score)    (re-run clean)                   (render — no re-run)
+                   └─ demo.rec (faithful) ─────────────────────>  demo export --force
 ```
 
 | Command | In | Out | Does |
 |---|---|---|---|
-| `capture`   | TTY               | `demo.rec` + `demo.toml` (`--raw` adds the macro) | Capture a live session and save a faithful recording + editable score (forces a clean prompt). |
-| `record`    | `demo.toml`       | `demo.rec`      | *(Optional)* Validate, then re-execute the score in a PTY → a fresh recording. |
-| `export`    | `demo.rec`       | `dist/…`         | Render the recording to `gif` or `mp4`. Never executes. |
+| `capture`   | TTY               | `demo.toml` + `demo.rec` (`--raw` adds the macro) | Capture a live session into an editable score + a faithful recording (forces a clean prompt). |
+| `record`    | `demo.toml`       | `demo.rec`      | Validate, then re-execute the score in a PTY → a clean, humanized recording. |
+| `export`    | `demo.rec`       | `dist/…`         | Render the recording to `gif` or `mp4`. Never executes. Needs `--force` for a faithful capture. |
 
-`demo export` works straight after `capture`. You don't have to capture, either: a
-`demo.toml` can be **authored by hand**, then `record`ed and exported.
+The clean path is `capture → record → export`. A `demo.toml` can also be
+**authored by hand**. When a demo **can't be re-run** (interactive, secrets, side
+effects), skip `record` and render the faithful capture with `demo export --force`.
 
 ## Why it exists
 
