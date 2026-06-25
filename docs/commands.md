@@ -91,12 +91,13 @@ another terminal in the same directory** — the latter lets you trigger a revea
 live even while a full-screen TUI owns the captured shell.
 
 ```sh
-demo open [url] [--replace | --split] [--when "<line>" | --after] [--hold <ms>] [--scroll] [--wizard]
+demo open [url] [--replace | --split] [--when "<line>" | --after] [--hold <ms> | --scroll] [--view] [--wizard]
 ```
 
 Run it with no URL (on a terminal) — or with `--wizard` — for a small prompt that
-asks the URL, the mode, when to reveal, and whether to scroll. From a second
-terminal the wizard's prompts stay out of the recording.
+asks the URL, how to present it (static hold / scroll / interactive view), the
+placement, and when to reveal. From a second terminal the wizard's prompts stay out
+of the recording.
 
 - `[url]` — what to show. Omit for the wizard.
 - `--replace` (default) — the browser takes over the whole frame (a scene swap).
@@ -109,15 +110,22 @@ terminal the wizard's prompts stay out of the recording.
   your command; the scene opens the moment it returns. Doesn't need a cue line —
   handy for a wizard whose final output you can't predict. (Conflicts with
   `--when`.)
-- `--hold <ms>` — keep the scene on screen at least this long after it opens, so a
-  reveal near the end of the capture doesn't just flash by. Defaults to a few
-  seconds (longer when `--scroll` is set).
-- `--scroll` — slowly pan the page down while the scene is shown (pairs with
-  `--hold`). At `export` the page is scrolled across the window it's visible for.
+- `--hold <ms>` — hold the scene on screen this long after it opens, so a reveal
+  near the end of the capture doesn't just flash by (defaults to a few seconds).
+  **Mutually exclusive with `--scroll`.**
+- `--scroll` — slowly pan the page down while the scene is shown, instead of a
+  static hold. At `export` the page is scrolled across the window it's visible for.
+- `--view` — open a **real (headed) browser** you drive yourself: navigate, click
+  and scroll however you like; the session is recorded (~8 fps) **until you close
+  the window**, then composited into the demo. It reveals immediately and takes the
+  whole frame. The frames are recorded up front into `demo-scenes/`, so **no
+  headless Chromium is needed at `export`** (handy when export runs on a host
+  without a browser — keep `demo-scenes/` next to the `.rec`). Needs a graphical
+  display (on WSL, WSLg). Conflicts with `--scroll`/`--hold`/`--when`/`--after`.
 
-The reveal is baked into the recording and **composited at `export`** (the browser
-is captured via headless Chromium). Example — open the repo once ghScaff finishes,
-and scroll it:
+A reveal (other than `--view`) is composited at `export` via headless Chromium; a
+`--view` scene plays back its recorded frames. Example — open the repo once ghScaff
+finishes, and scroll it:
 
 ```sh
 demo capture

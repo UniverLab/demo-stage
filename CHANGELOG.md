@@ -26,9 +26,12 @@ All notable changes to DemoStage are documented here. Format loosely follows
   during a capture — from the captured shell *or another terminal in the same
   directory* (via a `.demo-capture` control file), so it works mid-TUI. Reveal now,
   `--when "<line>"` (on a cue line), or `--after` (when the running command
-  finishes); `--replace`/`--split` placement; `--hold <ms>` and `--scroll` to keep
-  the scene up and pan it. A small wizard runs when no URL is given. An in-session
-  `demo open` (its echo + wizard) is excised from the recording and the score.
+  finishes); `--replace`/`--split` placement; `--hold <ms>` or `--scroll`
+  (mutually exclusive) to hold or pan the scene. `--view` opens a **real (headed)
+  browser** you drive yourself and records it until you close the window, then
+  composites those frames — no headless Chromium needed at export. A small wizard
+  runs when no URL is given (and sets the hold time). An in-session `demo open`
+  (its echo + wizard) is excised from the recording and the score.
 - **Export targets**: `gif` — pure Rust rasterizer (vt100 + embedded DejaVu Sans
   Mono, with procedurally-drawn block/box-drawing glyphs so banners/TUIs stay solid);
   `mp4` — H.264 via ffmpeg. `--speed` retimes playback.
