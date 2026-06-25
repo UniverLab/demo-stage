@@ -193,15 +193,21 @@ pub fn run_with_pane(score: &Score, pane: &crate::model::Pane) -> Result<Recordi
             Step::Wait { duration_ms } => sleep_collecting(*duration_ms, &mut events, &rx, t0),
             Step::WaitForStdout { pattern, .. } => wait_for(pattern, &mut events, &rx, t0),
             Step::Secret { prompt } => {
-                // Let the program render its secret prompt, then supply the value
-                // collected up front (in memory only) and submit it.
-                sleep_collecting(400, &mut events, &rx, t0);
+                // Supply the secret ONLY once the matching prompt is actually
+                // showing, so it can never land in the wrong field (e.g. the repo
+                // name). Wait for the prompt label to appear (or confirm it already
+                // printed), then type the value collected up front (in memory only).
+                let needle = secret_needle(prompt);
+                if !needle.is_empty() && !recent_contains(&events, &needle) {
+                    wait_for(&needle, &mut events, &rx, t0);
+                }
+                sleep_collecting(150, &mut events, &rx, t0);
                 if let Some(val) = secrets.get(prompt) {
                     let _ = writer.write_all(val.as_bytes());
                 }
                 let _ = writer.write_all(b"\r");
                 let _ = writer.flush();
-                sleep_collecting(120, &mut events, &rx, t0);
+                sleep_collecting(150, &mut events, &rx, t0);
             }
             Step::Scroll { .. } => {} // browser-only; no-op for terminal capture
             Step::Terminate => break,
@@ -297,6 +303,23 @@ fn collect_secrets(score: &Score) -> Result<std::collections::HashMap<String, St
         out.insert(p.to_string(), val);
     }
     Ok(out)
+}
+
+/// A stable substring of a secret's prompt label to wait for in the output (the
+/// label minus its trailing punctuation), e.g. `Vault passphrase` for
+/// `Vault passphrase:`.
+fn secret_needle(prompt: &str) -> String {
+    prompt
+        .trim()
+        .trim_end_matches([':', '?', ' '])
+        .trim()
+        .to_string()
+}
+
+/// Has `needle` shown up in the recent captured output (so a prompt we're waiting
+/// for has already printed)?
+fn recent_contains(events: &[(f64, String)], needle: &str) -> bool {
+    events.iter().rev().take(40).any(|(_, d)| d.contains(needle))
 }
 
 fn single_terminal_pane(score: &Score) -> Result<&crate::model::Pane> {

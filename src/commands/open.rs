@@ -197,8 +197,19 @@ fn wizard() -> Result<Reveal> {
     let view = behavior.starts_with("Interactive");
     let scroll = behavior.starts_with("Scroll");
     let hold_ms = if behavior.starts_with("Static") {
+        // Reject non-numbers instead of silently defaulting (a stray letter would
+        // otherwise pass through as the default).
         let secs = ask(Text::new("Hold for how many seconds?")
             .with_default("6")
+            .with_validator(|s: &str| {
+                let s = s.trim();
+                match s.parse::<f64>() {
+                    Ok(n) if n > 0.0 => Ok(inquire::validator::Validation::Valid),
+                    _ => Ok(inquire::validator::Validation::Invalid(
+                        "enter a positive number of seconds (e.g. 6)".into(),
+                    )),
+                }
+            })
             .prompt())?;
         let secs: f64 = secs.trim().parse().unwrap_or(6.0);
         Some((secs.max(0.5) * 1000.0) as u64)

@@ -56,44 +56,67 @@ fn ms(t0: Instant) -> u64 {
     t0.elapsed().as_millis() as u64
 }
 
-/// Track the current terminal line from an output chunk (cleared on newline).
-fn track_line(line: &mut String, text: &str) {
+/// Track the current terminal line and detect a secret prompt at each line
+/// boundary (`\r` redraw or `\n`) — crucially BEFORE the boundary clears the line.
+/// `inquire` emits the prompt immediately followed by `\r` (`Vault passphrase:\r…`),
+/// so checking only at the chunk end (after the `\r` cleared it) missed it and the
+/// secret leaked. Latches `sensitive` and records the prompt label when found.
+fn track_and_detect(
+    line: &mut String,
+    text: &str,
+    sensitive: &AtomicBool,
+    secret_prompt: &Mutex<Option<String>>,
+) {
+    let check = |line: &str| {
+        if is_secret_prompt(line) {
+            sensitive.store(true, Ordering::SeqCst);
+            *secret_prompt.lock().unwrap() = Some(clean_prompt(line));
+        }
+    };
     for ch in text.chars() {
         match ch {
-            '\n' | '\r' => line.clear(),
+            '\n' | '\r' => {
+                check(line);
+                line.clear();
+            }
             c if c.is_control() => {}
             c => line.push(c),
         }
     }
+    // The prompt may sit at the chunk end with no trailing newline yet.
+    check(line);
 }
 
-/// Tidy a captured prompt line into a label for `demo record` to show: drop the
-/// ANSI colour residue (`[..m`) left after the ESC was stripped, and the leading
-/// prompt glyphs (`? > ◆ ●`), leaving e.g. `Vault passphrase:`.
+/// Tidy a captured prompt line into a label for `demo record` to show: drop ANSI
+/// CSI residue left after the ESC was stripped (`[..m` colours, `[?25h` cursor
+/// codes, etc.) and the leading prompt glyphs (`? > ◆ ●`), leaving e.g.
+/// `Vault passphrase:`.
 fn clean_prompt(s: &str) -> String {
     let mut out = String::new();
     let mut chars = s.chars().peekable();
     while let Some(c) = chars.next() {
         if c == '[' {
-            let mut buf = String::new();
-            let mut is_ansi = false;
+            // A CSI residue (ESC already stripped): `[` then params `0-9;?` then a
+            // letter final byte. Drop it; otherwise keep the literal `[`.
+            let mut params = String::new();
+            let mut final_letter = None;
             while let Some(&n) = chars.peek() {
-                if n.is_ascii_digit() || n == ';' {
-                    buf.push(n);
+                if n.is_ascii_digit() || n == ';' || n == '?' {
+                    params.push(n);
                     chars.next();
-                } else if n == 'm' {
+                } else if n.is_ascii_alphabetic() {
+                    final_letter = Some(n);
                     chars.next();
-                    is_ansi = true;
                     break;
                 } else {
                     break;
                 }
             }
-            if is_ansi {
+            if final_letter.is_some() {
                 continue;
             }
             out.push('[');
-            out.push_str(&buf);
+            out.push_str(&params);
         } else {
             out.push(c);
         }
@@ -393,16 +416,10 @@ pub fn run(args: CaptureArgs) -> Result<()> {
                             d.chunk("OUT", &buf[..n]);
                         }
                         let text = String::from_utf8_lossy(&buf[..n]).into_owned();
-                        track_line(&mut line, &text);
-                        // LATCH the secret flag: a masked prompt redraws as it's
-                        // typed (`Vault passphrase: *`, `…**`, …) — those redraws no
-                        // longer end in `:`/`?`, so re-evaluating each chunk would
-                        // clear the flag and the rest of the secret would record.
-                        // Only SET here; the input thread clears it on Enter.
-                        if is_secret_prompt(&line) {
-                            sensitive.store(true, Ordering::SeqCst);
-                            *secret_prompt.lock().unwrap() = Some(clean_prompt(&line));
-                        }
+                        // Detect the secret prompt at each line boundary and LATCH
+                        // the flag (only set here; the input thread clears it on
+                        // Enter), so the masked redraws can't unset it mid-secret.
+                        track_and_detect(&mut line, &text, &sensitive, &secret_prompt);
                         // Pre-roll: discard prompt-setup output until the readiness
                         // marker; record only what follows it (the clean prompt).
                         if !ready.load(Ordering::SeqCst) {
@@ -728,10 +745,15 @@ pub fn run(args: CaptureArgs) -> Result<()> {
         salt_ms: 15,
         seed: None,
     };
-    let score = match &args.into {
+    let mut score = match &args.into {
         Some(path) => merge_into_stage(Score::load(path)?, &raw, &opts),
         None => normalize(&raw, name, &opts),
     };
+    // Persist the prompt the demo was captured with, so `demo record` reproduces
+    // it instead of falling back to the built-in default.
+    if force_prompt {
+        score.demo.prompt = Some(forced_ps1.clone());
+    }
     let score_path = if args.no_score {
         None
     } else {
@@ -891,7 +913,40 @@ fn write_faithful_cast(
 
 #[cfg(test)]
 mod tests {
-    use super::is_secret_prompt;
+    use super::*;
+    use std::sync::atomic::AtomicBool;
+    use std::sync::Mutex;
+
+    #[test]
+    fn detects_secret_at_a_carriage_return_boundary() {
+        // inquire emits the prompt immediately followed by `\r` and cursor codes —
+        // detection must fire on the prompt BEFORE the `\r` clears the line.
+        let sensitive = AtomicBool::new(false);
+        let secret_prompt = Mutex::new(None);
+        let mut line = String::new();
+        // `\x1b` (ESC) is a control char; `[?25h` is the residue after it.
+        track_and_detect(
+            &mut line,
+            " Vault passphrase:\r\x1b[?25h",
+            &sensitive,
+            &secret_prompt,
+        );
+        assert!(sensitive.load(Ordering::SeqCst), "should latch on the prompt");
+        assert_eq!(
+            secret_prompt.lock().unwrap().as_deref(),
+            Some("Vault passphrase:")
+        );
+    }
+
+    #[test]
+    fn clean_prompt_strips_colour_and_cursor_codes() {
+        // After ESC is stripped, both `[38;5;10m` colour and `[?25l` cursor codes
+        // remain — clean_prompt removes them and the leading glyph.
+        assert_eq!(
+            clean_prompt("[?25h[?25l> [38;5;10mVault passphrase:[39m"),
+            "Vault passphrase:"
+        );
+    }
 
     #[test]
     fn flags_secret_prompts_only() {
