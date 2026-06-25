@@ -245,7 +245,9 @@ pub fn from_raw(raw: &RawMacro, name: &str) -> (Recording, Layout, Vec<Step>) {
     for e in &raw.events {
         let t_ms = match e {
             RawEvent::Output { t_ms, .. } | RawEvent::Open { t_ms, .. } => *t_ms,
-            RawEvent::Input { .. } => continue,
+            // Input/Secret carry no rendered output — the program already echoed
+            // them (a secret as a mask), so faithful playback ignores them.
+            RawEvent::Input { .. } | RawEvent::Secret { .. } => continue,
         };
         if cutoff.is_some_and(|c| t_ms >= c) {
             continue;
@@ -279,7 +281,7 @@ pub fn from_raw(raw: &RawMacro, name: &str) -> (Recording, Layout, Vec<Step>) {
                 scroll: *scroll,
                 theme: theme.clone(),
             }),
-            RawEvent::Input { .. } => {}
+            RawEvent::Input { .. } | RawEvent::Secret { .. } => {}
         }
     }
 

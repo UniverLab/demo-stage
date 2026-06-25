@@ -182,6 +182,11 @@ pub enum Step {
     },
     /// Press a single named key (e.g. `enter`, `tab`, `ctrl+c`).
     Keypress { key: String },
+    /// Supply a secret at a secret prompt. The value is NOT stored — `demo record`
+    /// prompts for it (in memory) at the start of the run and types it here; the
+    /// captured demo masks it, so nothing secret ever lands on disk. `prompt` is
+    /// the label shown to the user (e.g. `Vault passphrase:`).
+    Secret { prompt: String },
     /// Block until a substring appears in a pane's output.
     WaitForStdout {
         #[serde(rename = "match")]

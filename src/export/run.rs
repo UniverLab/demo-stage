@@ -75,6 +75,10 @@ pub fn run_terminal(score: &Score) -> Result<Recording> {
 /// Browser steps (focus/scroll on browser panes) are no-ops here; the stage
 /// drives browser panes separately and composites the result.
 pub fn run_with_pane(score: &Score, pane: &crate::model::Pane) -> Result<Recording> {
+    // Secrets the demo enters are NOT stored — ask for them up front and keep them
+    // only in memory for this run; they're typed at each `Secret` step below.
+    let secrets = collect_secrets(score)?;
+
     let cols = (pane.width / CELL_W).clamp(1, 1000) as u16;
     let rows = (pane.height / CELL_H).clamp(1, 1000) as u16;
 
@@ -188,6 +192,17 @@ pub fn run_with_pane(score: &Score, pane: &crate::model::Pane) -> Result<Recordi
             }
             Step::Wait { duration_ms } => sleep_collecting(*duration_ms, &mut events, &rx, t0),
             Step::WaitForStdout { pattern, .. } => wait_for(pattern, &mut events, &rx, t0),
+            Step::Secret { prompt } => {
+                // Let the program render its secret prompt, then supply the value
+                // collected up front (in memory only) and submit it.
+                sleep_collecting(400, &mut events, &rx, t0);
+                if let Some(val) = secrets.get(prompt) {
+                    let _ = writer.write_all(val.as_bytes());
+                }
+                let _ = writer.write_all(b"\r");
+                let _ = writer.flush();
+                sleep_collecting(120, &mut events, &rx, t0);
+            }
             Step::Scroll { .. } => {} // browser-only; no-op for terminal capture
             Step::Terminate => break,
         }
@@ -250,6 +265,38 @@ pub fn run_with_pane(score: &Score, pane: &crate::model::Pane) -> Result<Recordi
         focuses,
         duration,
     })
+}
+
+/// Ask for every secret the score enters, up front, keeping the values only in
+/// memory for this run (they're typed at each [`Step::Secret`]). Returns a map of
+/// prompt label → value. No `Secret` steps → no prompts.
+fn collect_secrets(score: &Score) -> Result<std::collections::HashMap<String, String>> {
+    let mut prompts: Vec<&str> = Vec::new();
+    for step in &score.timeline {
+        if let Step::Secret { prompt } = step {
+            if !prompts.contains(&prompt.as_str()) {
+                prompts.push(prompt);
+            }
+        }
+    }
+    let mut out = std::collections::HashMap::new();
+    if prompts.is_empty() {
+        return Ok(out);
+    }
+    eprintln!(
+        "This demo enters {} secret(s); they're asked now and kept only in memory \
+         (never written to disk):",
+        prompts.len()
+    );
+    for p in prompts {
+        let val = inquire::Password::new(p)
+            .with_display_mode(inquire::PasswordDisplayMode::Masked)
+            .without_confirmation()
+            .prompt()
+            .map_err(|e| Error::Export(format!("secret prompt: {e}")))?;
+        out.insert(p.to_string(), val);
+    }
+    Ok(out)
 }
 
 fn single_terminal_pane(score: &Score) -> Result<&crate::model::Pane> {

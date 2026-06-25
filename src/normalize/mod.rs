@@ -208,9 +208,30 @@ fn terminal_steps(raw: &RawMacro, reveals: &[Reveal]) -> Vec<Step> {
         .max()
         .unwrap_or(0);
 
-    let mut steps = Vec::with_capacity(actions.len() * 2 + reveals.len() * 3);
+    // Secret prompts entered during the capture (label only — no value), in time
+    // order, so they can be re-supplied at the same point during `demo record`.
+    let mut secrets: Vec<(u64, String)> = raw
+        .events
+        .iter()
+        .filter_map(|e| match e {
+            RawEvent::Secret { t_ms, prompt } => Some((*t_ms, prompt.clone())),
+            _ => None,
+        })
+        .collect();
+    secrets.sort_by_key(|(t, _)| *t);
+
+    let mut steps = Vec::with_capacity(actions.len() * 2 + reveals.len() * 3 + secrets.len());
     let mut next_reveal = 0;
+    let mut next_secret = 0;
     for (i, action) in actions.iter().enumerate() {
+        // Supply any secret whose moment arrived before this action (it sits where
+        // the redacted keystrokes were — between the command and the next input).
+        while next_secret < secrets.len() && secrets[next_secret].0 <= action_start(action) {
+            steps.push(Step::Secret {
+                prompt: secrets[next_secret].1.clone(),
+            });
+            next_secret += 1;
+        }
         // Open any reveal whose moment has arrived before this action; refocus the
         // terminal afterwards, since more terminal input still follows.
         while next_reveal < reveals.len() && reveals[next_reveal].t_ms <= action_start(action) {
@@ -238,6 +259,12 @@ fn terminal_steps(raw: &RawMacro, reveals: &[Reveal]) -> Vec<Step> {
         if wait > 0 {
             steps.push(Step::Wait { duration_ms: wait });
         }
+    }
+    // Any secret entered after the last reconstructed input (unusual).
+    for (_, prompt) in &secrets[next_secret..] {
+        steps.push(Step::Secret {
+            prompt: prompt.clone(),
+        });
     }
     // Any reveal after the last command — the common case (open once the demo is
     // done) — closes out the demo, so it keeps focus and just holds.
@@ -513,6 +540,49 @@ mod tests {
             })
             .collect();
         assert_eq!(typed, vec!["echo hi"]);
+    }
+
+    #[test]
+    fn a_secret_event_becomes_a_secret_step() {
+        // A captured secret (prompt only) is re-supplied as a Secret step between
+        // the command and the next input — the value is never present.
+        let r = raw(vec![
+            RawEvent::Input {
+                t_ms: 0,
+                bytes: "ghscaff\r".into(),
+            },
+            RawEvent::Secret {
+                t_ms: 800,
+                prompt: "Vault passphrase:".into(),
+            },
+            RawEvent::Input {
+                t_ms: 2000,
+                bytes: "demo-repo\r".into(),
+            },
+        ]);
+        let score = normalize(&r, "demo", &opts());
+        assert!(crate::validate::validate(&score).is_empty());
+        let secrets: Vec<&str> = score
+            .timeline
+            .iter()
+            .filter_map(|s| match s {
+                Step::Secret { prompt } => Some(prompt.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(secrets, vec!["Vault passphrase:"]);
+        // The secret sits before the repo-name input.
+        let secret_at = score
+            .timeline
+            .iter()
+            .position(|s| matches!(s, Step::Secret { .. }))
+            .unwrap();
+        let repo_at = score
+            .timeline
+            .iter()
+            .position(|s| matches!(s, Step::Type { text, .. } if text == "demo-repo"))
+            .unwrap();
+        assert!(secret_at < repo_at);
     }
 
     #[test]

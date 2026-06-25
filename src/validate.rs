@@ -73,7 +73,7 @@ pub fn validate(score: &Score) -> Vec<String> {
                 None => problems.push(format!("{at}: focus references unknown pane '{pane}'")),
                 Some(_) => focused = Some(pane.as_str()),
             },
-            Step::Type { .. } | Step::Keypress { .. } => match focused {
+            Step::Type { .. } | Step::Keypress { .. } | Step::Secret { .. } => match focused {
                 None => problems.push(format!(
                     "{at}: input with no focused pane (add a `focus` first)"
                 )),

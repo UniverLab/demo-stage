@@ -67,6 +67,43 @@ fn track_line(line: &mut String, text: &str) {
     }
 }
 
+/// Tidy a captured prompt line into a label for `demo record` to show: drop the
+/// ANSI colour residue (`[..m`) left after the ESC was stripped, and the leading
+/// prompt glyphs (`? > ◆ ●`), leaving e.g. `Vault passphrase:`.
+fn clean_prompt(s: &str) -> String {
+    let mut out = String::new();
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '[' {
+            let mut buf = String::new();
+            let mut is_ansi = false;
+            while let Some(&n) = chars.peek() {
+                if n.is_ascii_digit() || n == ';' {
+                    buf.push(n);
+                    chars.next();
+                } else if n == 'm' {
+                    chars.next();
+                    is_ansi = true;
+                    break;
+                } else {
+                    break;
+                }
+            }
+            if is_ansi {
+                continue;
+            }
+            out.push('[');
+            out.push_str(&buf);
+        } else {
+            out.push(c);
+        }
+    }
+    out.trim()
+        .trim_start_matches(['?', '>', '◆', '●', '*', ' '])
+        .trim()
+        .to_string()
+}
+
 /// Heuristic: does this line look like a program prompting for a secret? Matches
 /// a secret keyword on a line that ends like a prompt (`:` or `?`), so a typed
 /// command that merely mentions "password" is not mistaken for a prompt.
@@ -246,6 +283,10 @@ pub fn run(args: CaptureArgs) -> Result<()> {
     // Set while the program is showing a password/passphrase prompt: input typed
     // during it is forwarded to the PTY but NEVER recorded.
     let sensitive = Arc::new(AtomicBool::new(false));
+    // The text of the secret prompt currently showing (e.g. `Vault passphrase:`),
+    // captured so a `Secret` event can record WHICH secret was entered — never the
+    // value. Set by the output thread, consumed by the input thread on Enter.
+    let secret_prompt: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
     // Browser reveals armed by `demo open --when <pat>`, fired by the output
     // thread when the pattern appears.
     let pending_opens: PendingWhen = Arc::new(Mutex::new(Vec::new()));
@@ -321,6 +362,7 @@ pub fn run(args: CaptureArgs) -> Result<()> {
         let last = last_activity.clone();
         let exited = shell_exited.clone();
         let sensitive = sensitive.clone();
+        let secret_prompt = secret_prompt.clone();
         let debug = debug.clone();
         let pending_opens = pending_opens.clone();
         let muting = muting.clone();
@@ -359,6 +401,7 @@ pub fn run(args: CaptureArgs) -> Result<()> {
                         // Only SET here; the input thread clears it on Enter.
                         if is_secret_prompt(&line) {
                             sensitive.store(true, Ordering::SeqCst);
+                            *secret_prompt.lock().unwrap() = Some(clean_prompt(&line));
                         }
                         // Pre-roll: discard prompt-setup output until the readiness
                         // marker; record only what follows it (the clean prompt).
@@ -434,6 +477,7 @@ pub fn run(args: CaptureArgs) -> Result<()> {
         let last = last_activity.clone();
         let stop = stop.clone();
         let sensitive = sensitive.clone();
+        let secret_prompt = secret_prompt.clone();
         let debug = debug.clone();
         let muting = muting.clone();
         let mute_since = mute_since.clone();
@@ -515,6 +559,15 @@ pub fn run(args: CaptureArgs) -> Result<()> {
                         if masked {
                             if buf[..n].iter().any(|b| *b == b'\r' || *b == b'\n') {
                                 sensitive.store(false, Ordering::SeqCst);
+                                // Record THAT a secret was entered (its prompt label
+                                // only, never the value) so `demo record` can ask for
+                                // it again and re-supply it.
+                                let prompt =
+                                    secret_prompt.lock().unwrap().take().unwrap_or_default();
+                                events.lock().unwrap().push(RawEvent::Secret {
+                                    t_ms: ms(t0),
+                                    prompt,
+                                });
                             }
                             continue;
                         }
@@ -634,7 +687,7 @@ pub fn run(args: CaptureArgs) -> Result<()> {
         let (ins, outs) = raw.events.iter().fold((0, 0), |(i, o), e| match e {
             RawEvent::Input { .. } => (i + 1, o),
             RawEvent::Output { .. } => (i, o + 1),
-            RawEvent::Open { .. } => (i, o),
+            RawEvent::Open { .. } | RawEvent::Secret { .. } => (i, o),
         });
         d.note(&format!(
             "recorded {} events ({ins} input, {outs} output)",

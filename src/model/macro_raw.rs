@@ -69,6 +69,10 @@ pub enum RawEvent {
     Input { t_ms: u64, bytes: String },
     /// A chunk written to the PTY by the running program.
     Output { t_ms: u64, data: String },
+    /// A secret was entered at a detected secret prompt — only the prompt text is
+    /// kept (e.g. `Vault passphrase:`), NEVER the value, so `demo record` can ask
+    /// for it again (in memory) when it re-executes. See [`crate::model::Step`].
+    Secret { t_ms: u64, prompt: String },
     /// A browser scene revealed via `demo open` at this moment — `mode` is
     /// `replace` (full-canvas) or `split` (beside the terminal). `hold_ms` keeps
     /// the scene on screen at least that long; `scroll` pans the page down while
