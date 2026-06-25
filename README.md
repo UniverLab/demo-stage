@@ -24,6 +24,12 @@ Instead of capturing brittle pixels, it records a session as **events**, normali
 human imperfections into a clean **score** (`demo.toml`), and compiles that score to
 several formats. One demo, version-controlled, re-runnable, diffable.
 
+<p align="center">
+  <img src="demo/dist/demo.gif" alt="A ghScaff wizard demo captured and rendered with DemoStage" width="800"/>
+</p>
+
+<p align="center"><em>An interactive ghScaff wizard — captured, normalized and rendered with DemoStage, browser scene composited in.</em></p>
+
 ---
 
 ## Install
