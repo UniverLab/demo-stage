@@ -40,6 +40,11 @@ struct DemoStageMeta {
     /// `false` for a `demo record` run (normalized typing & spacing).
     #[serde(default)]
     faithful: bool,
+    /// Total playback duration in seconds, including any trailing hold after the
+    /// last output (e.g. a browser scene revealed at the end). Without this, a
+    /// reader would recompute duration from the last output event and cut the hold.
+    #[serde(default)]
+    duration: f64,
 }
 
 /// Serialize a recording plus its render config: a JSON header line (with the
@@ -53,6 +58,7 @@ pub fn write(rec: &Recording, score: &Score, faithful: bool) -> Result<String> {
         captions: rec.captions.clone(),
         focuses: rec.focuses.clone(),
         faithful,
+        duration: rec.duration,
     };
     let header = json!({
         "version": 2,
@@ -116,11 +122,11 @@ fn read_cast(text: &str) -> Result<(Recording, Score, bool)> {
             events.push((t, data.to_string()));
         }
     }
-    let duration = events.last().map(|(t, _)| *t).unwrap_or(0.0);
+    let last_event = events.last().map(|(t, _)| *t).unwrap_or(0.0);
 
     // Recover the demo-stage render config if this cast came from `demo record`;
     // otherwise fall back to a default single-terminal layout.
-    let (score, captions, focuses, faithful) = match header.get("demostage") {
+    let (score, captions, focuses, faithful, meta_duration) = match header.get("demostage") {
         Some(v) => {
             let meta: DemoStageMeta = serde_json::from_value(v.clone())
                 .map_err(|e| Error::Export(format!("cast demostage header: {e}")))?;
@@ -131,15 +137,25 @@ fn read_cast(text: &str) -> Result<(Recording, Score, bool)> {
                 layout: meta.layout,
                 timeline: Vec::new(),
             };
-            (score, meta.captions, meta.focuses, meta.faithful)
+            (
+                score,
+                meta.captions,
+                meta.focuses,
+                meta.faithful,
+                meta.duration,
+            )
         }
         None => (
             default_score("demo", cols, rows),
             Vec::new(),
             Vec::new(),
             false,
+            0.0,
         ),
     };
+    // Honour the recorded duration (it may extend past the last output to hold a
+    // trailing scene); fall back to the last event for older casts.
+    let duration = meta_duration.max(last_event);
 
     Ok((
         Recording {
@@ -470,6 +486,32 @@ mod tests {
         assert_eq!(back.captions, rec.captions);
         assert_eq!(back.cols, 80);
         assert_eq!(back_score.layout.panes.len(), 1);
+    }
+
+    #[test]
+    fn write_read_preserves_a_trailing_hold_duration() {
+        // A browser scene revealed after the last output: duration extends past the
+        // last event, and that must survive the round-trip (else the scene is cut).
+        let rec = Recording {
+            cols: 80,
+            rows: 24,
+            title: "t".into(),
+            events: vec![(0.1, "hi".into()), (2.0, "\r\n".into())],
+            captions: vec![],
+            focuses: vec![(3.0, "scene1".into())],
+            duration: 11.0, // 8s hold after the last output at 2.0s
+        };
+        let score = default_score("t", 80, 24);
+        let cast = write(&rec, &score, false).unwrap();
+        let tmp = std::env::temp_dir().join(format!("hold-{}.cast", std::process::id()));
+        std::fs::write(&tmp, &cast).unwrap();
+        let (back, _, _) = read(&tmp).unwrap();
+        std::fs::remove_file(&tmp).ok();
+        assert!(
+            (back.duration - 11.0).abs() < 1e-9,
+            "trailing hold lost: {}",
+            back.duration
+        );
     }
 
     #[test]
