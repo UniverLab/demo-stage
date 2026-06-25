@@ -29,9 +29,11 @@ All notable changes to DemoStage are documented here. Format loosely follows
   finishes); `--replace`/`--split` placement; `--hold <ms>` or `--scroll`
   (mutually exclusive) to hold or pan the scene. `--view` opens a **real (headed)
   browser** you drive yourself and records it until you close the window, then
-  composites those frames — no headless Chromium needed at export. A small wizard
-  runs when no URL is given (and sets the hold time). An in-session `demo open`
-  (its echo + wizard) is excised from the recording and the score.
+  composites those frames — no headless Chromium needed at export. `--theme
+  light|dark` emulates `prefers-color-scheme` so theme-aware pages (GitHub, …)
+  render the chosen theme. A small wizard runs when no URL is given (and sets the
+  theme and hold time). An in-session `demo open` (its echo + wizard) is excised
+  from the recording and the score.
 - **Export targets**: `gif` — pure Rust rasterizer (vt100 + embedded DejaVu Sans
   Mono, with procedurally-drawn block/box-drawing glyphs so banners/TUIs stay solid);
   `mp4` — H.264 via ffmpeg. `--speed` retimes playback.

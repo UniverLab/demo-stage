@@ -91,13 +91,13 @@ another terminal in the same directory** — the latter lets you trigger a revea
 live even while a full-screen TUI owns the captured shell.
 
 ```sh
-demo open [url] [--replace | --split] [--when "<line>" | --after] [--hold <ms> | --scroll] [--view] [--wizard]
+demo open [url] [--replace | --split] [--when "<line>" | --after] [--hold <ms> | --scroll] [--view] [--theme light|dark] [--wizard]
 ```
 
 Run it with no URL (on a terminal) — or with `--wizard` — for a small prompt that
-asks the URL, how to present it (static hold / scroll / interactive view), the
-placement, and when to reveal. From a second terminal the wizard's prompts stay out
-of the recording.
+asks the URL, the theme, how to present it (static hold / scroll / interactive
+view), the placement, and when to reveal. From a second terminal the wizard's
+prompts stay out of the recording.
 
 - `[url]` — what to show. Omit for the wizard.
 - `--replace` (default) — the browser takes over the whole frame (a scene swap).
@@ -122,6 +122,10 @@ of the recording.
   headless Chromium is needed at `export`** (handy when export runs on a host
   without a browser — keep `demo-scenes/` next to the `.rec`). Needs a graphical
   display (on WSL, WSLg). Conflicts with `--scroll`/`--hold`/`--when`/`--after`.
+- `--theme light|dark` — emulate the browser's colour scheme (`prefers-color-scheme`)
+  so theme-aware pages (GitHub, many docs sites) render the theme you want instead
+  of defaulting to light. Applies to both headless reveals and `--view`. Omit for
+  the page/browser default.
 
 A reveal (other than `--view`) is composited at `export` via headless Chromium; a
 `--view` scene plays back its recorded frames. Example — open the repo once ghScaff
