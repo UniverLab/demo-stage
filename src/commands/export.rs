@@ -15,11 +15,13 @@ pub fn run(args: ExportArgs) -> Result<()> {
     // interactive / side-effecting demos (ghScaff, secrets) can't be re-executed.
     if faithful && !args.force {
         return Err(crate::error::Error::Export(format!(
-            "{} is a faithful capture — its typing/idle are as recorded, not \
-             humanized. Run `demo record` first for a clean, re-humanized take, \
-             then export its `.rec`. Or pass `--force` to render this capture \
-             as-is (needed for interactive/side-effecting demos that can't be \
-             re-executed).",
+            "{} is a faithful capture (typing/idle as recorded, not re-humanized).\n  \
+             • To render it as-is, add `--force`. This is the right path for \
+             interactive or side-effecting demos — a wizard, anything that needs \
+             secrets or creates real resources (e.g. ghScaff) — which `demo record` \
+             would RE-RUN and break.\n  \
+             • Only for a deterministic demo with no side effects: `demo record` \
+             re-executes `demo.toml` for a humanized take, then export its `.rec`.",
             args.input.display()
         )));
     }

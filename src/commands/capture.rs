@@ -128,9 +128,17 @@ impl DebugLog {
     }
 }
 
+/// Escape a user-entered label for safe embedding in a bash `PS1`: a literal
+/// backslash must be doubled, else bash reads it as a prompt escape (`\d` = date,
+/// `\w` = cwd, …) — e.g. a PowerShell path `C:\Users` would otherwise mangle.
+fn ps1_text(s: &str) -> String {
+    s.replace('\\', "\\\\")
+}
+
 /// Decide the captured shell's prompt: `--keep-prompt` keeps yours, `--prompt`
-/// forces a given `PS1`, and with neither a quick wizard asks before recording.
-/// Returns `(force_prompt, ps1)`.
+/// forces a given `PS1`, and with neither a quick wizard offers ready-made styles
+/// (you edit only the label text; colours are chosen for you). Returns
+/// `(force_prompt, ps1)`.
 fn choose_prompt(args: &CaptureArgs) -> Result<(bool, String)> {
     if args.keep_prompt {
         return Ok((false, DEFAULT_PROMPT.to_string()));
@@ -138,35 +146,51 @@ fn choose_prompt(args: &CaptureArgs) -> Result<(bool, String)> {
     if let Some(p) = &args.prompt {
         return Ok((true, p.clone()));
     }
-    let choice = inquire::Select::new(
-        "Prompt for this demo:",
+
+    let style = inquire::Select::new(
+        "Prompt style for this demo:",
         vec![
-            "Clean demo prompt  (user@demo:~$)",
-            "Customize…",
-            "Keep my real shell prompt",
+            "Linux        user@host:~$",
+            "macOS        user@host ~ %",
+            "PowerShell   PS path>",
+            "Minimal      ❯",
+            "Keep my real prompt",
         ],
     )
     .prompt()
     .map_err(|e| Error::Export(format!("prompt wizard: {e}")))?;
-    if choice.starts_with("Keep") {
-        Ok((false, DEFAULT_PROMPT.to_string()))
-    } else if choice.starts_with("Customize") {
-        let ps1 = inquire::Text::new("Custom PS1 (bash prompt syntax):")
-            .with_help_message(r"e.g. \u@\h:\w\$ — colours via \[\e[..m\]; blank = default")
+
+    // Ask one editable text with a sensible default (blank keeps the default).
+    let ask = |q: &str, default: &str| -> Result<String> {
+        let v = inquire::Text::new(q)
+            .with_default(default)
             .prompt()
             .map_err(|e| Error::Export(format!("prompt wizard: {e}")))?;
-        let ps1 = ps1.trim();
-        Ok((
-            true,
-            if ps1.is_empty() {
-                DEFAULT_PROMPT.to_string()
-            } else {
-                ps1.to_string()
-            },
-        ))
+        let v = v.trim();
+        Ok(if v.is_empty() {
+            default.to_string()
+        } else {
+            v.to_string()
+        })
+    };
+
+    // Colours are baked into each template; the user only fills the text.
+    let ps1 = if style.starts_with("Linux") {
+        let l = ps1_text(&ask("Text (user@host):", "user@demo")?);
+        format!("\\[\\e[1;32m\\]{l}\\[\\e[0m\\]:\\[\\e[1;34m\\]~\\[\\e[0m\\]$ ")
+    } else if style.starts_with("macOS") {
+        let l = ps1_text(&ask("Text (user@host):", "user@mac")?);
+        format!("\\[\\e[1;36m\\]{l}\\[\\e[0m\\] ~ % ")
+    } else if style.starts_with("PowerShell") {
+        let p = ps1_text(&ask("Path:", "C:\\Users\\demo")?);
+        format!("PS \\[\\e[1;36m\\]{p}\\[\\e[0m\\]> ")
+    } else if style.starts_with("Minimal") {
+        let s = ps1_text(&ask("Symbol:", "❯")?);
+        format!("\\[\\e[1;32m\\]{s}\\[\\e[0m\\] ")
     } else {
-        Ok((true, DEFAULT_PROMPT.to_string()))
-    }
+        return Ok((false, DEFAULT_PROMPT.to_string()));
+    };
+    Ok((true, ps1))
 }
 
 pub fn run(args: CaptureArgs) -> Result<()> {
@@ -328,7 +352,14 @@ pub fn run(args: CaptureArgs) -> Result<()> {
                         }
                         let text = String::from_utf8_lossy(&buf[..n]).into_owned();
                         track_line(&mut line, &text);
-                        sensitive.store(is_secret_prompt(&line), Ordering::SeqCst);
+                        // LATCH the secret flag: a masked prompt redraws as it's
+                        // typed (`Vault passphrase: *`, `…**`, …) — those redraws no
+                        // longer end in `:`/`?`, so re-evaluating each chunk would
+                        // clear the flag and the rest of the secret would record.
+                        // Only SET here; the input thread clears it on Enter.
+                        if is_secret_prompt(&line) {
+                            sensitive.store(true, Ordering::SeqCst);
+                        }
                         // Pre-roll: discard prompt-setup output until the readiness
                         // marker; record only what follows it (the clean prompt).
                         if !ready.load(Ordering::SeqCst) {
@@ -415,6 +446,10 @@ pub fn run(args: CaptureArgs) -> Result<()> {
             let mut buf = [0u8; 1024];
             let mut stdin = std::io::stdin();
             let mut cmd_line = String::new();
+            // When the current input line started (first char), so a `demo open`/
+            // `demo stop` span can be excised from the command's echo, not just
+            // from the Enter that follows it.
+            let mut cmd_start: Option<u64> = None;
             while !stop.load(Ordering::SeqCst) {
                 match stdin.read(&mut buf) {
                     Ok(0) => break,
@@ -438,13 +473,14 @@ pub fn run(args: CaptureArgs) -> Result<()> {
                                 if t.starts_with("demo open") || t.starts_with("demo stop") {
                                     *mute_since.lock().unwrap() = Instant::now();
                                     muting.store(true, Ordering::SeqCst);
-                                    // Record the open span's precise start (the typed
-                                    // command), so its echo + wizard are excised.
-                                    if t.starts_with("demo open") {
-                                        let mut s = mute_start.lock().unwrap();
-                                        if s.is_none() {
-                                            *s = Some(ms(t0));
-                                        }
+                                    // Start the excision span at the START of the
+                                    // typed line, so the command's own echo (and the
+                                    // wizard that follows) is removed — not just the
+                                    // bytes after the Enter. Covers `demo open` AND
+                                    // `demo stop` (closed by the control msg / at end).
+                                    let mut s = mute_start.lock().unwrap();
+                                    if s.is_none() {
+                                        *s = Some(cmd_start.unwrap_or_else(|| ms(t0)));
                                     }
                                 } else if !t.is_empty()
                                     && !after_opens.lock().unwrap().is_empty()
@@ -456,7 +492,11 @@ pub fn run(args: CaptureArgs) -> Result<()> {
                                     after_running.store(true, Ordering::SeqCst);
                                 }
                                 cmd_line.clear();
+                                cmd_start = None;
                             } else if !ch.is_control() {
+                                if cmd_line.is_empty() {
+                                    cmd_start = Some(ms(t0));
+                                }
                                 cmd_line.push(ch);
                             }
                         }
@@ -816,5 +856,10 @@ mod tests {
         assert!(!is_secret_prompt("$ echo my secret plan"));
         assert!(!is_secret_prompt("Cloning into 'repo'..."));
         assert!(!is_secret_prompt("Refreshing access token cache"));
+        // A masked prompt redraws as it's typed (`Vault passphrase: ***`) — those
+        // redraws no longer end in `:`/`?`, so they are NOT detected. This is why
+        // the recorder LATCHES the secret flag once set and only clears it on Enter
+        // (otherwise the rest of the secret would be recorded).
+        assert!(!is_secret_prompt("Vault passphrase: ***"));
     }
 }
