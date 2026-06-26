@@ -797,6 +797,19 @@ pub fn run(args: CaptureArgs) -> Result<()> {
             cast_path.display()
         ),
     }
+
+    // Offer to run `demo direct` for quick timeline refinement.
+    if let Some(p) = &score_path {
+        if std::io::stdin().is_terminal() {
+            let run_direct = inquire::Confirm::new("Run demo direct to refine the timeline?")
+                .with_default(false)
+                .prompt()
+                .unwrap_or(false);
+            if run_direct {
+                super::direct::run(crate::cli::DirectArgs { input: p.clone() })?;
+            }
+        }
+    }
     Ok(())
 }
 
