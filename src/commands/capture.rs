@@ -281,6 +281,8 @@ pub fn run(args: CaptureArgs) -> Result<()> {
         ));
     }
 
+    println!("{}\n", crate::BANNER);
+
     let shell = args
         .shell
         .clone()

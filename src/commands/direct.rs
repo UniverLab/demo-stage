@@ -10,6 +10,7 @@ use crate::model::{Score, Step};
 pub fn run(args: DirectArgs) -> Result<()> {
     let mut score = Score::load(&args.input)?;
 
+    println!("{}\n", crate::BANNER);
     println!(
         "demo direct — {}\n  {} steps in timeline\n",
         args.input.display(),
