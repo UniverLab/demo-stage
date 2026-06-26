@@ -28,13 +28,13 @@ pub fn run(args: DirectArgs) -> Result<()> {
             .map(|(i, s)| format!("{:>3}. {}", i + 1, step_summary(s)))
             .collect();
 
-        let selection = inquire::Select::new("Timeline (Esc=done):", labels)
+        let selection = inquire::Select::new("Timeline (enter=done):", labels)
             .with_starting_cursor(cursor.min(score.timeline.len().saturating_sub(1)))
             .prompt_skippable()
             .map_err(|e| Error::Export(format!("direct: {e}")))?;
 
         let Some(selected) = selection else {
-            break; // Esc → done
+            break; // enter with no selection or Esc → done
         };
 
         // Find the index from the label prefix.
