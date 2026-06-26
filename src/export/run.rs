@@ -189,10 +189,7 @@ pub fn run_with_pane(score: &Score, pane: &crate::model::Pane) -> Result<Recordi
 
     let total_steps = score.timeline.len();
     for (step_idx, step) in score.timeline.iter().enumerate() {
-        eprint!(
-            "\r  recording… step {}/{total_steps}",
-            step_idx + 1,
-        );
+        progress_bar("recording", step_idx + 1, total_steps);
 
         match step {
             Step::Focus { pane } => {
@@ -263,7 +260,7 @@ pub fn run_with_pane(score: &Score, pane: &crate::model::Pane) -> Result<Recordi
     }
 
     // Clear the progress line.
-    eprint!("\r                                        \r");
+    progress_clear();
 
     // ── Settle: hold after the last step until output goes quiet, so the final
     // result (a command's output, an error) finishes rendering and is held on
@@ -555,6 +552,24 @@ fn settle(
         }
         thread::sleep(Duration::from_millis(20));
     }
+}
+
+/// Print a progress bar to stderr: `  label… [████████░░░░░░░░] 42%`
+pub fn progress_bar(label: &str, current: usize, total: usize) {
+    const WIDTH: usize = 24;
+    let pct = if total == 0 {
+        100
+    } else {
+        (current * 100 / total).min(100)
+    };
+    let filled = (pct * WIDTH) / 100;
+    let bar: String = "█".repeat(filled) + &"░".repeat(WIDTH - filled);
+    eprint!("\r  {label} [{bar}] {pct:>3}%");
+}
+
+/// Clear the progress bar line.
+pub fn progress_clear() {
+    eprint!("\r{}\r", " ".repeat(60));
 }
 
 /// Wrap a string in POSIX single quotes for safe substitution into a shell

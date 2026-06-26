@@ -22,7 +22,7 @@ use crate::error::{Error, Result};
 use crate::model::Score;
 use crate::validate::validate;
 
-use run::Recording;
+use run::{progress_bar, progress_clear, Recording};
 
 /// Render an already-captured `recording` to `target`, returning the path
 /// written. Pure playback — it never executes the demo. `score` carries the
@@ -52,22 +52,22 @@ pub fn render(rec: &Recording, score: &Score, target: Target) -> Result<PathBuf>
                 gif::encode(&path, cw, ch, fps, |emit| {
                     stage::render_stage(rec, score, |f| {
                         n += 1;
-                        eprint!("\r  exporting gif… frame {n}/{total_frames}");
+                        progress_bar("exporting gif", n, total_frames);
                         emit(f);
                     })
                 })?;
-                eprint!("\r                                            \r");
+                progress_clear();
             } else {
                 let mut n = 0usize;
                 gif::encode(&path, cw, ch, fps, |emit| {
                     raster::render_frames(rec, score, |f| {
                         n += 1;
-                        eprint!("\r  exporting gif… frame {n}/{total_frames}");
+                        progress_bar("exporting gif", n, total_frames);
                         emit(f);
                     })
                     .map(|_| ())
                 })?;
-                eprint!("\r                                            \r");
+                progress_clear();
             }
             Ok(path)
         }
@@ -79,22 +79,22 @@ pub fn render(rec: &Recording, score: &Score, target: Target) -> Result<PathBuf>
                 mp4::encode(&path, cw, ch, fps, |emit| {
                     stage::render_stage(rec, score, |f| {
                         n += 1;
-                        eprint!("\r  exporting mp4… frame {n}/{total_frames}");
+                        progress_bar("exporting mp4", n, total_frames);
                         emit(f);
                     })
                 })?;
-                eprint!("\r                                            \r");
+                progress_clear();
             } else {
                 let mut n = 0usize;
                 mp4::encode(&path, cw, ch, fps, |emit| {
                     raster::render_frames(rec, score, |f| {
                         n += 1;
-                        eprint!("\r  exporting mp4… frame {n}/{total_frames}");
+                        progress_bar("exporting mp4", n, total_frames);
                         emit(f);
                     })
                     .map(|_| ())
                 })?;
-                eprint!("\r                                            \r");
+                progress_clear();
             }
             Ok(path)
         }
