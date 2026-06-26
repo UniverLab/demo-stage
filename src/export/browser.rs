@@ -91,6 +91,13 @@ pub fn capture(pane: &Pane, scroll_keyframes: usize) -> Result<Scene> {
     let tab = browser
         .new_tab()
         .map_err(|e| Error::Export(format!("open tab: {e}")))?;
+    // Force the viewport to the exact pane dimensions.
+    let _ = tab.set_bounds(headless_chrome::types::Bounds::Normal {
+        left: Some(0),
+        top: Some(0),
+        width: Some(w as f64),
+        height: Some(h as f64),
+    });
     emulate_theme(&tab, pane.theme.as_deref());
     tab.navigate_to(url)
         .and_then(|t| t.wait_until_navigated())
