@@ -41,17 +41,33 @@ pub fn render(rec: &Recording, score: &Score, target: Target) -> Result<PathBuf>
         score.layout.height as usize,
         score.layout.fps.max(1),
     );
+    let total_frames = (rec.duration * fps as f64).ceil() as usize + 1;
 
     match target {
         Target::Gif => {
             let path = resolve_output(score, "gif");
             ensure_parent(&path)?;
             if staged {
+                let mut n = 0usize;
                 gif::encode(&path, cw, ch, fps, |emit| {
-                    stage::render_stage(rec, score, |f| emit(f))
+                    stage::render_stage(rec, score, |f| {
+                        n += 1;
+                        eprint!("\r  exporting gif… frame {n}/{total_frames}");
+                        emit(f);
+                    })
                 })?;
+                eprint!("\r                                            \r");
             } else {
-                gif::write_gif(rec, score, &path)?;
+                let mut n = 0usize;
+                gif::encode(&path, cw, ch, fps, |emit| {
+                    raster::render_frames(rec, score, |f| {
+                        n += 1;
+                        eprint!("\r  exporting gif… frame {n}/{total_frames}");
+                        emit(f);
+                    })
+                    .map(|_| ())
+                })?;
+                eprint!("\r                                            \r");
             }
             Ok(path)
         }
@@ -59,11 +75,26 @@ pub fn render(rec: &Recording, score: &Score, target: Target) -> Result<PathBuf>
             let path = resolve_output(score, "mp4");
             ensure_parent(&path)?;
             if staged {
+                let mut n = 0usize;
                 mp4::encode(&path, cw, ch, fps, |emit| {
-                    stage::render_stage(rec, score, |f| emit(f))
+                    stage::render_stage(rec, score, |f| {
+                        n += 1;
+                        eprint!("\r  exporting mp4… frame {n}/{total_frames}");
+                        emit(f);
+                    })
                 })?;
+                eprint!("\r                                            \r");
             } else {
-                mp4::write_mp4(rec, score, &path)?;
+                let mut n = 0usize;
+                mp4::encode(&path, cw, ch, fps, |emit| {
+                    raster::render_frames(rec, score, |f| {
+                        n += 1;
+                        eprint!("\r  exporting mp4… frame {n}/{total_frames}");
+                        emit(f);
+                    })
+                    .map(|_| ())
+                })?;
+                eprint!("\r                                            \r");
             }
             Ok(path)
         }

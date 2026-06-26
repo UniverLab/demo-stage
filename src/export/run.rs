@@ -187,7 +187,13 @@ pub fn run_with_pane(score: &Score, pane: &crate::model::Pane) -> Result<Recordi
     let mut vt: Option<VtParser> = None;
     let mut vt_fed: usize = 0;
 
-    for step in &score.timeline {
+    let total_steps = score.timeline.len();
+    for (step_idx, step) in score.timeline.iter().enumerate() {
+        eprint!(
+            "\r  recording… step {}/{total_steps}",
+            step_idx + 1,
+        );
+
         match step {
             Step::Focus { pane } => {
                 focuses.push((t0.elapsed().as_secs_f64(), pane.clone()));
@@ -255,6 +261,9 @@ pub fn run_with_pane(score: &Score, pane: &crate::model::Pane) -> Result<Recordi
             Step::Terminate => break,
         }
     }
+
+    // Clear the progress line.
+    eprint!("\r                                        \r");
 
     // ── Settle: hold after the last step until output goes quiet, so the final
     // result (a command's output, an error) finishes rendering and is held on
