@@ -612,6 +612,11 @@ pub fn run(args: CaptureArgs) -> Result<()> {
                             }
                             continue;
                         }
+                        // Don't record input while a meta-command (demo open/stop)
+                        // is running — its wizard answers must not enter the demo.
+                        if muting.load(Ordering::SeqCst) {
+                            continue;
+                        }
                         events.lock().unwrap().push(RawEvent::Input {
                             t_ms: ms(t0),
                             bytes: String::from_utf8_lossy(&buf[..n]).into_owned(),
