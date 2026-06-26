@@ -18,7 +18,7 @@ pub use error::{Error, Result};
 /// normalizer drops it from the score so it never shows up in the finished demo.
 pub const STOP_COMMAND: &str = "demo stop";
 
-pub const BANNER: &str = "\x1b[38;5;105m\
+pub const BANNER: &str = "\
      █████                                    █████████   █████\n\
     ░░███                                    ███░░░░░███ ░░███\n\
   ███████   ██████  █████████████    ██████ ░███    ░░░  ███████    ██████    ███████  ██████\n\
@@ -29,7 +29,7 @@ pub const BANNER: &str = "\x1b[38;5;105m\
  ░░░░░░░░  ░░░░░░  ░░░░░ ░░░ ░░░░░  ░░░░░░   ░░░░░░░░░     ░░░░░   ░░░░░░░░  ░░░░░███ ░░░░░░\n\
                                                                              ███ ░███\n\
                                                                             ░░██████\n\
-                                                                             ░░░░░░\x1b[0m";
+                                                                             ░░░░░░";
 
 use std::process::ExitCode;
 
