@@ -13,6 +13,7 @@ use std::time::Duration;
 
 use headless_chrome::protocol::cdp::Emulation::{MediaFeature, SetEmulatedMedia};
 use headless_chrome::protocol::cdp::Page::CaptureScreenshotFormatOption;
+use headless_chrome::protocol::cdp::Page;
 use headless_chrome::{Browser, LaunchOptions, Tab};
 
 use super::provision;
@@ -245,8 +246,15 @@ fn emulate_theme(tab: &Arc<Tab>, theme: Option<&str>) {
 }
 
 fn shot(tab: &Arc<Tab>, w: usize, h: usize) -> Result<Vec<u8>> {
+    let clip = Page::Viewport {
+        x: 0.0,
+        y: 0.0,
+        width: w as f64,
+        height: h as f64,
+        scale: 1.0,
+    };
     let png = tab
-        .capture_screenshot(CaptureScreenshotFormatOption::Png, None, None, true)
+        .capture_screenshot(CaptureScreenshotFormatOption::Png, None, Some(clip), true)
         .map_err(|e| Error::Export(format!("screenshot: {e}")))?;
     png_to_rgba(&png, w, h)
 }
