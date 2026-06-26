@@ -246,7 +246,8 @@ fn emulate_theme(tab: &Arc<Tab>, theme: Option<&str>) {
 }
 
 fn shot(tab: &Arc<Tab>, w: usize, h: usize) -> Result<Vec<u8>> {
-    let clip = Page::Viewport {
+    // clip with scale=1.0 produces exactly w×h pixels regardless of device DPI.
+    let viewport = Page::Viewport {
         x: 0.0,
         y: 0.0,
         width: w as f64,
@@ -254,7 +255,7 @@ fn shot(tab: &Arc<Tab>, w: usize, h: usize) -> Result<Vec<u8>> {
         scale: 1.0,
     };
     let png = tab
-        .capture_screenshot(CaptureScreenshotFormatOption::Png, None, Some(clip), true)
+        .capture_screenshot(CaptureScreenshotFormatOption::Png, None, Some(viewport), true)
         .map_err(|e| Error::Export(format!("screenshot: {e}")))?;
     png_to_rgba(&png, w, h)
 }

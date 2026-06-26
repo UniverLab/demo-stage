@@ -18,7 +18,8 @@ pub fn run(args: DirectArgs) -> Result<()> {
         score.timeline.len()
     );
 
-    // Show the timeline and let user pick one at a time to edit (loop until enter with no selection).
+    // Show the timeline and let user pick one at a time to edit (loop until Esc).
+    let mut cursor: usize = 0;
     loop {
         let labels: Vec<String> = score
             .timeline
@@ -27,13 +28,13 @@ pub fn run(args: DirectArgs) -> Result<()> {
             .map(|(i, s)| format!("{:>3}. {}", i + 1, step_summary(s)))
             .collect();
 
-        let selection = inquire::Select::new("Timeline (enter=done, select=edit):", labels)
-            .with_help_message("select a step to edit, or press Esc/enter on nothing to finish")
+        let selection = inquire::Select::new("Timeline (Esc=done):", labels)
+            .with_starting_cursor(cursor.min(score.timeline.len().saturating_sub(1)))
             .prompt_skippable()
             .map_err(|e| Error::Export(format!("direct: {e}")))?;
 
         let Some(selected) = selection else {
-            break; // Esc or no selection → done
+            break; // Esc → done
         };
 
         // Find the index from the label prefix.
@@ -49,6 +50,7 @@ pub fn run(args: DirectArgs) -> Result<()> {
             continue;
         }
 
+        cursor = idx;
         print_context(&score.timeline, idx);
 
         match ask_action(&score.timeline[idx])? {
