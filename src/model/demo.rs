@@ -201,6 +201,15 @@ pub enum Step {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         max_ms: Option<u64>,
     },
+    /// Block until a pattern is visible on the rendered terminal screen (parsed
+    /// through a VT emulator, so escape codes are stripped). More robust than
+    /// `wait_for_stdout` for TUIs that redraw frequently.
+    WaitForScreen {
+        #[serde(rename = "match")]
+        pattern: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        timeout_ms: Option<u64>,
+    },
     /// Hold for a fixed duration.
     Wait { duration_ms: u64 },
     /// Show an on-canvas caption (a step indicator) until the next caption;

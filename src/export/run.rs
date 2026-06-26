@@ -13,6 +13,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
+use vt100::Parser as VtParser;
 
 use crate::error::{Error, Result};
 use crate::model::{PaneKind, Score, Step};
@@ -181,6 +182,11 @@ pub fn run_with_pane(score: &Score, pane: &crate::model::Pane) -> Result<Recordi
     // Capture that fresh prompt so it leads the first command.
     sleep_collecting(120, &mut events, &rx, t0);
 
+    // Index into `events` up to which the VT parser has been fed. Used by
+    // wait_for_screen to avoid re-processing already-consumed events.
+    let mut vt: Option<VtParser> = None;
+    let mut vt_fed: usize = 0;
+
     for step in &score.timeline {
         match step {
             Step::Focus { pane } => {
@@ -214,6 +220,19 @@ pub fn run_with_pane(score: &Score, pane: &crate::model::Pane) -> Result<Recordi
             Step::WaitForStdout { pattern, .. } => wait_for(pattern, &mut events, &rx, t0),
             Step::WaitForQuiet { quiet_ms, max_ms } => {
                 settle(&mut events, &rx, t0, *quiet_ms, max_ms.unwrap_or(WAIT_FOR_TIMEOUT_MS));
+            }
+            Step::WaitForScreen { pattern, timeout_ms } => {
+                wait_for_screen(
+                    pattern,
+                    &mut events,
+                    &rx,
+                    t0,
+                    &mut vt,
+                    &mut vt_fed,
+                    rows,
+                    cols,
+                    timeout_ms.unwrap_or(WAIT_FOR_TIMEOUT_MS),
+                );
             }
             Step::Secret { prompt } => {
                 // Supply the secret ONLY once the matching prompt is actually
@@ -412,6 +431,51 @@ fn wait_for(
         }
         thread::sleep(Duration::from_millis(15));
     }
+}
+
+/// Block until `pattern` is visible on the parsed VT screen buffer.
+/// Unlike `wait_for`, this strips escape codes and checks only rendered text.
+#[allow(clippy::too_many_arguments)]
+fn wait_for_screen(
+    pattern: &str,
+    events: &mut Vec<(f64, String)>,
+    rx: &Receiver<(Instant, Vec<u8>)>,
+    t0: Instant,
+    vt: &mut Option<VtParser>,
+    vt_fed: &mut usize,
+    rows: u16,
+    cols: u16,
+    timeout_ms: u64,
+) {
+    let parser = vt.get_or_insert_with(|| {
+        let mut p = VtParser::new(rows, cols, 0);
+        // Feed all events accumulated so far.
+        for (_, data) in events.iter() {
+            p.process(data.as_bytes());
+        }
+        *vt_fed = events.len();
+        p
+    });
+
+    let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+    while Instant::now() < deadline {
+        collect(events, rx, t0);
+        // Feed new events into the VT parser.
+        for (_, data) in &events[*vt_fed..] {
+            parser.process(data.as_bytes());
+        }
+        *vt_fed = events.len();
+        // Check if pattern is visible on the rendered screen.
+        if screen_contains(parser, pattern) {
+            return;
+        }
+        thread::sleep(Duration::from_millis(15));
+    }
+}
+
+/// Check whether `pattern` appears in the visible text of the VT screen.
+fn screen_contains(parser: &VtParser, pattern: &str) -> bool {
+    parser.screen().contents().contains(pattern)
 }
 
 /// Read and discard output until `marker` appears (or `max_ms` elapses). Used in
