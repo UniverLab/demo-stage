@@ -383,10 +383,20 @@ fn layout_with_reveals(raw: &RawMacro, reveals: &[Reveal]) -> Layout {
     if reveals.is_empty() {
         return default_layout(raw);
     }
-    let tw = (raw.meta.cols as u32 * CELL_W).max(CELL_W);
-    let th = (raw.meta.rows as u32 * CELL_H).max(CELL_H);
+    // Use explicit resolution if set, otherwise derive from terminal grid.
+    let (canvas_w, canvas_h) = if let Some((w, h)) = raw.meta.resolution {
+        (w, h)
+    } else {
+        let tw = (raw.meta.cols as u32 * CELL_W).max(CELL_W);
+        let th = (raw.meta.rows as u32 * CELL_H).max(CELL_H);
+        let any_split = reveals.iter().any(|r| r.mode == "split");
+        if any_split { (tw * 2, th) } else { (tw, th) }
+    };
+
     let any_split = reveals.iter().any(|r| r.mode == "split");
-    let (canvas_w, canvas_h) = if any_split { (tw * 2, th) } else { (tw, th) };
+    // Terminal pane: full width unless split, then half.
+    let tw = if any_split { canvas_w / 2 } else { canvas_w };
+    let th = canvas_h;
 
     let mut panes = vec![Pane {
         id: "main".to_string(),
@@ -402,7 +412,7 @@ fn layout_with_reveals(raw: &RawMacro, reveals: &[Reveal]) -> Layout {
     }];
     for r in reveals {
         let (x, y, w, h) = if r.mode == "split" {
-            (tw, 0, canvas_w - tw, th)
+            (tw, 0, canvas_w - tw, canvas_h)
         } else {
             (0, 0, canvas_w, canvas_h)
         };
@@ -429,10 +439,16 @@ fn layout_with_reveals(raw: &RawMacro, reveals: &[Reveal]) -> Layout {
     }
 }
 
-/// A single terminal pane sized to the captured grid.
+/// A single terminal pane sized to the captured grid (or explicit resolution).
 fn default_layout(raw: &RawMacro) -> Layout {
-    let width = (raw.meta.cols as u32 * CELL_W).max(CELL_W);
-    let height = (raw.meta.rows as u32 * CELL_H).max(CELL_H);
+    let (width, height) = raw
+        .meta
+        .resolution
+        .unwrap_or_else(|| {
+            let w = (raw.meta.cols as u32 * CELL_W).max(CELL_W);
+            let h = (raw.meta.rows as u32 * CELL_H).max(CELL_H);
+            (w, h)
+        });
     Layout {
         width,
         height,
@@ -466,6 +482,7 @@ mod tests {
                 cols: 80,
                 rows: 24,
                 idle_timeout_ms: 3000,
+                resolution: None,
                 stage: None,
                 mute_spans: Vec::new(),
             },

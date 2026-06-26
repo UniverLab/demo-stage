@@ -553,6 +553,7 @@ data = "file.txt\n"
                 cols: 80,
                 rows: 24,
                 idle_timeout_ms: 0,
+                resolution: None,
                 stage: None,
                 mute_spans: Vec::new(),
             },

@@ -40,6 +40,10 @@ pub struct RawMeta {
     pub rows: u16,
     #[serde(default)]
     pub idle_timeout_ms: u64,
+    /// Target resolution chosen at capture start (width, height). When set, the
+    /// normalizer sizes the layout to this instead of deriving from cols×rows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolution: Option<(u32, u32)>,
     /// Stage this macro was recorded into (`record --into`); `normalize` splices
     /// the captured flow into that stage unless `--stage` overrides it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -105,6 +109,7 @@ mod tests {
                 cols: 100,
                 rows: 30,
                 idle_timeout_ms: 3000,
+                resolution: None,
                 stage: None,
                 mute_spans: vec![(150, 320)],
             },

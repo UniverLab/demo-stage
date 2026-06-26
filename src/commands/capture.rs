@@ -274,6 +274,48 @@ fn choose_prompt(args: &CaptureArgs, shell: &str) -> Result<(bool, String)> {
     Ok((true, ps1))
 }
 
+/// Ask the user for the target export resolution.
+fn choose_resolution() -> Result<Option<(u32, u32)>> {
+    let choice = inquire::Select::new(
+        "Export resolution:",
+        vec![
+            "Landscape   1920×1080",
+            "Portrait    1080×1920",
+            "Square      1080×1080",
+            "Compact     1280×720",
+            "Custom",
+            "Auto (derive from terminal size)",
+        ],
+    )
+    .prompt()
+    .map_err(|e| Error::Export(format!("resolution wizard: {e}")))?;
+
+    let res = if choice.starts_with("Landscape") {
+        Some((1920, 1080))
+    } else if choice.starts_with("Portrait") {
+        Some((1080, 1920))
+    } else if choice.starts_with("Square") {
+        Some((1080, 1080))
+    } else if choice.starts_with("Compact") {
+        Some((1280, 720))
+    } else if choice.starts_with("Custom") {
+        let w = inquire::Text::new("width:")
+            .with_default("1920")
+            .prompt()
+            .map_err(|e| Error::Export(format!("resolution wizard: {e}")))?;
+        let h = inquire::Text::new("height:")
+            .with_default("1080")
+            .prompt()
+            .map_err(|e| Error::Export(format!("resolution wizard: {e}")))?;
+        let w: u32 = w.trim().parse().unwrap_or(1920);
+        let h: u32 = h.trim().parse().unwrap_or(1080);
+        Some((w, h))
+    } else {
+        None
+    };
+    Ok(res)
+}
+
 pub fn run(args: CaptureArgs) -> Result<()> {
     if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
         return Err(Error::Export(
@@ -358,6 +400,7 @@ pub fn run(args: CaptureArgs) -> Result<()> {
     // the shell echoes a readiness marker, so its rc/PS1-setup chatter is dropped.
     // With neither flag a quick wizard asks how to set it before recording.
     let (force_prompt, forced_ps1) = choose_prompt(&args, &shell)?;
+    let resolution = choose_resolution()?;
     let ready = Arc::new(AtomicBool::new(!force_prompt));
     let t0 = Instant::now();
 
@@ -719,6 +762,7 @@ pub fn run(args: CaptureArgs) -> Result<()> {
             cols,
             rows,
             idle_timeout_ms: idle,
+            resolution,
             stage: args.into.as_ref().map(|p| p.display().to_string()),
             mute_spans,
         },
