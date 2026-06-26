@@ -212,6 +212,9 @@ pub fn run_with_pane(score: &Score, pane: &crate::model::Pane) -> Result<Recordi
             }
             Step::Wait { duration_ms } => sleep_collecting(*duration_ms, &mut events, &rx, t0),
             Step::WaitForStdout { pattern, .. } => wait_for(pattern, &mut events, &rx, t0),
+            Step::WaitForQuiet { quiet_ms, max_ms } => {
+                settle(&mut events, &rx, t0, *quiet_ms, max_ms.unwrap_or(WAIT_FOR_TIMEOUT_MS));
+            }
             Step::Secret { prompt } => {
                 // Supply the secret ONLY once the matching prompt is actually
                 // showing, so it can never land in the wrong field (e.g. the repo

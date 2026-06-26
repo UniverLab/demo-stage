@@ -102,7 +102,7 @@ pub fn validate(score: &Score) -> Vec<String> {
                     PaneKind::Browser,
                 );
             }
-            Step::Wait { .. } | Step::Caption { .. } | Step::Terminate => {}
+            Step::Wait { .. } | Step::WaitForQuiet { .. } | Step::Caption { .. } | Step::Terminate => {}
         }
     }
 

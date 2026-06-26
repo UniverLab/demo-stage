@@ -194,6 +194,13 @@ pub enum Step {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pane: Option<String>,
     },
+    /// Block until output has been quiet for `quiet_ms` (no new data), capped by
+    /// `max_ms`. Useful for waiting until a TUI finishes its initial render.
+    WaitForQuiet {
+        quiet_ms: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        max_ms: Option<u64>,
+    },
     /// Hold for a fixed duration.
     Wait { duration_ms: u64 },
     /// Show an on-canvas caption (a step indicator) until the next caption;
