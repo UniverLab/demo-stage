@@ -186,7 +186,8 @@ fn check_ffmpeg(plat: &Platform) -> Check {
 /// `demo open --view` (headed browser) needs a graphical display; everything else
 /// is headless. Informational — not a failure.
 fn check_display(plat: &Platform) -> Check {
-    let has_display = std::env::var_os("DISPLAY").is_some_and(|v| !v.is_empty())
+    let has_display = matches!(plat.os, Os::Mac)
+        || std::env::var_os("DISPLAY").is_some_and(|v| !v.is_empty())
         || std::env::var_os("WAYLAND_DISPLAY").is_some_and(|v| !v.is_empty());
     if has_display {
         Check {
