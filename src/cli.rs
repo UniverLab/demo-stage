@@ -30,6 +30,8 @@ pub enum Command {
     Export(ExportArgs),
     /// Check the environment for browser/video dependencies and report fixes.
     Doctor(DoctorArgs),
+    /// Interactively edit timing/wait steps in a demo score.
+    Direct(DirectArgs),
 }
 
 #[derive(Debug, Args)]
@@ -38,6 +40,13 @@ pub struct DoctorArgs {
     /// Without it, `doctor` only reports and prints the commands to run.
     #[arg(long)]
     pub fix: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct DirectArgs {
+    /// The demo score to edit interactively.
+    #[arg(default_value = "demo.toml")]
+    pub input: PathBuf,
 }
 
 /// How a `demo open` browser scene sits on the canvas.
