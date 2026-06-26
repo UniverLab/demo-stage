@@ -19,7 +19,7 @@ use crate::cli::CaptureArgs;
 use crate::commands::control;
 use crate::error::{Error, Result};
 use crate::export::recording;
-use crate::export::run::{sh_single_quote, DEFAULT_PROMPT};
+use crate::export::run::{is_zsh, sh_single_quote};
 use crate::model::{DemoMeta, RawEvent, RawMacro, RawMeta, Score};
 use crate::normalize::{merge_into_stage, normalize, Options};
 
@@ -195,13 +195,29 @@ fn ps1_text(s: &str) -> String {
     s.replace('\\', "\\\\")
 }
 
+/// Build a prompt string with coloured segments for the detected shell.
+fn colored(shell: &str, ansi: &str, zsh_col: &str, text: &str) -> String {
+    if is_zsh(shell) {
+        format!("%B%F{{{zsh_col}}}{text}%f%b")
+    } else {
+        format!("\\[\\e[{ansi}m\\]{text}\\[\\e[0m\\]")
+    }
+}
+
+/// Default prompt for the given shell.
+pub fn default_prompt(shell: &str) -> String {
+    let user = colored(shell, "1;32", "green", "user@demo");
+    let path = colored(shell, "1;34", "blue", "~");
+    format!("{user}:{path}$ ")
+}
+
 /// Decide the captured shell's prompt: `--keep-prompt` keeps yours, `--prompt`
 /// forces a given `PS1`, and with neither a quick wizard offers ready-made styles
 /// (you edit only the label text; colours are chosen for you). Returns
 /// `(force_prompt, ps1)`.
-fn choose_prompt(args: &CaptureArgs) -> Result<(bool, String)> {
+fn choose_prompt(args: &CaptureArgs, shell: &str) -> Result<(bool, String)> {
     if args.keep_prompt {
-        return Ok((false, DEFAULT_PROMPT.to_string()));
+        return Ok((false, default_prompt(shell)));
     }
     if let Some(p) = &args.prompt {
         return Ok((true, p.clone()));
@@ -237,18 +253,23 @@ fn choose_prompt(args: &CaptureArgs) -> Result<(bool, String)> {
     // Colours are baked into each template; the user only fills the text.
     let ps1 = if style.starts_with("Linux") {
         let l = ps1_text(&ask("Text (user@host):", "user@demo")?);
-        format!("\\[\\e[1;32m\\]{l}\\[\\e[0m\\]:\\[\\e[1;34m\\]~\\[\\e[0m\\]$ ")
+        let user = colored(shell, "1;32", "green", &l);
+        let path = colored(shell, "1;34", "blue", "~");
+        format!("{user}:{path}$ ")
     } else if style.starts_with("macOS") {
         let l = ps1_text(&ask("Text (user@host):", "user@mac")?);
-        format!("\\[\\e[1;36m\\]{l}\\[\\e[0m\\] ~ % ")
+        let user = colored(shell, "1;36", "cyan", &l);
+        format!("{user} ~ % ")
     } else if style.starts_with("PowerShell") {
         let p = ps1_text(&ask("Path:", "C:\\Users\\demo")?);
-        format!("PS \\[\\e[1;36m\\]{p}\\[\\e[0m\\]> ")
+        let path = colored(shell, "1;36", "cyan", &p);
+        format!("PS {path}> ")
     } else if style.starts_with("Minimal") {
         let s = ps1_text(&ask("Symbol:", "❯")?);
-        format!("\\[\\e[1;32m\\]{s}\\[\\e[0m\\] ")
+        let sym = colored(shell, "1;32", "green", &s);
+        format!("{sym} ")
     } else {
-        return Ok((false, DEFAULT_PROMPT.to_string()));
+        return Ok((false, default_prompt(shell)));
     };
     Ok((true, ps1))
 }
@@ -334,7 +355,7 @@ pub fn run(args: CaptureArgs) -> Result<()> {
     // Force a clean prompt (unless --keep-prompt): recording doesn't begin until
     // the shell echoes a readiness marker, so its rc/PS1-setup chatter is dropped.
     // With neither flag a quick wizard asks how to set it before recording.
-    let (force_prompt, forced_ps1) = choose_prompt(&args)?;
+    let (force_prompt, forced_ps1) = choose_prompt(&args, &shell)?;
     let ready = Arc::new(AtomicBool::new(!force_prompt));
     let t0 = Instant::now();
 
@@ -374,7 +395,8 @@ pub fn run(args: CaptureArgs) -> Result<()> {
     // The output thread discards everything until it sees the marker, so none of
     // this (nor a leaked `user@host`) lands in the recording.
     if force_prompt {
-        let _ = writeln!(writer, "PS1={}; clear", sh_single_quote(&forced_ps1));
+        let var = if is_zsh(&shell) { "PROMPT" } else { "PS1" };
+        let _ = writeln!(writer, "{var}={}; clear", sh_single_quote(&forced_ps1));
         let _ = writeln!(writer, "printf 'demostage_capture_%s\\n' ready");
         let _ = writer.flush();
     }

@@ -28,6 +28,20 @@ const CELL_H: u32 = 20;
 /// `[demo] prompt` to customize.
 pub const DEFAULT_PROMPT: &str =
     "\\[\\e[1;32m\\]user@demo\\[\\e[0m\\]:\\[\\e[1;34m\\]~\\[\\e[0m\\]$ ";
+
+/// Returns true if the shell path looks like zsh.
+pub fn is_zsh(shell: &str) -> bool {
+    shell.ends_with("/zsh") || shell == "zsh"
+}
+
+/// Build a shell-appropriate default prompt string.
+pub fn default_prompt_for(shell: &str) -> String {
+    if is_zsh(shell) {
+        "%B%F{green}user@demo%f%b:%B%F{blue}~%f%b$ ".to_string()
+    } else {
+        DEFAULT_PROMPT.to_string()
+    }
+}
 /// Default seed when the score pins none.
 const DEFAULT_SEED: u64 = 0xD370_5EED;
 /// Cap for `wait_for_stdout` so a missing match can't hang export.
@@ -91,10 +105,16 @@ pub fn run_with_pane(score: &Score, pane: &crate::model::Pane) -> Result<Recordi
         })
         .map_err(|e| Error::Export(format!("openpty: {e}")))?;
 
-    let prompt = score.demo.prompt.as_deref().unwrap_or(DEFAULT_PROMPT);
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
+    let prompt = score
+        .demo
+        .prompt
+        .as_deref()
+        .map(|p| p.to_string())
+        .unwrap_or_else(|| default_prompt_for(&shell));
     let mut cmd = CommandBuilder::new(&shell);
-    cmd.env("PS1", prompt);
+    let ps_var = if is_zsh(&shell) { "PROMPT" } else { "PS1" };
+    cmd.env(ps_var, &prompt);
     cmd.env("PS2", "> ");
     cmd.env("TERM", "xterm-256color");
     let mut child = pair
@@ -133,7 +153,7 @@ pub fn run_with_pane(score: &Score, pane: &crate::model::Pane) -> Result<Recordi
     }
     // Force the prompt after the rc files (which usually set their own PS1), so a
     // demo never leaks `user@host`. Other env (tokens, etc.) is inherited.
-    let _ = writeln!(writer, "PS1={}; clear", sh_single_quote(prompt));
+    let _ = writeln!(writer, "{ps_var}={}; clear", sh_single_quote(&prompt));
     // A readiness marker makes the start deterministic: wait until the shell
     // echoes it back, which proves all rc/startup chatter and our setup have
     // flushed. A fixed delay (or plain quiet-detection) is racy on slow shells
