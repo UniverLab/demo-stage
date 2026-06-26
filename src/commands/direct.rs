@@ -18,7 +18,7 @@ pub fn run(args: DirectArgs) -> Result<()> {
         score.timeline.len()
     );
 
-    // Show the timeline and let user pick one at a time to edit (loop until Esc).
+    // Show the timeline and let user pick one at a time to edit (loop until done).
     let mut cursor: usize = 0;
     loop {
         let labels: Vec<String> = score
@@ -28,17 +28,13 @@ pub fn run(args: DirectArgs) -> Result<()> {
             .map(|(i, s)| format!("{:>3}. {}", i + 1, step_summary(s)))
             .collect();
 
-        let selection = inquire::Select::new("Timeline (enter=done):", labels)
+        let selection = inquire::Select::new("Timeline:", labels)
             .with_starting_cursor(cursor.min(score.timeline.len().saturating_sub(1)))
-            .prompt_skippable()
+            .prompt()
             .map_err(|e| Error::Export(format!("direct: {e}")))?;
 
-        let Some(selected) = selection else {
-            break; // enter with no selection or Esc → done
-        };
-
         // Find the index from the label prefix.
-        let idx = selected
+        let idx = selection
             .trim_start()
             .split('.')
             .next()
@@ -54,8 +50,9 @@ pub fn run(args: DirectArgs) -> Result<()> {
         print_context(&score.timeline, idx);
 
         match ask_action(&score.timeline[idx])? {
-            EditAction::Keep => {}
-            EditAction::WaitForQuiet => {
+            None => {} // Esc = cancel this edit
+            Some(EditAction::Keep) => {}
+            Some(EditAction::WaitForQuiet) => {
                 let quiet = ask_u64("quiet_ms", current_ms(&score.timeline[idx]))?;
                 score.timeline[idx] = Step::WaitForQuiet {
                     quiet_ms: quiet,
@@ -63,7 +60,7 @@ pub fn run(args: DirectArgs) -> Result<()> {
                 };
                 println!("  ✓ updated\n");
             }
-            EditAction::WaitForScreen => {
+            Some(EditAction::WaitForScreen) => {
                 let pattern = ask_string("match pattern")?;
                 score.timeline[idx] = Step::WaitForScreen {
                     pattern,
@@ -71,7 +68,7 @@ pub fn run(args: DirectArgs) -> Result<()> {
                 };
                 println!("  ✓ updated\n");
             }
-            EditAction::WaitForStdout => {
+            Some(EditAction::WaitForStdout) => {
                 let pattern = ask_string("match pattern")?;
                 score.timeline[idx] = Step::WaitForStdout {
                     pattern,
@@ -79,18 +76,27 @@ pub fn run(args: DirectArgs) -> Result<()> {
                 };
                 println!("  ✓ updated\n");
             }
-            EditAction::ChangeDuration => {
+            Some(EditAction::ChangeDuration) => {
                 let ms = ask_u64("duration_ms", current_ms(&score.timeline[idx]))?;
                 score.timeline[idx] = Step::Wait { duration_ms: ms };
                 println!("  ✓ updated\n");
             }
-            EditAction::SplitType => {
+            Some(EditAction::SplitType) => {
                 split_type_step(&mut score.timeline, idx)?;
             }
-            EditAction::Delete => {
+            Some(EditAction::Delete) => {
                 score.timeline.remove(idx);
                 println!("  ✓ deleted\n");
             }
+        }
+
+        // Ask if done editing.
+        let cont = inquire::Confirm::new("Continue editing?")
+            .with_default(true)
+            .prompt()
+            .unwrap_or(false);
+        if !cont {
+            break;
         }
     }
 
@@ -153,7 +159,7 @@ enum EditAction {
     Delete,
 }
 
-fn ask_action(step: &Step) -> Result<EditAction> {
+fn ask_action(step: &Step) -> Result<Option<EditAction>> {
     let mut opts = vec![
         "Keep as-is",
         "→ wait_for_quiet (silence-based)",
@@ -168,10 +174,14 @@ fn ask_action(step: &Step) -> Result<EditAction> {
     }
 
     let choice = inquire::Select::new("Action:", opts)
-        .prompt()
+        .prompt_skippable()
         .map_err(|e| Error::Export(format!("direct: {e}")))?;
 
-    Ok(match choice {
+    let Some(choice) = choice else {
+        return Ok(None); // Esc = cancel
+    };
+
+    Ok(Some(match choice {
         "Keep as-is" => EditAction::Keep,
         "→ wait_for_quiet (silence-based)" => EditAction::WaitForQuiet,
         "→ wait_for_screen (VT pattern)" => EditAction::WaitForScreen,
@@ -180,7 +190,7 @@ fn ask_action(step: &Step) -> Result<EditAction> {
         "Split/Edit text" => EditAction::SplitType,
         "Delete step" => EditAction::Delete,
         _ => EditAction::Keep,
-    })
+    }))
 }
 
 fn split_type_step(timeline: &mut Vec<Step>, idx: usize) -> Result<()> {
