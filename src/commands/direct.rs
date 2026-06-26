@@ -83,6 +83,10 @@ pub fn run(args: DirectArgs) -> Result<()> {
                     score.timeline[idx] = new;
                 }
             }
+            EditAction::SplitType => {
+                let extra = split_type_step(&mut score.timeline, idx)?;
+                offset += extra;
+            }
             EditAction::Delete => {
                 score.timeline.remove(idx);
                 offset -= 1;
@@ -148,6 +152,7 @@ enum EditAction {
     WaitForStdout,
     ChangeDuration,
     EditUrl,
+    SplitType,
     Delete,
 }
 
@@ -168,6 +173,11 @@ fn ask_action(step: &Step) -> Result<EditAction> {
         opts.push("Edit scene (URL/hold)");
     }
 
+    // Add split option for Type steps.
+    if matches!(step, Step::Type { .. }) {
+        opts.push("Split/Edit text");
+    }
+
     let choice = inquire::Select::new("Action:", opts)
         .prompt()
         .map_err(|e| Error::Export(format!("direct wizard: {e}")))?;
@@ -179,6 +189,7 @@ fn ask_action(step: &Step) -> Result<EditAction> {
         "→ wait_for_stdout (raw output pattern)" => EditAction::WaitForStdout,
         "Change duration" => EditAction::ChangeDuration,
         "Edit scene (URL/hold)" => EditAction::EditUrl,
+        "Split/Edit text" => EditAction::SplitType,
         "Delete step" => EditAction::Delete,
         _ => EditAction::Keep,
     })
@@ -243,4 +254,97 @@ fn ask_string_with_default(label: &str, default: &str) -> Result<String> {
     } else {
         Ok(v)
     }
+}
+
+/// Split or edit a Type step's text. Shows the current text and lets the user
+/// either edit it in place or split it into multiple Type steps (separated by a
+/// delimiter they choose, e.g. newline or a custom string).
+/// Returns the number of extra steps inserted (offset adjustment).
+fn split_type_step(timeline: &mut Vec<Step>, idx: usize) -> Result<i32> {
+    let (text, human_salt) = match &timeline[idx] {
+        Step::Type { text, human_salt } => (text.clone(), *human_salt),
+        _ => return Ok(0),
+    };
+
+    let display_text = text.replace('\n', "↵");
+    println!("  current text: {:?}", display_text);
+
+    let action = inquire::Select::new(
+        "How to edit:",
+        vec![
+            "Edit text (replace)",
+            "Split into parts (by delimiter)",
+        ],
+    )
+    .prompt()
+    .map_err(|e| Error::Export(format!("direct wizard: {e}")))?;
+
+    if action.starts_with("Edit") {
+        let new = inquire::Text::new("new text:")
+            .with_default(&text)
+            .prompt()
+            .map_err(|e| Error::Export(format!("direct wizard: {e}")))?;
+        // Convert ↵ back to \n for convenience.
+        let new = new.replace("↵", "\n");
+        timeline[idx] = Step::Type {
+            text: new,
+            human_salt,
+        };
+        println!("  ✓ updated\n");
+        Ok(0)
+    } else {
+        // Split by delimiter.
+        let delim = inquire::Select::new(
+            "Split on:",
+            vec!["newline (\\n)", "space", "custom string"],
+        )
+        .prompt()
+        .map_err(|e| Error::Export(format!("direct wizard: {e}")))?;
+
+        let delim_str = match delim {
+            "newline (\\n)" => "\n",
+            "space" => " ",
+            _ => {
+                let d = ask_string("delimiter")?;
+                // Leak into a 'static str for the split — fine, it's short-lived.
+                return split_with_delim(timeline, idx, &d, human_salt, &text);
+            }
+        };
+        split_with_delim(timeline, idx, delim_str, human_salt, &text)
+    }
+}
+
+fn split_with_delim(
+    timeline: &mut Vec<Step>,
+    idx: usize,
+    delim: &str,
+    human_salt: bool,
+    text: &str,
+) -> Result<i32> {
+    let parts: Vec<&str> = text.split(delim).collect();
+    if parts.len() <= 1 {
+        println!("  (delimiter not found — no split performed)");
+        return Ok(0);
+    }
+
+    // Replace original with first part, insert rest after.
+    let mut new_steps: Vec<Step> = Vec::new();
+    for (i, part) in parts.iter().enumerate() {
+        let mut t = part.to_string();
+        // Re-add the delimiter between parts (except the last).
+        if i < parts.len() - 1 {
+            t.push_str(delim);
+        }
+        if !t.is_empty() {
+            new_steps.push(Step::Type {
+                text: t,
+                human_salt,
+            });
+        }
+    }
+
+    let extra = new_steps.len() as i32 - 1;
+    timeline.splice(idx..=idx, new_steps);
+    println!("  ✓ split into {} parts\n", extra + 1);
+    Ok(extra)
 }
