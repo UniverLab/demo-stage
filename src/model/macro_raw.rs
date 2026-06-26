@@ -88,6 +88,8 @@ pub enum RawEvent {
         url: String,
         mode: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         hold_ms: Option<u64>,
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         scroll: bool,

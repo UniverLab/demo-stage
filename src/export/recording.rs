@@ -268,6 +268,7 @@ pub fn from_raw(raw: &RawMacro, name: &str) -> (Recording, Layout, Vec<Step>) {
             RawEvent::Output { data, .. } => events.push((acc, data.clone())),
             RawEvent::Open {
                 url,
+                name,
                 mode,
                 hold_ms,
                 scroll,
@@ -276,6 +277,7 @@ pub fn from_raw(raw: &RawMacro, name: &str) -> (Recording, Layout, Vec<Step>) {
             } => reveals.push(Reveal {
                 t: acc,
                 url: url.clone(),
+                name: name.clone(),
                 mode: mode.clone(),
                 hold_ms: *hold_ms,
                 scroll: *scroll,
@@ -319,6 +321,7 @@ pub fn from_raw(raw: &RawMacro, name: &str) -> (Recording, Layout, Vec<Step>) {
 struct Reveal {
     t: f64,
     url: String,
+    name: Option<String>,
     mode: String,
     hold_ms: Option<u64>,
     scroll: bool,
@@ -345,7 +348,7 @@ fn build_layout(
     let (canvas_w, canvas_h) = if any_split { (tw * 2, th) } else { (tw, th) };
 
     for (i, r) in reveals.iter().enumerate() {
-        let id = format!("scene{}", i + 1);
+        let id = r.name.clone().unwrap_or_else(|| format!("scene{}", i + 1));
         let (x, y, w, h) = if r.mode == "split" {
             (tw, 0, canvas_w - tw, th)
         } else {
@@ -581,6 +584,7 @@ data = "file.txt\n"
             RawEvent::Open {
                 t_ms: 900,
                 url: "https://example.com".into(),
+                name: None,
                 mode: "replace".into(),
                 hold_ms: None,
                 scroll: false,
@@ -651,6 +655,7 @@ data = "file.txt\n"
             RawEvent::Open {
                 t_ms: 500,
                 url: "https://example.com".into(),
+                name: None,
                 mode: "replace".into(),
                 hold_ms: None,
                 scroll: false,
@@ -676,6 +681,7 @@ data = "file.txt\n"
         let r = raw(vec![RawEvent::Open {
             t_ms: 100,
             url: "https://github.com/x".into(),
+                name: None,
             mode: "replace".into(),
             hold_ms: None,
             scroll: false,
@@ -698,6 +704,7 @@ data = "file.txt\n"
             RawEvent::Open {
                 t_ms: 100,
                 url: "https://example.com".into(),
+                name: None,
                 mode: "replace".into(),
                 hold_ms: Some(5000),
                 scroll: true,

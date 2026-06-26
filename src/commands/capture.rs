@@ -32,6 +32,7 @@ const PROMPT_READY: &str = "demostage_capture_ready";
 #[derive(Clone)]
 struct Reveal {
     url: String,
+    name: Option<String>,
     mode: String,
     hold_ms: Option<u64>,
     scroll: bool,
@@ -528,6 +529,7 @@ pub fn run(args: CaptureArgs) -> Result<()> {
                                         evs.push(RawEvent::Open {
                                             t_ms: now,
                                             url: r.url.clone(),
+                                            name: r.name.clone(),
                                             mode: r.mode.clone(),
                                             hold_ms: r.hold_ms,
                                             scroll: r.scroll,
@@ -710,6 +712,7 @@ pub fn run(args: CaptureArgs) -> Result<()> {
                 evs.push(RawEvent::Open {
                     t_ms: now,
                     url: r.url,
+                    name: r.name,
                     mode: r.mode,
                     hold_ms: r.hold_ms,
                     scroll: r.scroll,
@@ -923,8 +926,14 @@ fn read_control(
                     .get("theme")
                     .and_then(|t| t.as_str())
                     .map(|s| s.to_string());
+                let name = v
+                    .get("name")
+                    .and_then(|n| n.as_str())
+                    .filter(|s| !s.is_empty())
+                    .map(|s| s.to_string());
                 let reveal = Reveal {
                     url: url.into(),
+                    name,
                     mode: mode.into(),
                     hold_ms,
                     scroll,
@@ -952,6 +961,7 @@ fn read_control(
                     events.lock().unwrap().push(RawEvent::Open {
                         t_ms: ms(t0),
                         url: reveal.url,
+                        name: reveal.name,
                         mode: reveal.mode,
                         hold_ms: reveal.hold_ms,
                         scroll: reveal.scroll,

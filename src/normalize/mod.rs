@@ -83,29 +83,22 @@ fn reveal_hold_ms(hold: Option<u64>, scroll: bool) -> u64 {
     })
 }
 
-/// Collect the capture's `demo open` reveals in time order, naming them
-/// `scene1`, `scene2`, … to match the panes built in [`layout_with_reveals`].
+/// Collect the capture's `demo open` reveals in time order, using custom names
+/// when provided or falling back to `scene1`, `scene2`, etc.
 fn collect_reveals(raw: &RawMacro) -> Vec<Reveal> {
-    #[allow(clippy::type_complexity)]
-    let mut opens: Vec<(u64, String, String, Option<u64>, bool, Option<String>)> = raw
+    let mut opens: Vec<_> = raw
         .events
         .iter()
         .filter_map(|e| match e {
             RawEvent::Open {
                 t_ms,
                 url,
+                name,
                 mode,
                 hold_ms,
                 scroll,
                 theme,
-            } => Some((
-                *t_ms,
-                url.clone(),
-                mode.clone(),
-                *hold_ms,
-                *scroll,
-                theme.clone(),
-            )),
+            } => Some((*t_ms, url.clone(), name.clone(), mode.clone(), *hold_ms, *scroll, theme.clone())),
             _ => None,
         })
         .collect();
@@ -113,9 +106,9 @@ fn collect_reveals(raw: &RawMacro) -> Vec<Reveal> {
     opens
         .into_iter()
         .enumerate()
-        .map(|(i, (t_ms, url, mode, hold_ms, scroll, theme))| Reveal {
+        .map(|(i, (t_ms, url, name, mode, hold_ms, scroll, theme))| Reveal {
             t_ms,
-            id: format!("scene{}", i + 1),
+            id: name.unwrap_or_else(|| format!("scene{}", i + 1)),
             url,
             mode,
             hold_ms,
@@ -701,6 +694,7 @@ mod tests {
             RawEvent::Open {
                 t_ms: 500,
                 url: "https://example.com".into(),
+                name: None,
                 mode: "replace".into(),
                 hold_ms: Some(5000),
                 scroll: true,

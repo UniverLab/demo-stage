@@ -85,6 +85,7 @@ const CELL_H: u32 = 20;
 /// A resolved reveal request: where, how, and when to open it.
 struct Reveal {
     url: String,
+    name: Option<String>,
     mode: String,
     /// Defer until this substring appears in the output.
     when: Option<String>,
@@ -140,6 +141,7 @@ pub fn run(args: OpenArgs) -> Result<()> {
     control::send(serde_json::json!({
         "cmd": "open",
         "url": r.url,
+        "name": r.name,
         "mode": r.mode,
         "when": r.when,
         "after": r.after,
@@ -204,6 +206,7 @@ fn resolve(args: OpenArgs) -> Result<Reveal> {
     match &args.url {
         Some(url) if !args.wizard => Ok(Reveal {
             url: normalize_url(url),
+            name: None,
             mode: mode(&args),
             when: args.when.clone(),
             after: args.after,
@@ -251,6 +254,12 @@ fn wizard() -> Result<Reveal> {
         normalize_url(&raw)
     };
 
+    let scene_name = ask(inquire::Text::new("Scene name:")
+        .with_help_message("identifier for this scene (e.g. 'browser', 'preview')")
+        .with_default("browser")
+        .prompt())?;
+    let scene_name = scene_name.trim().to_string();
+
     let theme = ask(Select::new("Browser theme:", vec!["default", "light", "dark"]).prompt())?;
     let theme = match theme {
         "light" => Some("light".to_string()),
@@ -296,6 +305,7 @@ fn wizard() -> Result<Reveal> {
     if view {
         return Ok(Reveal {
             url: normalize_url(url.trim()),
+            name: Some(scene_name.clone()),
             mode: "replace".to_string(),
             when: None,
             after: false,
@@ -341,6 +351,7 @@ fn wizard() -> Result<Reveal> {
 
     Ok(Reveal {
         url: normalize_url(url.trim()),
+        name: Some(scene_name),
         mode: mode.to_string(),
         when,
         after,
