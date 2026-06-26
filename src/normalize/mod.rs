@@ -208,6 +208,16 @@ fn terminal_steps(raw: &RawMacro, reveals: &[Reveal]) -> Vec<Step> {
         .max()
         .unwrap_or(0);
 
+    // Collect all output event timestamps for the smart-wait heuristic.
+    let output_times: Vec<u64> = raw
+        .events
+        .iter()
+        .filter_map(|e| match e {
+            RawEvent::Output { t_ms, .. } => Some(*t_ms),
+            _ => None,
+        })
+        .collect();
+
     // Secret prompts entered during the capture (label only — no value), in time
     // order, so they can be re-supplied at the same point during `demo record`.
     let mut secrets: Vec<(u64, String)> = raw
@@ -257,7 +267,17 @@ fn terminal_steps(raw: &RawMacro, reveals: &[Reveal]) -> Vec<Step> {
             None => last_output_ms.saturating_sub(this_end).min(MAX_TAIL_MS),
         };
         if wait > 0 {
-            steps.push(Step::Wait { duration_ms: wait });
+            // Smart heuristic: if there was significant output activity in this
+            // window followed by silence, emit wait_for_quiet instead of a fixed
+            // wait — it's more robust against timing variations.
+            if should_use_wait_for_quiet(this_end, this_end + wait, &output_times) {
+                steps.push(Step::WaitForQuiet {
+                    quiet_ms: 500,
+                    max_ms: None,
+                });
+            } else {
+                steps.push(Step::Wait { duration_ms: wait });
+            }
         }
     }
     // Any secret entered after the last reconstructed input (unusual).
@@ -307,6 +327,38 @@ fn action_end(a: &Action) -> u64 {
         Action::Type { end_ms, .. } => *end_ms,
         Action::Key { t_ms, .. } => *t_ms,
     }
+}
+
+/// Minimum output activity span (ms) to consider the wait "output-dominated".
+const OUTPUT_ACTIVITY_MIN_MS: u64 = 200;
+/// Minimum trailing silence (ms) after last output in the window to trigger the
+/// heuristic. If the user waited this long after output stopped, they were likely
+/// waiting for the program to finish.
+const TRAILING_SILENCE_MIN_MS: u64 = 300;
+
+/// Returns true if the wait window [from_ms, to_ms) shows a pattern of "output
+/// activity followed by silence" — meaning the user was waiting for a program to
+/// finish producing output. In that case, `wait_for_quiet` is more robust.
+fn should_use_wait_for_quiet(from_ms: u64, to_ms: u64, output_times: &[u64]) -> bool {
+    let window_ms = to_ms.saturating_sub(from_ms);
+    if window_ms < OUTPUT_ACTIVITY_MIN_MS + TRAILING_SILENCE_MIN_MS {
+        return false;
+    }
+    // Find output events in this window.
+    let in_window: Vec<u64> = output_times
+        .iter()
+        .filter(|&&t| t >= from_ms && t < to_ms)
+        .copied()
+        .collect();
+    if in_window.len() < 2 {
+        return false; // Too few output events — probably just a prompt echo.
+    }
+    let first_out = in_window[0];
+    let last_out = in_window[in_window.len() - 1];
+    let activity_span = last_out.saturating_sub(first_out);
+    let trailing_silence = to_ms.saturating_sub(last_out);
+
+    activity_span >= OUTPUT_ACTIVITY_MIN_MS && trailing_silence >= TRAILING_SILENCE_MIN_MS
 }
 
 /// Drop the trailing `demo stop` the user typed to end the capture (and its
