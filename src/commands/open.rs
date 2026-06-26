@@ -19,6 +19,64 @@ use crate::cli::{OpenArgs, OpenMode};
 use crate::commands::control;
 use crate::error::{Error, Result};
 
+/// Simple file path autocomplete for the open wizard.
+#[derive(Clone)]
+struct FilePathCompleter;
+
+impl inquire::autocompletion::Autocomplete for FilePathCompleter {
+    fn get_suggestions(
+        &mut self,
+        input: &str,
+    ) -> std::result::Result<Vec<String>, inquire::CustomUserError> {
+        let input = if input.is_empty() { "./" } else { input };
+        let (dir, prefix) = if input.ends_with('/') {
+            (input.to_string(), "")
+        } else {
+            let p = std::path::Path::new(input);
+            let dir = p.parent().unwrap_or(std::path::Path::new("."));
+            let prefix = p.file_name().and_then(|f| f.to_str()).unwrap_or("");
+            (dir.to_string_lossy().to_string(), prefix)
+        };
+        let entries = std::fs::read_dir(&dir).ok();
+        let mut results = Vec::new();
+        if let Some(entries) = entries {
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().to_string();
+                if name.starts_with(prefix) {
+                    let full = if dir == "./" || dir == "." {
+                        name.clone()
+                    } else {
+                        format!("{}/{}", dir.trim_end_matches('/'), name)
+                    };
+                    let full = if entry.path().is_dir() {
+                        format!("{full}/")
+                    } else {
+                        full
+                    };
+                    results.push(full);
+                }
+            }
+        }
+        results.sort();
+        Ok(results)
+    }
+
+    fn get_completion(
+        &mut self,
+        input: &str,
+        suggestion: Option<String>,
+    ) -> std::result::Result<Option<String>, inquire::CustomUserError> {
+        Ok(suggestion.or_else(|| {
+            let mut suggestions = self.get_suggestions(input).ok()?;
+            if suggestions.len() == 1 {
+                Some(suggestions.remove(0))
+            } else {
+                None
+            }
+        }))
+    }
+}
+
 /// Monospace cell size assumed by the renderer (matches `export::recording`), so a
 /// `--view` recording is sized to the terminal canvas it'll be composited onto.
 const CELL_W: u32 = 10;
@@ -172,9 +230,26 @@ fn ask<T>(r: std::result::Result<T, inquire::InquireError>) -> Result<T> {
 fn wizard() -> Result<Reveal> {
     println!("\n  demo open — reveal a browser scene\n");
 
-    let url = ask(Text::new("URL:")
-        .with_help_message("a repo page, a file:// PDF, http://localhost…")
-        .prompt())?;
+    let source = ask(Select::new(
+        "Source:",
+        vec!["URL (web page, localhost)", "Local file (PDF, PNG, HTML)"],
+    )
+    .prompt())?;
+
+    let url = if source.starts_with("Local") {
+        let path = ask(inquire::Text::new("File path:")
+            .with_help_message("relative or absolute path to a local file")
+            .with_autocomplete(FilePathCompleter)
+            .prompt())?;
+        let abs = std::fs::canonicalize(path.trim())
+            .map_err(|e| Error::Export(format!("file not found: {e}")))?;
+        format!("file://{}", abs.display())
+    } else {
+        let raw = ask(Text::new("URL:")
+            .with_help_message("a repo page, http://localhost…")
+            .prompt())?;
+        normalize_url(&raw)
+    };
 
     let theme = ask(Select::new("Browser theme:", vec!["default", "light", "dark"]).prompt())?;
     let theme = match theme {
