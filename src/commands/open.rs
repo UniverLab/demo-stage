@@ -145,7 +145,7 @@ fn resolve(args: OpenArgs) -> Result<Reveal> {
 
     match &args.url {
         Some(url) if !args.wizard => Ok(Reveal {
-            url: url.clone(),
+            url: normalize_url(url),
             mode: mode(&args),
             when: args.when.clone(),
             after: args.after,
@@ -220,7 +220,7 @@ fn wizard() -> Result<Reveal> {
     // An interactive view always takes over the whole frame and opens immediately.
     if view {
         return Ok(Reveal {
-            url: url.trim().to_string(),
+            url: normalize_url(url.trim()),
             mode: "replace".to_string(),
             when: None,
             after: false,
@@ -265,7 +265,7 @@ fn wizard() -> Result<Reveal> {
     };
 
     Ok(Reveal {
-        url: url.trim().to_string(),
+        url: normalize_url(url.trim()),
         mode: mode.to_string(),
         when,
         after,
@@ -274,4 +274,17 @@ fn wizard() -> Result<Reveal> {
         view: false,
         theme,
     })
+}
+
+/// Ensure a URL has a protocol prefix. Bare domains like `google.com` become
+/// `https://google.com`; `file://`, `http://`, `https://` are left as-is.
+fn normalize_url(url: &str) -> String {
+    let u = url.trim();
+    if u.contains("://") {
+        u.to_string()
+    } else if u.starts_with("localhost") || u.starts_with("127.0.0.1") {
+        format!("http://{u}")
+    } else {
+        format!("https://{u}")
+    }
 }
