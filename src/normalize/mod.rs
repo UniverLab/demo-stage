@@ -453,6 +453,8 @@ fn layout_with_reveals(raw: &RawMacro, reveals: &[Reveal]) -> Layout {
         fps: 15,
         line_height: 1.2,
         background: Some("#0b0f14".to_string()),
+        font_family: None,
+        font_size: None,
         panes,
     }
 }
@@ -470,6 +472,8 @@ fn default_layout(raw: &RawMacro) -> Layout {
         fps: 15,
         line_height: 1.2,
         background: Some("#0b0f14".to_string()),
+        font_family: None,
+        font_size: None,
         panes: vec![Pane {
             id: "main".to_string(),
             kind: PaneKind::Terminal,

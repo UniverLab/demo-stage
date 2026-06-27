@@ -6,15 +6,14 @@
 
 use std::collections::HashMap;
 
-use fontdue::{Font, FontSettings, Metrics};
+use fontdue::{Font, Metrics};
 use vt100::{Color, Parser};
 
 use super::run::Recording;
-use crate::error::{Error, Result};
+use crate::error::Result;
+use crate::fonts;
 use crate::model::Score;
 
-/// Embedded monospace font (DejaVu Sans Mono, see assets/FONT-LICENSE.md).
-const FONT: &[u8] = include_bytes!("../../assets/DejaVuSansMono.ttf");
 const DEFAULT_FG: [u8; 3] = [200, 200, 200];
 
 /// Non-ASCII glyphs cached on top of printable ASCII so they render on the pixel
@@ -119,8 +118,12 @@ pub struct FrameSource<'a> {
 
 impl<'a> FrameSource<'a> {
     pub fn new(rec: &'a Recording, score: &Score) -> Result<Self> {
-        let font = Font::from_bytes(FONT, FontSettings::default())
-            .map_err(|e| Error::Export(format!("font: {e}")))?;
+        let font_name = score
+            .layout
+            .font_family
+            .as_deref()
+            .unwrap_or(fonts::DEFAULT_FONT);
+        let font = fonts::load(font_name);
         let px = score
             .layout
             .panes
@@ -164,7 +167,7 @@ impl<'a> FrameSource<'a> {
         let caption = if rec.captions.is_empty() {
             None
         } else {
-            Some(CaptionOverlay::new(rec.captions.clone(), 18.0)?)
+            Some(CaptionOverlay::new(rec.captions.clone(), 18.0, font_name)?)
         };
 
         Ok(FrameSource {
@@ -547,9 +550,8 @@ pub struct CaptionOverlay {
 }
 
 impl CaptionOverlay {
-    pub fn new(captions: Vec<(f64, String)>, px: f32) -> Result<Self> {
-        let font = Font::from_bytes(FONT, FontSettings::default())
-            .map_err(|e| Error::Export(format!("font: {e}")))?;
+    pub fn new(captions: Vec<(f64, String)>, px: f32, font_name: &str) -> Result<Self> {
+        let font = fonts::load(font_name);
         let mut glyphs = HashMap::new();
         for code in 0x20u8..=0x7e {
             let ch = code as char;
@@ -652,6 +654,7 @@ mod tests {
                 (2.0, String::new()),
             ],
             18.0,
+            fonts::DEFAULT_FONT,
         )
         .unwrap();
         assert_eq!(c.active(0.0), Some("step 1"));

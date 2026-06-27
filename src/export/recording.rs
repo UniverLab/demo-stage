@@ -381,6 +381,8 @@ fn build_layout(
             fps: 15,
             line_height: 1.2,
             background: Some("#0b0f14".to_string()),
+            font_family: None,
+            font_size: None,
             panes,
         },
         focuses,

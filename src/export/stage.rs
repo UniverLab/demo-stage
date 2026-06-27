@@ -47,10 +47,19 @@ pub fn render_stage(rec: &Recording, score: &Score, mut on_frame: impl FnMut(&[u
 
     // Captions are drawn on the composited canvas, so keep them out of the
     // terminal sub-frames (render the terminal from a captions-free copy).
+    let font_name = score
+        .layout
+        .font_family
+        .as_deref()
+        .unwrap_or(crate::fonts::DEFAULT_FONT);
     let mut caption = if rec.captions.is_empty() {
         None
     } else {
-        Some(raster::CaptionOverlay::new(rec.captions.clone(), 20.0)?)
+        Some(raster::CaptionOverlay::new(
+            rec.captions.clone(),
+            20.0,
+            font_name,
+        )?)
     };
     let mut term_rec = rec.clone();
     term_rec.captions.clear();

@@ -280,6 +280,11 @@ pub struct CaptureArgs {
     /// Keep your shell's real prompt during capture (don't force a clean one).
     #[arg(long, conflicts_with = "prompt")]
     pub keep_prompt: bool,
+
+    /// Font for the exported demo (DejaVu Sans Mono, JetBrains Mono, IBM Plex
+    /// Mono, Liberation Mono, Ubuntu Mono). Omit for a wizard prompt.
+    #[arg(long)]
+    pub font: Option<String>,
 }
 
 #[derive(Debug, Args)]

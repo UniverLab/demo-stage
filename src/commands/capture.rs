@@ -277,20 +277,9 @@ fn choose_prompt(args: &CaptureArgs, shell: &str) -> Result<(bool, String)> {
 
 /// Ask the user for the target export resolution.
 fn choose_resolution() -> Result<Option<(u32, u32)>> {
-    let choice = inquire::Select::new(
-        "Export resolution:",
-        vec![
-            "Landscape   1920×1080",
-            "Portrait    1080×1920",
-            "Square      1080×1080",
-            "Standard    1024×768",
-            "Compact     1280×720",
-            "Custom",
-            "Auto (derive from terminal size)",
-        ],
-    )
-    .prompt()
-    .map_err(|e| Error::Export(format!("resolution wizard: {e}")))?;
+    let choice = inquire::Select::new("Export font:", crate::fonts::FONT_NAMES.to_vec())
+        .prompt()
+        .map_err(|e| Error::Export(format!("resolution wizard: {e}")))?;
 
     let res = if choice.starts_with("Landscape") {
         Some((1920, 1080))
@@ -318,6 +307,21 @@ fn choose_resolution() -> Result<Option<(u32, u32)>> {
         None
     };
     Ok(res)
+}
+
+/// Choose the export font. `--font` skips the wizard; otherwise a picker
+/// offers the bundled options.
+fn choose_font(args: &CaptureArgs) -> Result<String> {
+    if let Some(f) = &args.font {
+        return Ok(f.clone());
+    }
+    if !std::io::stdin().is_terminal() {
+        return Ok(crate::fonts::DEFAULT_FONT.to_string());
+    }
+    let choice = inquire::Select::new("Export font:", crate::fonts::FONT_NAMES.to_vec())
+        .prompt()
+        .map_err(|e| Error::Export(format!("font wizard: {e}")))?;
+    Ok(crate::fonts::parse_font_name(choice).to_string())
 }
 
 pub fn run(args: CaptureArgs) -> Result<()> {
@@ -405,6 +409,7 @@ pub fn run(args: CaptureArgs) -> Result<()> {
     // With neither flag a quick wizard asks how to set it before recording.
     let (force_prompt, forced_ps1) = choose_prompt(&args, &shell)?;
     let resolution = choose_resolution()?;
+    let font_family = choose_font(&args)?;
     let ready = Arc::new(AtomicBool::new(!force_prompt));
     let t0 = Instant::now();
 
@@ -853,6 +858,8 @@ pub fn run(args: CaptureArgs) -> Result<()> {
     if force_prompt {
         score.demo.prompt = Some(forced_ps1.clone());
     }
+    // Store the chosen font in the layout so `demo export` uses it.
+    score.layout.font_family = Some(font_family);
     let score_path = if args.no_score {
         None
     } else {

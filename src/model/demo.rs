@@ -187,6 +187,14 @@ pub struct Layout {
     pub line_height: f32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub background: Option<String>,
+    /// Font used for rasterizing the pixel targets. One of the bundled fonts:
+    /// "DejaVu Sans Mono", "JetBrains Mono", "IBM Plex Mono", "Liberation Mono",
+    /// "Ubuntu Mono". Defaults to DejaVu Sans Mono.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub font_family: Option<String>,
+    /// Font size in pixels for the rasterizer (each cell is `font_size` tall).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub font_size: Option<u32>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub panes: Vec<Pane>,
 }
