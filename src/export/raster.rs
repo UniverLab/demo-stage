@@ -18,10 +18,30 @@ const FONT: &[u8] = include_bytes!("../../assets/DejaVuSansMono.ttf");
 const DEFAULT_FG: [u8; 3] = [200, 200, 200];
 
 /// Non-ASCII glyphs cached on top of printable ASCII so they render on the pixel
-/// targets — a green-arrow prompt (`❯`) and a few common symbols people use in
-/// prompts and captions, so a custom prompt still rasterizes.
+/// targets — a green-arrow prompt (`❯`), a few common symbols people use in
+/// prompts and captions, and the full block/box-drawing/Geometric ranges that
+/// MapSCII and similar TUIs rely on.
 const EXTRA_GLYPHS: &[char] = &[
+    // Prompt / caption symbols
     '❯', '❮', '›', '‹', '»', '«', '→', '←', '▶', '▸', '●', '•', '★', '✓', '✗', 'λ',
+    // Block Elements (U+2580–U+259F) — MapSCII uses these heavily
+    '▀', '▁', '▂', '▃', '▄', '▅', '▆', '▇', '█', '▉', '▊', '▋', '▌', '▍', '▎', '▏', '▐', '▕', '▖',
+    '▗', '▘', '▙', '▚', '▛', '▜', '▝', '▞', '▟',
+    // Box Drawing (U+2500–U+257F) — TUI borders
+    '─', '━', '│', '┃', '┌', '┍', '┎', '┏', '┐', '┑', '┒', '┓', '└', '┕', '┖', '┗', '┘', '┙', '┚',
+    '┛', '├', '┝', '┠', '┣', '┤', '┥', '┨', '┫', '┬', '┯', '┰', '┳', '┴', '┷', '┸', '┻', '┼', '┿',
+    '╀', '╁', '╂', '╃', '╄', '╅', '╆', '╇', '╈', '╉', '╊', '╋',
+    // Geometric Shapes (U+25A0–U+25FF)
+    '■', '□', '▢', '▣', '▤', '▥', '▦', '▧', '▨', '▩', '▪', '▫', '▬', '▭', '▮', '▯', '▰', '▱', '▲',
+    '△', '▴', '▵', '▷', '◃', '►', '▻', '▼', '▽', '▾', '▿', '◁', '◂', '◄', '◅', '◆', '◇', '◈', '◉',
+    '◊', '○', '◌', '◍', '◎', '●', '◐', '◑', '◒', '◓', '◔', '◕', '◖', '◗', '◘', '◙', '◚', '◛', '◜',
+    '◝', '◞', '◟', '◠', '◡', '◢', '◣', '◤', '◥', '◦', '◧', '◨', '◩', '◪', '◫', '◬', '◭', '◮', '◯',
+    '◰', '◱', '◲', '◳', '◴', '◵', '◶', '◷', '◸', '◹', '◺', '◻',
+    // Braille Patterns (U+2800–U+28FF) — used by some TUIs
+    '⠀', '⠁', '⠂', '⠃', '⠄', '⠅', '⠆', '⠇', '⠈', '⠉', '⠊', '⠋', '⠌', '⠍', '⠎', '⠏', '⠐', '⠑', '⠒',
+    '⠓', '⠔', '⠕', '⠖', '⠗', '⠘', '⠙', '⠚', '⠛', '⠜', '⠝', '⠞', '⠟', '⠠', '⠡', '⠢', '⠣', '⠤', '⠥',
+    '⠦', '⠧', '⠨', '⠩', '⠪', '⠫', '⠬', '⠭', '⠮', '⠯', '⠰', '⠱', '⠲', '⠳', '⠴', '⠵', '⠶', '⠷', '⠸',
+    '⠹', '⠺', '⠻', '⠼', '⠽', '⠾', '⠿',
 ];
 
 /// Standard xterm 16-colour ANSI palette.
@@ -80,6 +100,8 @@ pub fn plan(rec: &Recording, score: &Score) -> Plan {
 /// lockstep with other panes, by the multi-scene stage.
 pub struct FrameSource<'a> {
     rec: &'a Recording,
+    font: Font,
+    px: f32,
     glyphs: HashMap<char, (Metrics, Vec<u8>)>,
     cols: usize,
     rows: usize,
@@ -147,6 +169,8 @@ impl<'a> FrameSource<'a> {
 
         Ok(FrameSource {
             rec,
+            font,
+            px,
             glyphs,
             cols: rec.cols as usize,
             rows: rec.rows as usize,
@@ -185,7 +209,9 @@ impl<'a> FrameSource<'a> {
         self.frame += 1;
         let mut img = render_cells(
             &self.parser,
-            &self.glyphs,
+            &mut self.glyphs,
+            &self.font,
+            self.px,
             self.cols,
             self.rows,
             self.cell_w,
@@ -196,7 +222,7 @@ impl<'a> FrameSource<'a> {
         // For a single-terminal score the pane frame is the whole canvas, so the
         // caption is drawn here. (The stage clears captions from its terminal
         // source and draws them on the composited canvas instead.)
-        if let Some(caption) = &self.caption {
+        if let Some(caption) = &mut self.caption {
             caption.draw(
                 &mut img,
                 self.cols * self.cell_w,
@@ -346,7 +372,9 @@ fn box_arms(ch: char) -> Option<(bool, bool, bool, bool)> {
 #[allow(clippy::too_many_arguments)]
 fn render_cells(
     parser: &Parser,
-    glyphs: &HashMap<char, (Metrics, Vec<u8>)>,
+    glyphs: &mut HashMap<char, (Metrics, Vec<u8>)>,
+    font: &Font,
+    px: f32,
     cols: usize,
     rows: usize,
     cell_w: usize,
@@ -403,9 +431,9 @@ fn render_cells(
                 }
                 continue;
             }
-            let Some((m, cov)) = glyphs.get(&chr) else {
-                continue;
-            };
+            // On-demand rasterization: if the glyph isn't cached yet, rasterize
+            // it now so any Unicode character the font supports renders correctly.
+            let (m, cov) = glyphs.entry(chr).or_insert_with(|| font.rasterize(chr, px));
             if m.width == 0 || m.height == 0 {
                 continue;
             }
@@ -512,6 +540,7 @@ fn blit_glyph(
 /// latest caption that is active at the current time.
 pub struct CaptionOverlay {
     captions: Vec<(f64, String)>,
+    font: Font,
     glyphs: HashMap<char, (Metrics, Vec<u8>)>,
     px: f32,
     cell_w: usize,
@@ -531,6 +560,7 @@ impl CaptionOverlay {
         }
         Ok(CaptionOverlay {
             captions,
+            font,
             glyphs,
             px,
             cell_w: (px * 0.6).round().max(1.0) as usize,
@@ -551,8 +581,8 @@ impl CaptionOverlay {
     }
 
     /// Draw the active caption onto `img` (`w`×`h` RGBA) at time `t`.
-    pub fn draw(&self, img: &mut [u8], w: usize, h: usize, t: f64) {
-        let Some(text) = self.active(t) else {
+    pub fn draw(&mut self, img: &mut [u8], w: usize, h: usize, t: f64) {
+        let Some(text) = self.active(t).map(str::to_owned) else {
             return;
         };
         let bar_h = (self.px * 2.2).round() as usize;
@@ -575,11 +605,14 @@ impl CaptionOverlay {
         let fg = [235u8, 235, 235];
         let mut cx = start_x;
         for ch in text.chars() {
-            if let Some((m, cov)) = self.glyphs.get(&ch) {
-                let ox = cx as i32 + ((self.cell_w as i32 - m.width as i32) / 2).max(0);
-                let top = baseline as i32 - (m.height as i32 + m.ymin);
-                blit_glyph(img, w, h, ox, top, m, cov, fg);
-            }
+            // On-demand rasterization for caption characters.
+            let (m, cov) = self
+                .glyphs
+                .entry(ch)
+                .or_insert_with(|| self.font.rasterize(ch, self.px));
+            let ox = cx as i32 + ((self.cell_w as i32 - m.width as i32) / 2).max(0);
+            let top = baseline as i32 - (m.height as i32 + m.ymin);
+            blit_glyph(img, w, h, ox, top, m, cov, fg);
             cx += self.cell_w;
         }
     }

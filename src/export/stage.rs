@@ -47,7 +47,7 @@ pub fn render_stage(rec: &Recording, score: &Score, mut on_frame: impl FnMut(&[u
 
     // Captions are drawn on the composited canvas, so keep them out of the
     // terminal sub-frames (render the terminal from a captions-free copy).
-    let caption = if rec.captions.is_empty() {
+    let mut caption = if rec.captions.is_empty() {
         None
     } else {
         Some(raster::CaptionOverlay::new(rec.captions.clone(), 20.0)?)
@@ -109,7 +109,7 @@ pub fn render_stage(rec: &Recording, score: &Score, mut on_frame: impl FnMut(&[u
             });
         }
         let mut canvas = composite::composite(canvas_w, canvas_h, bg, &layers);
-        if let Some(caption) = &caption {
+        if let Some(caption) = &mut caption {
             caption.draw(&mut canvas, canvas_w, canvas_h, i as f64 / fps);
         }
         on_frame(&canvas);
