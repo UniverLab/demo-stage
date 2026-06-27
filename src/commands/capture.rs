@@ -324,6 +324,125 @@ fn choose_font(args: &CaptureArgs) -> Result<String> {
     Ok(crate::fonts::parse_font_name(choice).to_string())
 }
 
+/// Ask if the user wants to add browser sources, loop through adding them.
+fn choose_sources() -> Result<Vec<crate::model::Source>> {
+    if !std::io::stdin().is_terminal() {
+        return Ok(vec![]);
+    }
+    let add = inquire::Confirm::new("Add browser sources? (repo pages, docs, localhost)")
+        .with_default(false)
+        .prompt()
+        .map_err(|e| Error::Export(format!("source wizard: {e}")))?;
+    if !add {
+        return Ok(vec![]);
+    }
+    let mut sources = vec![crate::model::Source {
+        id: "main".to_string(),
+        kind: crate::model::SourceKind::Terminal,
+        url: None,
+        theme: None,
+    }];
+    loop {
+        let id = inquire::Text::new("Source ID:")
+            .with_help_message("unique name (e.g. 'github', 'docs', 'preview')")
+            .prompt()
+            .map_err(|e| Error::Export(format!("source wizard: {e}")))?;
+        let id = id.trim().to_string();
+        if id.is_empty() {
+            break;
+        }
+        let url = inquire::Text::new("URL:")
+            .with_help_message("https://github.com/..., http://localhost:3000, file://...")
+            .prompt()
+            .map_err(|e| Error::Export(format!("source wizard: {e}")))?;
+        let url = normalize_url(url.trim());
+        let theme = inquire::Select::new(
+            "Browser theme:",
+            vec!["default (page preference)", "light", "dark"],
+        )
+        .prompt()
+        .map_err(|e| Error::Export(format!("source wizard: {e}")))?;
+        let theme = match theme {
+            "light" => Some("light".to_string()),
+            "dark" => Some("dark".to_string()),
+            _ => None,
+        };
+        sources.push(crate::model::Source {
+            id,
+            kind: crate::model::SourceKind::Browser,
+            url: Some(url),
+            theme,
+        });
+        let more = inquire::Confirm::new("Add another source?")
+            .with_default(false)
+            .prompt()
+            .map_err(|e| Error::Export(format!("source wizard: {e}")))?;
+        if !more {
+            break;
+        }
+    }
+    Ok(sources)
+}
+
+/// Ask if the user wants to define scenes from the available sources.
+fn choose_scenes(sources: &[crate::model::Source]) -> Result<Vec<crate::model::Scene>> {
+    if !std::io::stdin().is_terminal() || sources.len() <= 1 {
+        // Only a terminal source — no scenes to compose.
+        return Ok(vec![]);
+    }
+    let source_ids: Vec<&str> = sources.iter().map(|s| s.id.as_str()).collect();
+    let add = inquire::Confirm::new("Define scene compositions? (split, side-by-side, etc.)")
+        .with_default(false)
+        .prompt()
+        .map_err(|e| Error::Export(format!("scene wizard: {e}")))?;
+    if !add {
+        return Ok(vec![]);
+    }
+    println!("  Available sources: {}\n", source_ids.join(", "));
+    let mut scenes = vec![crate::model::Scene {
+        id: "solo".to_string(),
+        layout: "main".to_string(),
+    }];
+    loop {
+        let id = inquire::Text::new("Scene ID:")
+            .with_help_message("unique name (e.g. 'split', 'full_github')")
+            .prompt()
+            .map_err(|e| Error::Export(format!("scene wizard: {e}")))?;
+        let id = id.trim().to_string();
+        if id.is_empty() {
+            break;
+        }
+        let layout = inquire::Text::new("Layout string:")
+            .with_help_message("\"main+github\" = 50/50, \"main*2+docs\" = 2/3 + 1/3")
+            .with_default(&source_ids.join("+"))
+            .prompt()
+            .map_err(|e| Error::Export(format!("scene wizard: {e}")))?;
+        let layout = layout.trim().to_string();
+        if !layout.is_empty() {
+            scenes.push(crate::model::Scene { id, layout });
+        }
+        let more = inquire::Confirm::new("Add another scene?")
+            .with_default(false)
+            .prompt()
+            .map_err(|e| Error::Export(format!("scene wizard: {e}")))?;
+        if !more {
+            break;
+        }
+    }
+    Ok(scenes)
+}
+
+fn normalize_url(url: &str) -> String {
+    let u = url.trim();
+    if u.contains("://") {
+        u.to_string()
+    } else if u.starts_with("localhost") || u.starts_with("127.0.0.1") {
+        format!("http://{u}")
+    } else {
+        format!("https://{u}")
+    }
+}
+
 pub fn run(args: CaptureArgs) -> Result<()> {
     if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
         return Err(Error::Export(
@@ -410,6 +529,8 @@ pub fn run(args: CaptureArgs) -> Result<()> {
     let (force_prompt, forced_ps1) = choose_prompt(&args, &shell)?;
     let resolution = choose_resolution()?;
     let font_family = choose_font(&args)?;
+    let sources = choose_sources()?;
+    let scenes = choose_scenes(&sources)?;
     let ready = Arc::new(AtomicBool::new(!force_prompt));
     let t0 = Instant::now();
 
@@ -860,6 +981,13 @@ pub fn run(args: CaptureArgs) -> Result<()> {
     }
     // Store the chosen font in the layout so `demo export` uses it.
     score.layout.font_family = Some(font_family);
+    // Store wizard-selected sources and scenes (skip if already set from --into).
+    if score.sources.is_empty() && !sources.is_empty() {
+        score.sources = sources;
+    }
+    if score.scenes.is_empty() && !scenes.is_empty() {
+        score.scenes = scenes;
+    }
     let score_path = if args.no_score {
         None
     } else {
