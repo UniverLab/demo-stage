@@ -60,10 +60,38 @@ pub fn run(args: SceneArgs) -> Result<()> {
 }
 
 fn load_score(path: &Path) -> Result<Score> {
+    if !path.exists() {
+        return Ok(default_score());
+    }
     let content = std::fs::read_to_string(path)
         .map_err(|e| Error::Export(format!("cannot read {}: {e}", path.display())))?;
     toml::from_str(&content)
         .map_err(|e| Error::Export(format!("invalid score {}: {e}", path.display())))
+}
+
+fn default_score() -> Score {
+    Score {
+        demo: crate::model::DemoMeta {
+            name: "demo".to_string(),
+            output_dir: "./dist".into(),
+            prompt: None,
+        },
+        env: None,
+        typing: None,
+        sources: vec![],
+        scenes: vec![],
+        layout: crate::model::Layout {
+            width: 1920,
+            height: 1080,
+            fps: 15,
+            line_height: 1.2,
+            background: Some("#0b0f14".to_string()),
+            font_family: None,
+            font_size: None,
+            panes: vec![],
+        },
+        timeline: vec![],
+    }
 }
 
 fn save_score(path: &Path, score: &Score) -> Result<()> {
