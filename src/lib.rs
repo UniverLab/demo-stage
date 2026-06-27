@@ -47,6 +47,9 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
         Command::Export(args) => commands::export::run(args).map(|()| ExitCode::SUCCESS),
         Command::Doctor(args) => commands::doctor::run(args).map(|()| ExitCode::SUCCESS),
         Command::Edit(args) => commands::edit::run(args).map(|()| ExitCode::SUCCESS),
+        Command::Source(args) => commands::source::run(args).map(|()| ExitCode::SUCCESS),
+        Command::Scene(args) => commands::scene::run(args).map(|()| ExitCode::SUCCESS),
+        Command::Focus(args) => commands::focus::run(args).map(|()| ExitCode::SUCCESS),
     }
 }
 

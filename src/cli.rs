@@ -32,6 +32,12 @@ pub enum Command {
     Doctor(DoctorArgs),
     /// Interactively edit timing/wait steps in a demo score.
     Edit(EditArgs),
+    /// Define a content source (terminal, browser) for scene composition.
+    Source(SourceArgs),
+    /// Define a scene composition from pre-defined sources.
+    Scene(SceneArgs),
+    /// Switch focus to a scene or pane during capture.
+    Focus(FocusArgs),
 }
 
 #[derive(Debug, Args)]
@@ -47,6 +53,92 @@ pub struct EditArgs {
     /// The demo score to edit interactively.
     #[arg(default_value = "demo.toml")]
     pub input: PathBuf,
+}
+
+#[derive(Debug, Args)]
+pub struct SourceArgs {
+    /// Source ID (e.g. "main", "google"). Prompted if omitted.
+    pub id: Option<String>,
+
+    /// Source type: `terminal` or `browser`. Prompted if omitted.
+    #[arg(short = 't', long, value_enum)]
+    pub r#type: Option<SourceKindArg>,
+
+    /// URL for browser sources (http, https, file://). Prompted if omitted
+    /// for browser sources.
+    #[arg(short = 'u', long)]
+    pub url: Option<String>,
+
+    /// Colour scheme for browser sources (`light`/`dark`). Prompted if omitted.
+    #[arg(short = 'c', long, value_enum)]
+    pub theme: Option<ColorScheme>,
+
+    /// List existing sources and exit.
+    #[arg(long)]
+    pub list: bool,
+
+    /// Remove a source by ID and exit.
+    #[arg(long, value_name = "ID")]
+    pub remove: Option<String>,
+
+    /// The demo score file to modify.
+    #[arg(short, long, default_value = "demo.toml")]
+    pub score: PathBuf,
+}
+
+/// Source type for `demo source`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum SourceKindArg {
+    Terminal,
+    Browser,
+}
+
+#[derive(Debug, Args)]
+pub struct SceneArgs {
+    /// Scene ID (e.g. "solo", "split"). Prompted if omitted.
+    pub id: Option<String>,
+
+    /// Layout string (e.g. "main", "main+google"). Prompted if omitted.
+    #[arg(short = 'l', long)]
+    pub layout: Option<String>,
+
+    /// List existing scenes and exit.
+    #[arg(long)]
+    pub list: bool,
+
+    /// Remove a scene by ID and exit.
+    #[arg(long, value_name = "ID")]
+    pub remove: Option<String>,
+
+    /// The demo score file to modify.
+    #[arg(short, long, default_value = "demo.toml")]
+    pub score: PathBuf,
+}
+
+#[derive(Debug, Args)]
+pub struct FocusArgs {
+    /// Scene ID to focus. Omit for an interactive picker.
+    pub scene: Option<String>,
+
+    /// Trigger: focus when this substring appears in terminal output.
+    #[arg(long)]
+    pub when: Option<String>,
+
+    /// Trigger: focus after the current command finishes.
+    #[arg(long)]
+    pub after: bool,
+
+    /// Trigger: focus after this many milliseconds from capture start.
+    #[arg(long, value_name = "MS")]
+    pub after_ms: Option<u64>,
+
+    /// Hold focus for this duration in milliseconds (0 = until next focus).
+    #[arg(long, value_name = "MS")]
+    pub hold: Option<u64>,
+
+    /// The demo score file to modify.
+    #[arg(short, long, default_value = "demo.toml")]
+    pub score: PathBuf,
 }
 
 /// How a `demo open` browser scene sits on the canvas.
