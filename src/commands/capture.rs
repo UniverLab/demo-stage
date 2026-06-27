@@ -826,7 +826,27 @@ pub fn run(args: CaptureArgs) -> Result<()> {
     };
     let mut score = match &args.into {
         Some(path) => merge_into_stage(Score::load(path)?, &raw, &opts),
-        None => normalize(&raw, name, &opts),
+        None => {
+            let normalized = normalize(&raw, name, &opts);
+            // Preserve sources/scenes from an existing score file (defined with
+            // `demo source` / `demo scene` before capture).
+            if !args.no_score && args.normalized_output.exists() {
+                if let Ok(existing) = Score::load(&args.normalized_output) {
+                    if !existing.sources.is_empty() || !existing.scenes.is_empty() {
+                        let mut score = normalized;
+                        score.sources = existing.sources;
+                        score.scenes = existing.scenes;
+                        score
+                    } else {
+                        normalized
+                    }
+                } else {
+                    normalized
+                }
+            } else {
+                normalized
+            }
+        }
     };
     // Persist the prompt the demo was captured with, so `demo record` reproduces
     // it instead of falling back to the built-in default.
@@ -998,8 +1018,8 @@ fn write_faithful_cast(
         }),
         env: None,
         typing: score.and_then(|s| s.typing.clone()),
-        sources: vec![],
-        scenes: vec![],
+        sources: score.map(|s| s.sources.clone()).unwrap_or_default(),
+        scenes: score.map(|s| s.scenes.clone()).unwrap_or_default(),
         layout,
         timeline,
     };
