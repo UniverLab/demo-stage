@@ -1,6 +1,6 @@
 ---
 title: Commands
-description: Reference for demo capture, open, record, export, edit and doctor and their flags.
+description: Reference for demo capture, open, record, export, edit, source, scene, focus and doctor and their flags.
 order: 5
 ---
 
@@ -268,3 +268,115 @@ Editing actions per step type:
 - **Delete** — remove the step
 
 `[input]` defaults to `demo.toml`.
+
+## `demo source`
+
+Define a content source (terminal, browser) for scene composition. Run this
+before `demo capture` to pre-define what goes into each scene.
+
+```sh
+demo source [ID] [-t terminal|browser] [-u URL] [-c light|dark] [--list] [--remove ID] [-s demo.toml]
+```
+
+- `[ID]` — unique identifier (e.g. "main", "google"). Prompted if omitted.
+- `-t, --type` — source type: `terminal` or `browser`. Prompted if omitted.
+- `-u, --url` — URL for browser sources (http, https, file://). Prompted if
+  omitted for browser sources.
+- `-c, --theme` — colour scheme for browser sources (`light`/`dark`). Prompted
+  if omitted.
+- `--list` — list existing sources and exit.
+- `--remove <ID>` — remove a source by ID and exit.
+- `-s, --score` — the demo score file to modify (default `demo.toml`).
+
+**Interactive wizard:** Run with no arguments on a terminal for a guided prompt
+that asks for the source ID, type, URL (for browsers), and theme.
+
+**Examples:**
+
+```sh
+# Define a terminal source
+demo source main --type terminal
+
+# Define a browser source
+demo source google --type browser --url "https://google.com" --theme dark
+
+# List sources
+demo source --list
+
+# Remove a source
+demo source --remove google
+```
+
+## `demo scene`
+
+Define a scene composition from pre-defined sources. Scenes map layout strings
+(e.g. "main+google") to concrete compositions. Run this before `demo capture`.
+
+```sh
+demo scene [ID] [-l LAYOUT] [--list] [--remove ID] [-s demo.toml]
+```
+
+- `[ID]` — unique identifier (e.g. "solo", "split"). Prompted if omitted.
+- `-l, --layout` — layout string defining the composition of sources.
+  Prompted if omitted.
+- `--list` — list existing scenes and exit.
+- `--remove <ID>` — remove a scene by ID and exit.
+- `-s, --score` — the demo score file to modify (default `demo.toml`).
+
+**Layout string syntax:**
+
+- `"main"` — fullscreen single source
+- `"main+google"` — 50/50 split
+- `"main+google+github"` — thirds
+- `"main*2+google"` — weighted (main gets 2/3)
+
+**Interactive wizard:** Run with no arguments on a terminal for a guided prompt
+that shows available sources and validates the layout string.
+
+**Examples:**
+
+```sh
+# Define a scene
+demo scene solo --layout "main"
+demo scene split --layout "main+google"
+demo scene full_github --layout "main+github"
+
+# List scenes
+demo scene --list
+```
+
+## `demo focus`
+
+Switch focus to a scene during capture. Adds a `Step::Focus` entry to the
+timeline. Supports deferred triggers (pattern match, command finish, timer).
+
+```sh
+demo focus [SCENE] [--when "<line>" | --after | --after-ms <MS>] [-s demo.toml]
+```
+
+- `[SCENE]` — scene ID to focus. Omit for an interactive picker.
+- `--when "<line>"` — focus when this substring appears in terminal output.
+- `--after` — focus after the current command finishes.
+- `--after-ms <MS>` — focus after this many milliseconds from capture start.
+- `--hold <MS>` — hold focus for this duration in milliseconds.
+- `-s, --score` — the demo score file to modify (default `demo.toml`).
+
+**Interactive wizard:** Run with no arguments on a terminal for a guided prompt
+that shows available scenes and asks when to focus.
+
+**Examples:**
+
+```sh
+# Focus immediately
+demo focus split
+
+# Focus when a pattern appears
+demo focus github --when "Server started"
+
+# Focus after command finishes
+demo focus preview --after
+```
+
+> **Note:** Deferred triggers (`--when`, `--after`, `--after-ms`) are currently
+> implemented as immediate focus. Full trigger semantics will be implemented in
+> a future update.

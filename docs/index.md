@@ -26,6 +26,9 @@ demo capture  ──>  demo.toml  ──>  demo record  ──>  demo.rec  ─�
 |---|---|---|---|
 | `capture`   | TTY               | `demo.toml` + `demo.rec` (`--raw` adds the macro) | Capture a live session into an editable score + a faithful recording (forces a clean prompt). |
 | `open`      | URL / file        | reveal signal     | Reveal a browser scene (repo page, PDF, localhost) composited into the demo. `--view` records interactively. |
+| `source`    | ID + type + URL   | `demo.toml`      | Define a content source (terminal, browser) for scene composition. |
+| `scene`     | ID + layout       | `demo.toml`      | Define a scene composition from pre-defined sources (e.g. "main+google"). |
+| `focus`     | scene ID          | `demo.toml`      | Add a focus step to the timeline (with optional deferred triggers). |
 | `record`    | `demo.toml`       | `demo.rec`      | Validate, then re-execute the score in a PTY → a clean, humanized recording. |
 | `export`    | `demo.rec`       | `dist/…`         | Render the recording to `gif` or `mp4`. Never executes. Needs `--force` for a faithful capture. |
 | `edit`      | `demo.toml`       | `demo.toml`     | Interactively edit timing and wait steps in a demo score. |
