@@ -5,7 +5,7 @@
 
 pub mod capture;
 pub mod control;
-pub mod direct;
+pub mod edit;
 pub mod doctor;
 pub mod export;
 pub mod normalize;

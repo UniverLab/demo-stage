@@ -156,7 +156,14 @@ pub fn run(args: OpenArgs) -> Result<()> {
 /// then reveal that pre-recorded scene (no headless Chromium needed at export).
 fn run_view(r: &Reveal) -> Result<()> {
     let (cols, rows) = crossterm::terminal::size().unwrap_or((80, 24));
-    let (w, h) = (cols as u32 * CELL_W, rows as u32 * CELL_H);
+    let full_w = cols as u32 * CELL_W;
+    let full_h = rows as u32 * CELL_H;
+    // In split mode the browser pane is half the canvas width.
+    let (w, h) = if r.mode == "split" {
+        (full_w / 2, full_h)
+    } else {
+        (full_w, full_h)
+    };
     let ts = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis())
@@ -183,7 +190,7 @@ fn run_view(r: &Reveal) -> Result<()> {
     control::send(serde_json::json!({
         "cmd": "open",
         "url": crate::model::view_frames_url(&dir),
-        "mode": "replace",
+        "mode": r.mode,
         "when": serde_json::Value::Null,
         "after": false,
         "hold": hold_ms,

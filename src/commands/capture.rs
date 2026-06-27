@@ -283,6 +283,7 @@ fn choose_resolution() -> Result<Option<(u32, u32)>> {
             "Landscape   1920×1080",
             "Portrait    1080×1920",
             "Square      1080×1080",
+            "Standard    1024×768",
             "Compact     1280×720",
             "Custom",
             "Auto (derive from terminal size)",
@@ -297,6 +298,8 @@ fn choose_resolution() -> Result<Option<(u32, u32)>> {
         Some((1080, 1920))
     } else if choice.starts_with("Square") {
         Some((1080, 1080))
+    } else if choice.starts_with("Standard") {
+        Some((1024, 768))
     } else if choice.starts_with("Compact") {
         Some((1280, 720))
     } else if choice.starts_with("Custom") {
@@ -852,15 +855,15 @@ pub fn run(args: CaptureArgs) -> Result<()> {
         ),
     }
 
-    // Offer to run `demo direct` for quick timeline refinement.
+    // Offer to run `demo edit` for quick timeline refinement.
     if let Some(p) = &score_path {
         if std::io::stdin().is_terminal() {
-            let run_direct = inquire::Confirm::new("Run demo direct to refine the timeline?")
+            let run_direct = inquire::Confirm::new("Run demo edit to refine the timeline?")
                 .with_default(false)
                 .prompt()
                 .unwrap_or(false);
             if run_direct {
-                super::direct::run(crate::cli::DirectArgs { input: p.clone() })?;
+                super::edit::run(crate::cli::EditArgs { input: p.clone() })?;
             }
         }
     }

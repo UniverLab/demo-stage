@@ -31,7 +31,7 @@ pub enum Command {
     /// Check the environment for browser/video dependencies and report fixes.
     Doctor(DoctorArgs),
     /// Interactively edit timing/wait steps in a demo score.
-    Direct(DirectArgs),
+    Edit(EditArgs),
 }
 
 #[derive(Debug, Args)]
@@ -43,7 +43,7 @@ pub struct DoctorArgs {
 }
 
 #[derive(Debug, Args)]
-pub struct DirectArgs {
+pub struct EditArgs {
     /// The demo score to edit interactively.
     #[arg(default_value = "demo.toml")]
     pub input: PathBuf,

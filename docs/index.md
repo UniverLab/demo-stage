@@ -25,8 +25,10 @@ demo capture  ──>  demo.toml  ──>  demo record  ──>  demo.rec  ─�
 | Command | In | Out | Does |
 |---|---|---|---|
 | `capture`   | TTY               | `demo.toml` + `demo.rec` (`--raw` adds the macro) | Capture a live session into an editable score + a faithful recording (forces a clean prompt). |
+| `open`      | URL / file        | reveal signal     | Reveal a browser scene (repo page, PDF, localhost) composited into the demo. `--view` records interactively. |
 | `record`    | `demo.toml`       | `demo.rec`      | Validate, then re-execute the score in a PTY → a clean, humanized recording. |
 | `export`    | `demo.rec`       | `dist/…`         | Render the recording to `gif` or `mp4`. Never executes. Needs `--force` for a faithful capture. |
+| `edit`      | `demo.toml`       | `demo.toml`     | Interactively edit timing and wait steps in a demo score. |
 | `doctor`    | —                 | a report         | Check the browser/ffmpeg/display deps and report fixes (`--fix` installs them on apt). |
 
 The clean path is `capture → record → export`. A `demo.toml` can also be

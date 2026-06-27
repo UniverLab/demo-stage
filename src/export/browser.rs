@@ -165,6 +165,13 @@ pub fn record_view(
     let tab = browser
         .new_tab()
         .map_err(|e| Error::Export(format!("open tab: {e}")))?;
+    // Force the viewport to the exact requested dimensions (matches `capture`).
+    let _ = tab.set_bounds(headless_chrome::types::Bounds::Normal {
+        left: Some(0),
+        top: Some(0),
+        width: Some(width as f64),
+        height: Some(height as f64),
+    });
     emulate_theme(&tab, theme);
     tab.navigate_to(url)
         .and_then(|t| t.wait_until_navigated())
@@ -179,7 +186,15 @@ pub fn record_view(
     loop {
         // A failed screenshot means the tab/window was closed — that's the cue to
         // stop recording.
-        let Ok(png) = tab.capture_screenshot(CaptureScreenshotFormatOption::Png, None, None, true)
+        let clip = Page::Viewport {
+            x: 0.0,
+            y: 0.0,
+            width: width as f64,
+            height: height as f64,
+            scale: 1.0,
+        };
+        let Ok(png) =
+            tab.capture_screenshot(CaptureScreenshotFormatOption::Png, None, Some(clip), true)
         else {
             break;
         };

@@ -1,6 +1,6 @@
 ---
 title: Commands
-description: Reference for demo capture, open, record, export and doctor and their flags.
+description: Reference for demo capture, open, record, export, edit and doctor and their flags.
 order: 5
 ---
 
@@ -246,3 +246,25 @@ It reports three checks:
 `--fix` installs what's missing on apt-based Linux (a non-snap Google Chrome, and
 ffmpeg) — it runs `sudo`, so it prompts in your terminal. On other platforms it
 prints the exact `fix:` commands to run yourself.
+
+## `demo edit`
+
+```sh
+demo edit [input]
+```
+
+Interactively edit timing and wait steps in a demo score. Opens a TUI with the
+full timeline — navigate with **↑↓**, press **space** to edit a step, **enter**
+to confirm you're done, **q** to quit.
+
+Editing actions per step type:
+
+- **Keep as-is** — no change
+- **wait_for_quiet** — replace with a silence-based wait
+- **wait_for_screen** — replace with a VT pattern match
+- **wait_for_stdout** — replace with a raw output match
+- **Change duration** — adjust the `duration_ms` of a `wait` step
+- **Split/Edit text** — (Type steps only) rewrite the text or split by delimiter
+- **Delete** — remove the step
+
+`[input]` defaults to `demo.toml`.

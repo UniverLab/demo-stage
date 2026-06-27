@@ -1,25 +1,25 @@
-//! `demo direct` — interactive timeline editor.
+//! `demo edit` — interactive timeline editor.
 //!
-//! Shows the full timeline. Navigate with arrows, press **space** to edit the
-//! current step inline, press **enter** when done. Edits are applied immediately
-//! so you can see the result and re-edit if needed.
+//! Shows the full timeline. Navigate with arrows, press **enter** to edit the
+//! current step, **esc** when done. Edits are applied immediately so you can
+//! see the result and re-edit if needed.
 
-use crate::cli::DirectArgs;
+use crate::cli::EditArgs;
 use crate::error::{Error, Result};
 use crate::model::{Score, Step};
 
-pub fn run(args: DirectArgs) -> Result<()> {
+pub fn run(args: EditArgs) -> Result<()> {
     let mut score = Score::load(&args.input)?;
 
     println!("{}\n", crate::BANNER);
     println!(
-        "demo direct — {}\n  {} steps · navigate ↑↓ · space=edit · enter=done\n",
+        "demo edit — {}\n  {} steps · navigate ↑↓ · enter=edit · esc=done\n",
         args.input.display(),
         score.timeline.len()
     );
 
-    // Show the timeline and let user pick one at a time to edit (loop until done).
     let mut cursor: usize = 0;
+
     loop {
         let labels: Vec<String> = score
             .timeline
@@ -30,8 +30,20 @@ pub fn run(args: DirectArgs) -> Result<()> {
 
         let selection = inquire::Select::new("Timeline:", labels)
             .with_starting_cursor(cursor.min(score.timeline.len().saturating_sub(1)))
-            .prompt()
-            .map_err(|e| Error::Export(format!("direct: {e}")))?;
+            .prompt_skippable()
+            .map_err(|e| Error::Export(format!("edit: {e}")))?;
+
+        // Esc at the list → ask if done.
+        let Some(selection) = selection else {
+            let cont = inquire::Confirm::new("Done editing?")
+                .with_default(false)
+                .prompt()
+                .unwrap_or(true);
+            if !cont {
+                continue;
+            }
+            break;
+        };
 
         // Find the index from the label prefix.
         let idx = selection
@@ -47,10 +59,9 @@ pub fn run(args: DirectArgs) -> Result<()> {
         }
 
         cursor = idx;
-        print_context(&score.timeline, idx);
-
+        println!();
         match ask_action(&score.timeline[idx])? {
-            None => {} // Esc = cancel this edit
+            None => {} // Esc = cancel
             Some(EditAction::Keep) => {}
             Some(EditAction::WaitForQuiet) => {
                 let quiet = ask_u64("quiet_ms", current_ms(&score.timeline[idx]))?;
@@ -86,17 +97,11 @@ pub fn run(args: DirectArgs) -> Result<()> {
             }
             Some(EditAction::Delete) => {
                 score.timeline.remove(idx);
+                if cursor >= score.timeline.len() && cursor > 0 {
+                    cursor -= 1;
+                }
                 println!("  ✓ deleted\n");
             }
-        }
-
-        // Ask if done editing.
-        let cont = inquire::Confirm::new("Continue editing?")
-            .with_default(true)
-            .prompt()
-            .unwrap_or(false);
-        if !cont {
-            break;
         }
     }
 
@@ -111,20 +116,6 @@ fn current_ms(step: &Step) -> u64 {
         Step::WaitForQuiet { quiet_ms, .. } => *quiet_ms,
         _ => 500,
     }
-}
-
-fn print_context(timeline: &[Step], idx: usize) {
-    let total = timeline.len();
-    println!("\n─── Step {}/{total} ───", idx + 1);
-    let start = idx.saturating_sub(3);
-    for step in &timeline[start..idx] {
-        println!("  │ {}", step_summary(step));
-    }
-    println!("  ▶ {}", step_summary(&timeline[idx]));
-    if idx + 1 < total {
-        println!("  │ {}", step_summary(&timeline[idx + 1]));
-    }
-    println!();
 }
 
 fn step_summary(step: &Step) -> String {
@@ -175,7 +166,7 @@ fn ask_action(step: &Step) -> Result<Option<EditAction>> {
 
     let choice = inquire::Select::new("Action:", opts)
         .prompt_skippable()
-        .map_err(|e| Error::Export(format!("direct: {e}")))?;
+        .map_err(|e| Error::Export(format!("edit: {e}")))?;
 
     let Some(choice) = choice else {
         return Ok(None); // Esc = cancel
@@ -207,13 +198,13 @@ fn split_type_step(timeline: &mut Vec<Step>, idx: usize) -> Result<()> {
         vec!["Edit text (replace)", "Split by delimiter"],
     )
     .prompt()
-    .map_err(|e| Error::Export(format!("direct: {e}")))?;
+    .map_err(|e| Error::Export(format!("edit: {e}")))?;
 
     if action.starts_with("Edit") {
         let new = inquire::Text::new("new text:")
             .with_default(&text)
             .prompt()
-            .map_err(|e| Error::Export(format!("direct: {e}")))?;
+            .map_err(|e| Error::Export(format!("edit: {e}")))?;
         let new = new.replace("↵", "\n");
         timeline[idx] = Step::Type {
             text: new,
@@ -223,7 +214,7 @@ fn split_type_step(timeline: &mut Vec<Step>, idx: usize) -> Result<()> {
     } else {
         let delim = inquire::Select::new("Split on:", vec!["newline", "space", "custom"])
             .prompt()
-            .map_err(|e| Error::Export(format!("direct: {e}")))?;
+            .map_err(|e| Error::Export(format!("edit: {e}")))?;
 
         let delim_str = match delim {
             "newline" => "\n",
@@ -264,7 +255,7 @@ fn ask_u64(label: &str, default: u64) -> Result<u64> {
     let v = inquire::Text::new(&format!("{label}:"))
         .with_default(&default.to_string())
         .prompt()
-        .map_err(|e| Error::Export(format!("direct: {e}")))?;
+        .map_err(|e| Error::Export(format!("edit: {e}")))?;
     v.trim()
         .parse()
         .map_err(|_| Error::Export(format!("invalid number: {v}")))
@@ -273,7 +264,7 @@ fn ask_u64(label: &str, default: u64) -> Result<u64> {
 fn ask_string(label: &str) -> Result<String> {
     let v = inquire::Text::new(&format!("{label}:"))
         .prompt()
-        .map_err(|e| Error::Export(format!("direct: {e}")))?;
+        .map_err(|e| Error::Export(format!("edit: {e}")))?;
     let v = v.trim().to_string();
     if v.is_empty() {
         return Err(Error::Export("cannot be empty".to_string()));
