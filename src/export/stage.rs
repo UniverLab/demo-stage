@@ -124,7 +124,13 @@ fn scroll_keyframes_for(score: &Score, pane_id: &str) -> usize {
     let mut ms = 0u64;
     for step in &score.timeline {
         match step {
-            Step::Focus { pane } => focused = Some(pane.as_str()),
+            Step::Focus { pane, scene } => {
+                focused = if let Some(p) = pane {
+                    Some(p.as_str())
+                } else {
+                    scene.as_deref()
+                };
+            }
             Step::Scroll {
                 duration_ms, pane, ..
             } => {

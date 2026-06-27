@@ -192,8 +192,15 @@ pub fn run_with_pane(score: &Score, pane: &crate::model::Pane) -> Result<Recordi
         progress_bar("recording", step_idx + 1, total_steps);
 
         match step {
-            Step::Focus { pane } => {
-                focuses.push((t0.elapsed().as_secs_f64(), pane.clone()));
+            Step::Focus { pane, scene } => {
+                let target = if let Some(p) = pane {
+                    p.clone()
+                } else if let Some(s) = scene {
+                    s.clone()
+                } else {
+                    continue;
+                };
+                focuses.push((t0.elapsed().as_secs_f64(), target));
             }
             Step::Caption { text } => {
                 captions.push((t0.elapsed().as_secs_f64(), text.clone()));
@@ -222,9 +229,18 @@ pub fn run_with_pane(score: &Score, pane: &crate::model::Pane) -> Result<Recordi
             Step::Wait { duration_ms } => sleep_collecting(*duration_ms, &mut events, &rx, t0),
             Step::WaitForStdout { pattern, .. } => wait_for(pattern, &mut events, &rx, t0),
             Step::WaitForQuiet { quiet_ms, max_ms } => {
-                settle(&mut events, &rx, t0, *quiet_ms, max_ms.unwrap_or(WAIT_FOR_TIMEOUT_MS));
+                settle(
+                    &mut events,
+                    &rx,
+                    t0,
+                    *quiet_ms,
+                    max_ms.unwrap_or(WAIT_FOR_TIMEOUT_MS),
+                );
             }
-            Step::WaitForScreen { pattern, timeout_ms } => {
+            Step::WaitForScreen {
+                pattern,
+                timeout_ms,
+            } => {
                 wait_for_screen(
                     pattern,
                     &mut events,
@@ -367,7 +383,11 @@ fn secret_needle(prompt: &str) -> String {
 /// Has `needle` shown up in the recent captured output (so a prompt we're waiting
 /// for has already printed)?
 fn recent_contains(events: &[(f64, String)], needle: &str) -> bool {
-    events.iter().rev().take(40).any(|(_, d)| d.contains(needle))
+    events
+        .iter()
+        .rev()
+        .take(40)
+        .any(|(_, d)| d.contains(needle))
 }
 
 fn single_terminal_pane(score: &Score) -> Result<&crate::model::Pane> {

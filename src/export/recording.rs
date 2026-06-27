@@ -134,6 +134,8 @@ fn read_cast(text: &str) -> Result<(Recording, Score, bool)> {
                 demo: meta.demo,
                 env: None,
                 typing: meta.typing,
+                sources: vec![],
+                scenes: vec![],
                 layout: meta.layout,
                 timeline: Vec::new(),
             };
@@ -196,6 +198,8 @@ fn score_with_layout(name: &str, layout: Layout, timeline: Vec<Step>) -> Score {
         },
         env: None,
         typing: None,
+        sources: vec![],
+        scenes: vec![],
         layout,
         timeline,
     }
@@ -357,7 +361,10 @@ fn build_layout(
         panes.push(browser_pane(&id, &r.url, x, y, w, h, r.theme.clone()));
         focuses.push((r.t, id.clone()));
         if r.scroll {
-            timeline.push(Step::Focus { pane: id.clone() });
+            timeline.push(Step::Focus {
+                pane: Some(id.clone()),
+                scene: None,
+            });
             timeline.push(Step::Scroll {
                 direction: ScrollDirection::Down,
                 velocity: Velocity::Constant,
@@ -681,7 +688,7 @@ data = "file.txt\n"
         let r = raw(vec![RawEvent::Open {
             t_ms: 100,
             url: "https://github.com/x".into(),
-                name: None,
+            name: None,
             mode: "replace".into(),
             hold_ms: None,
             scroll: false,

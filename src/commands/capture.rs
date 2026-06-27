@@ -998,6 +998,8 @@ fn write_faithful_cast(
         }),
         env: None,
         typing: score.and_then(|s| s.typing.clone()),
+        sources: vec![],
+        scenes: vec![],
         layout,
         timeline,
     };
@@ -1030,7 +1032,10 @@ mod tests {
             &sensitive,
             &secret_prompt,
         );
-        assert!(sensitive.load(Ordering::SeqCst), "should latch on the prompt");
+        assert!(
+            sensitive.load(Ordering::SeqCst),
+            "should latch on the prompt"
+        );
         assert_eq!(
             secret_prompt.lock().unwrap().as_deref(),
             Some("Vault passphrase:")

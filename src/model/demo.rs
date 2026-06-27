@@ -14,6 +14,15 @@ pub struct Score {
     pub env: Option<Env>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub typing: Option<Typing>,
+    /// Pre-defined content sources (terminal, browser, file). Defined with
+    /// `demo source` before capture starts.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sources: Vec<Source>,
+    /// Pre-defined scene compositions. Each scene maps a layout string
+    /// (e.g. `"main+google"`) to concrete pane positions. Defined with
+    /// `demo scene` before capture starts.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub scenes: Vec<Scene>,
     pub layout: Layout,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub timeline: Vec<Step>,
@@ -38,6 +47,21 @@ impl Score {
     /// Find a pane by id.
     pub fn pane(&self, id: &str) -> Option<&Pane> {
         self.layout.panes.iter().find(|p| p.id == id)
+    }
+
+    /// Find a source by id.
+    pub fn source(&self, id: &str) -> Option<&Source> {
+        self.sources.iter().find(|s| s.id == id)
+    }
+
+    /// Find a scene by id.
+    pub fn scene(&self, id: &str) -> Option<&Scene> {
+        self.scenes.iter().find(|s| s.id == id)
+    }
+
+    /// List all scene IDs.
+    pub fn scene_ids(&self) -> Vec<&str> {
+        self.scenes.iter().map(|s| s.id.as_str()).collect()
     }
 }
 
@@ -108,6 +132,47 @@ impl Default for Typing {
     }
 }
 
+/// A content source: a terminal, browser, or file that can be placed in scenes.
+/// Defined with `demo source` before capture starts.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Source {
+    /// Unique identifier (e.g. "main", "google", "github").
+    pub id: String,
+    /// The kind of source.
+    #[serde(rename = "type")]
+    pub kind: SourceKind,
+    /// URL for browser sources (http, https, file://).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    /// Colour scheme to emulate for browser sources (`light`/`dark`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub theme: Option<String>,
+}
+
+/// The kind of content source.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SourceKind {
+    Terminal,
+    Browser,
+}
+
+/// A scene composition: maps a layout string to concrete pane positions.
+/// Defined with `demo scene` before capture starts.
+///
+/// The `layout` string uses `+` to join source IDs:
+/// - `"main"` — fullscreen single source
+/// - `"main+google"` — 50/50 split
+/// - `"main+google+github"` — thirds
+/// - `"main*2+google"` — weighted (main gets 2/3)
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Scene {
+    /// Unique identifier (e.g. "solo", "split", "full_github").
+    pub id: String,
+    /// Layout string defining the composition of sources.
+    pub layout: String,
+}
+
 /// `[layout]` — the global canvas and its panes.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Layout {
@@ -172,8 +237,15 @@ pub enum PaneKind {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "action", rename_all = "snake_case")]
 pub enum Step {
-    /// Make a pane the active target for subsequent input.
-    Focus { pane: String },
+    /// Make a scene or pane the active target. When `scene` is set, it
+    /// references a pre-defined scene ID; otherwise `pane` references a
+    /// layout pane directly (legacy).
+    Focus {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pane: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        scene: Option<String>,
+    },
     /// Type text into the focused terminal pane.
     Type {
         text: String,

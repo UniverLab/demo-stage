@@ -130,10 +130,20 @@ fn step_summary(step: &Step) -> String {
         Step::WaitForQuiet { quiet_ms, .. } => format!("wait_for_quiet {quiet_ms}ms"),
         Step::WaitForScreen { pattern, .. } => format!("wait_for_screen {:?}", pattern),
         Step::WaitForStdout { pattern, .. } => format!("wait_for_stdout {:?}", pattern),
-        Step::Focus { pane } => format!("focus → {pane}"),
+        Step::Focus { pane, scene } => {
+            if let Some(s) = scene {
+                format!("focus → scene:{s}")
+            } else {
+                format!("focus → {}", pane.as_deref().unwrap_or("?"))
+            }
+        }
         Step::Caption { text } => format!("caption {:?}", text),
         Step::Secret { prompt } => format!("secret {:?}", prompt),
-        Step::Scroll { direction, duration_ms, .. } => {
+        Step::Scroll {
+            direction,
+            duration_ms,
+            ..
+        } => {
             format!("scroll {direction:?} {duration_ms}ms")
         }
         Step::Terminate => "terminate".to_string(),
@@ -193,12 +203,9 @@ fn split_type_step(timeline: &mut Vec<Step>, idx: usize) -> Result<()> {
     let display_text = text.replace('\n', "↵");
     println!("  current: {:?}", display_text);
 
-    let action = inquire::Select::new(
-        "How:",
-        vec!["Edit text (replace)", "Split by delimiter"],
-    )
-    .prompt()
-    .map_err(|e| Error::Export(format!("edit: {e}")))?;
+    let action = inquire::Select::new("How:", vec!["Edit text (replace)", "Split by delimiter"])
+        .prompt()
+        .map_err(|e| Error::Export(format!("edit: {e}")))?;
 
     if action.starts_with("Edit") {
         let new = inquire::Text::new("new text:")
@@ -229,7 +236,13 @@ fn split_type_step(timeline: &mut Vec<Step>, idx: usize) -> Result<()> {
     Ok(())
 }
 
-fn do_split(timeline: &mut Vec<Step>, idx: usize, delim: &str, human_salt: bool, text: &str) -> Result<()> {
+fn do_split(
+    timeline: &mut Vec<Step>,
+    idx: usize,
+    delim: &str,
+    human_salt: bool,
+    text: &str,
+) -> Result<()> {
     let parts: Vec<&str> = text.split(delim).collect();
     if parts.len() <= 1 {
         println!("  (delimiter not found — no split)");
@@ -242,7 +255,10 @@ fn do_split(timeline: &mut Vec<Step>, idx: usize, delim: &str, human_salt: bool,
             t.push_str(delim);
         }
         if !t.is_empty() {
-            new_steps.push(Step::Type { text: t, human_salt });
+            new_steps.push(Step::Type {
+                text: t,
+                human_salt,
+            });
         }
     }
     let n = new_steps.len();

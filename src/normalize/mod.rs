@@ -41,7 +41,8 @@ pub fn normalize(raw: &RawMacro, name: &str, opts: &Options) -> Score {
 
     let mut timeline = Vec::new();
     timeline.push(Step::Focus {
-        pane: "main".to_string(),
+        pane: Some("main".to_string()),
+        scene: None,
     });
     timeline.extend(terminal_steps(raw, &reveals));
     timeline.push(Step::Terminate);
@@ -54,6 +55,8 @@ pub fn normalize(raw: &RawMacro, name: &str, opts: &Options) -> Score {
         },
         env: None,
         typing: Some(typing(opts)),
+        sources: vec![],
+        scenes: vec![],
         layout: layout_with_reveals(raw, &reveals),
         timeline,
     }
@@ -98,7 +101,15 @@ fn collect_reveals(raw: &RawMacro) -> Vec<Reveal> {
                 hold_ms,
                 scroll,
                 theme,
-            } => Some((*t_ms, url.clone(), name.clone(), mode.clone(), *hold_ms, *scroll, theme.clone())),
+            } => Some((
+                *t_ms,
+                url.clone(),
+                name.clone(),
+                mode.clone(),
+                *hold_ms,
+                *scroll,
+                theme.clone(),
+            )),
             _ => None,
         })
         .collect();
@@ -106,15 +117,17 @@ fn collect_reveals(raw: &RawMacro) -> Vec<Reveal> {
     opens
         .into_iter()
         .enumerate()
-        .map(|(i, (t_ms, url, name, mode, hold_ms, scroll, theme))| Reveal {
-            t_ms,
-            id: name.unwrap_or_else(|| format!("scene{}", i + 1)),
-            url,
-            mode,
-            hold_ms,
-            scroll,
-            theme,
-        })
+        .map(
+            |(i, (t_ms, url, name, mode, hold_ms, scroll, theme))| Reveal {
+                t_ms,
+                id: name.unwrap_or_else(|| format!("scene{}", i + 1)),
+                url,
+                mode,
+                hold_ms,
+                scroll,
+                theme,
+            },
+        )
         .collect()
 }
 
@@ -136,7 +149,8 @@ pub fn merge_into_stage(mut stage: Score, raw: &RawMacro, opts: &Options) -> Sco
     let mut timeline = Vec::with_capacity(stage.timeline.len() + steps.len() + 1);
     let mut spliced = false;
     for step in stage.timeline.drain(..) {
-        let is_anchor = matches!(&step, Step::Focus { pane } if Some(pane) == term_id.as_ref());
+        let is_anchor =
+            matches!(&step, Step::Focus { pane, .. } if pane.as_ref() == term_id.as_ref());
         timeline.push(step);
         if is_anchor && !spliced {
             timeline.extend(steps.iter().cloned());
@@ -146,7 +160,10 @@ pub fn merge_into_stage(mut stage: Score, raw: &RawMacro, opts: &Options) -> Sco
     if !spliced {
         let mut head = Vec::new();
         if let Some(id) = &term_id {
-            head.push(Step::Focus { pane: id.clone() });
+            head.push(Step::Focus {
+                pane: Some(id.clone()),
+                scene: None,
+            });
         }
         head.extend(steps);
         head.append(&mut timeline);
@@ -292,7 +309,10 @@ fn terminal_steps(raw: &RawMacro, reveals: &[Reveal]) -> Vec<Step> {
 /// (for a reveal in the middle of the flow, where typing continues).
 fn push_reveal(steps: &mut Vec<Step>, r: &Reveal, refocus_main: bool) {
     let hold = reveal_hold_ms(r.hold_ms, r.scroll);
-    steps.push(Step::Focus { pane: r.id.clone() });
+    steps.push(Step::Focus {
+        pane: Some(r.id.clone()),
+        scene: None,
+    });
     if r.scroll {
         steps.push(Step::Scroll {
             direction: ScrollDirection::Down,
@@ -304,7 +324,8 @@ fn push_reveal(steps: &mut Vec<Step>, r: &Reveal, refocus_main: bool) {
     steps.push(Step::Wait { duration_ms: hold });
     if refocus_main {
         steps.push(Step::Focus {
-            pane: "main".to_string(),
+            pane: Some("main".to_string()),
+            scene: None,
         });
     }
 }
@@ -383,7 +404,11 @@ fn layout_with_reveals(raw: &RawMacro, reveals: &[Reveal]) -> Layout {
         let tw = (raw.meta.cols as u32 * CELL_W).max(CELL_W);
         let th = (raw.meta.rows as u32 * CELL_H).max(CELL_H);
         let any_split = reveals.iter().any(|r| r.mode == "split");
-        if any_split { (tw * 2, th) } else { (tw, th) }
+        if any_split {
+            (tw * 2, th)
+        } else {
+            (tw, th)
+        }
     };
 
     let any_split = reveals.iter().any(|r| r.mode == "split");
@@ -434,14 +459,11 @@ fn layout_with_reveals(raw: &RawMacro, reveals: &[Reveal]) -> Layout {
 
 /// A single terminal pane sized to the captured grid (or explicit resolution).
 fn default_layout(raw: &RawMacro) -> Layout {
-    let (width, height) = raw
-        .meta
-        .resolution
-        .unwrap_or_else(|| {
-            let w = (raw.meta.cols as u32 * CELL_W).max(CELL_W);
-            let h = (raw.meta.rows as u32 * CELL_H).max(CELL_H);
-            (w, h)
-        });
+    let (width, height) = raw.meta.resolution.unwrap_or_else(|| {
+        let w = (raw.meta.cols as u32 * CELL_W).max(CELL_W);
+        let h = (raw.meta.rows as u32 * CELL_H).max(CELL_H);
+        (w, h)
+    });
     Layout {
         width,
         height,
@@ -713,7 +735,7 @@ mod tests {
         assert!(score
             .timeline
             .iter()
-            .any(|s| matches!(s, Step::Focus { pane } if pane == &scene.id)));
+            .any(|s| matches!(s, Step::Focus { pane, .. } if pane.as_ref() == Some(&scene.id))));
         assert!(score.timeline.iter().any(|s| matches!(
             s,
             Step::Scroll {
@@ -798,7 +820,7 @@ action = "terminate"
         let view_at = merged
             .timeline
             .iter()
-            .position(|s| matches!(s, Step::Focus { pane } if pane == "view"))
+            .position(|s| matches!(s, Step::Focus { pane, .. } if pane.as_deref() == Some("view")))
             .unwrap();
         assert!(type_at < view_at, "flow must precede the view trigger");
     }
