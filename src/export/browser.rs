@@ -12,8 +12,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use headless_chrome::protocol::cdp::Emulation::{MediaFeature, SetEmulatedMedia};
-use headless_chrome::protocol::cdp::Page::CaptureScreenshotFormatOption;
 use headless_chrome::protocol::cdp::Page;
+use headless_chrome::protocol::cdp::Page::CaptureScreenshotFormatOption;
 use headless_chrome::{Browser, LaunchOptions, Tab};
 
 use super::provision;
@@ -270,7 +270,12 @@ fn shot(tab: &Arc<Tab>, w: usize, h: usize) -> Result<Vec<u8>> {
         scale: 1.0,
     };
     let png = tab
-        .capture_screenshot(CaptureScreenshotFormatOption::Png, None, Some(viewport), true)
+        .capture_screenshot(
+            CaptureScreenshotFormatOption::Png,
+            None,
+            Some(viewport),
+            true,
+        )
         .map_err(|e| Error::Export(format!("screenshot: {e}")))?;
     png_to_rgba(&png, w, h)
 }

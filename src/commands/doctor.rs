@@ -173,7 +173,8 @@ fn check_ffmpeg(plat: &Platform) -> Check {
         Check {
             name: "ffmpeg",
             level: Level::Warn,
-            detail: "not on PATH — `mp4` will auto-download a managed copy on first use".to_string(),
+            detail: "not on PATH — `mp4` will auto-download a managed copy on first use"
+                .to_string(),
             fix: Some(match plat.os {
                 Os::Linux => "sudo apt-get install -y ffmpeg".to_string(),
                 Os::Mac => "brew install ffmpeg".to_string(),
@@ -213,12 +214,10 @@ fn check_display(plat: &Platform) -> Check {
 /// The platform-specific command to install a working (non-snap) browser.
 fn chrome_install_hint(plat: &Platform) -> String {
     match plat.os {
-        Os::Linux => {
-            "wget -O /tmp/google-chrome.deb https://dl.google.com/linux/direct/\
+        Os::Linux => "wget -O /tmp/google-chrome.deb https://dl.google.com/linux/direct/\
              google-chrome-stable_current_amd64.deb && sudo dpkg -i /tmp/google-chrome.deb \
              || sudo apt-get -f install -y     (or run `demo doctor --fix`)"
-                .to_string()
-        }
+            .to_string(),
         Os::Mac => "brew install --cask google-chrome".to_string(),
         Os::Windows => "install Google Chrome from google.com/chrome".to_string(),
         Os::Other => "install Google Chrome or a non-snap Chromium".to_string(),

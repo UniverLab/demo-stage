@@ -168,7 +168,11 @@ fn orphan_osc_cluster_len(chars: &[char]) -> Option<usize> {
             }
         }
     }
-    if total > 0 { Some(total) } else { None }
+    if total > 0 {
+        Some(total)
+    } else {
+        None
+    }
 }
 
 /// Replay timestamped input chunks into an ordered list of clean actions.
@@ -445,10 +449,7 @@ mod tests {
     fn strip_orphan_osc_bodies_unit() {
         let noise = "10;rgb:baba/b7b7/b6b611;rgb:1414/1414/14144;0;rgb:0000/0000/0000";
         assert_eq!(strip_orphan_osc_bodies(noise), "");
-        assert_eq!(
-            strip_orphan_osc_bodies(&format!("{noise}/exit")),
-            "/exit"
-        );
+        assert_eq!(strip_orphan_osc_bodies(&format!("{noise}/exit")), "/exit");
     }
 
     #[test]

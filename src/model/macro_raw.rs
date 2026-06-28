@@ -97,6 +97,8 @@ pub enum RawEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         theme: Option<String>,
     },
+    /// A focus change triggered via `/focus <scene>` during capture.
+    Focus { t_ms: u64, scene: String },
 }
 
 #[cfg(test)]

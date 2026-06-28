@@ -709,34 +709,96 @@ pub fn run(args: CaptureArgs) -> Result<()> {
             // `demo stop` span can be excised from the command's echo, not just
             // from the Enter that follows it.
             let mut cmd_start: Option<u64> = None;
+            // True while typing a `/` command — keystrokes are buffered, not sent
+            // to the PTY, so they never appear in the recording.
+            let mut slash_cmd = false;
+            let mut slash_buf = String::new();
             while !stop.load(Ordering::SeqCst) {
                 match stdin.read(&mut buf) {
                     Ok(0) => break,
                     Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
                     Err(_) => break,
                     Ok(n) => {
-                        if writer.write_all(&buf[..n]).is_err() {
-                            break;
-                        }
-                        let _ = writer.flush();
                         *last.lock().unwrap() = Instant::now();
                         // Don't record input during the prompt-setup pre-roll.
                         if !ready.load(Ordering::SeqCst) {
                             continue;
                         }
+                        // ── /-command interception ────────────────────────────
+                        // Detect `/` at the start of a line. While in a slash
+                        // command, buffer keystrokes without sending to the PTY.
+                        let text = String::from_utf8_lossy(&buf[..n]);
+                        let mut input_suppressed = false;
+                        for ch in text.chars() {
+                            if ch == '\r' || ch == '\n' {
+                                if slash_cmd {
+                                    let line = slash_buf.trim().to_string();
+                                    slash_cmd = false;
+                                    slash_buf.clear();
+                                    input_suppressed = true;
+                                    match line.as_str() {
+                                        "/stop" => {
+                                            let _ =
+                                                control::send(serde_json::json!({"cmd":"stop"}));
+                                        }
+                                        s if s.starts_with("/focus ") => {
+                                            let scene = s[7..].trim().to_string();
+                                            if !scene.is_empty() {
+                                                let _ = control::send(serde_json::json!({
+                                                    "cmd": "focus",
+                                                    "scene": scene,
+                                                }));
+                                            }
+                                        }
+                                        s if s.starts_with("/open ") => {
+                                            let rest = s[6..].trim();
+                                            if !rest.is_empty() {
+                                                let url = normalize_slash_url(rest);
+                                                let _ = control::send(serde_json::json!({
+                                                    "cmd": "open",
+                                                    "url": url,
+                                                    "mode": "replace",
+                                                }));
+                                            }
+                                        }
+                                        _ => {} // Unknown /-command → ignore.
+                                    }
+                                    cmd_line.clear();
+                                    cmd_start = None;
+                                }
+                            } else if !ch.is_control() {
+                                if slash_cmd {
+                                    slash_buf.push(ch);
+                                    continue;
+                                }
+                                if cmd_line.is_empty() {
+                                    cmd_start = Some(ms(t0));
+                                    if ch == '/' {
+                                        slash_cmd = true;
+                                        slash_buf.clear();
+                                        input_suppressed = true;
+                                        continue;
+                                    }
+                                }
+                                cmd_line.push(ch);
+                            }
+                        }
+                        if input_suppressed {
+                            continue;
+                        }
+                        // Forward raw bytes to the PTY for echo.
+                        if writer.write_all(&buf[..n]).is_err() {
+                            break;
+                        }
+                        let _ = writer.flush();
                         // Watch typed lines for a `demo open`/`demo stop` command and
                         // start muting its output (cleared when the recorder gets it).
-                        for ch in String::from_utf8_lossy(&buf[..n]).chars() {
+                        for ch in text.chars() {
                             if ch == '\r' || ch == '\n' {
                                 let t = cmd_line.trim_start();
                                 if t.starts_with("demo open") || t.starts_with("demo stop") {
                                     *mute_since.lock().unwrap() = Instant::now();
                                     muting.store(true, Ordering::SeqCst);
-                                    // Start the excision span at the START of the
-                                    // typed line, so the command's own echo (and the
-                                    // wizard that follows) is removed — not just the
-                                    // bytes after the Enter. Covers `demo open` AND
-                                    // `demo stop` (closed by the control msg / at end).
                                     let mut s = mute_start.lock().unwrap();
                                     if s.is_none() {
                                         *s = Some(cmd_start.unwrap_or_else(|| ms(t0)));
@@ -745,26 +807,17 @@ pub fn run(args: CaptureArgs) -> Result<()> {
                                     && !after_opens.lock().unwrap().is_empty()
                                     && !after_running.load(Ordering::SeqCst)
                                 {
-                                    // A real command launched while an `--after`
-                                    // reveal is armed → watch for it to finish.
                                     *after_last_out.lock().unwrap() = Instant::now();
                                     after_running.store(true, Ordering::SeqCst);
                                 }
                                 cmd_line.clear();
                                 cmd_start = None;
-                            } else if !ch.is_control() {
-                                if cmd_line.is_empty() {
-                                    cmd_start = Some(ms(t0));
-                                }
-                                cmd_line.push(ch);
                             }
                         }
                         // Secret prompt active → forward the keystrokes but do NOT
                         // record them; clear once the prompt is answered (Enter).
                         let masked = sensitive.load(Ordering::SeqCst);
                         if let Some(d) = &debug {
-                            // Never write the secret to the debug log: at a secret
-                            // prompt, log only the byte count, not the keystrokes.
                             if masked {
                                 d.note(&format!("IN* {n} bytes (redacted — secret prompt)"));
                             } else {
@@ -774,9 +827,6 @@ pub fn run(args: CaptureArgs) -> Result<()> {
                         if masked {
                             if buf[..n].iter().any(|b| *b == b'\r' || *b == b'\n') {
                                 sensitive.store(false, Ordering::SeqCst);
-                                // Record THAT a secret was entered (its prompt label
-                                // only, never the value) so `demo record` can ask for
-                                // it again and re-supply it.
                                 let prompt =
                                     secret_prompt.lock().unwrap().take().unwrap_or_default();
                                 events.lock().unwrap().push(RawEvent::Secret {
@@ -909,7 +959,7 @@ pub fn run(args: CaptureArgs) -> Result<()> {
         let (ins, outs) = raw.events.iter().fold((0, 0), |(i, o), e| match e {
             RawEvent::Input { .. } => (i + 1, o),
             RawEvent::Output { .. } => (i, o + 1),
-            RawEvent::Open { .. } | RawEvent::Secret { .. } => (i, o),
+            RawEvent::Open { .. } | RawEvent::Secret { .. } | RawEvent::Focus { .. } => (i, o),
         });
         d.note(&format!(
             "recorded {} events ({ins} input, {outs} output)",
@@ -1127,6 +1177,18 @@ fn read_control(
                     });
                 }
             }
+            Some("focus") => {
+                let scene = v.get("scene").and_then(|s| s.as_str()).unwrap_or("");
+                if !scene.is_empty() {
+                    if let Some(d) = debug {
+                        d.note(&format!("focus → {scene}"));
+                    }
+                    events.lock().unwrap().push(RawEvent::Focus {
+                        t_ms: ms(t0),
+                        scene: scene.to_string(),
+                    });
+                }
+            }
             _ => {}
         }
     }
@@ -1165,6 +1227,18 @@ fn write_faithful_cast(
         }
     }
     std::fs::write(path, cast).map_err(|e| Error::io(path, e))
+}
+
+/// Normalize a URL typed after `/open` — bare domains become https://.
+fn normalize_slash_url(raw: &str) -> String {
+    let u = raw.trim();
+    if u.contains("://") {
+        u.to_string()
+    } else if u.starts_with("localhost") || u.starts_with("127.0.0.1") {
+        format!("http://{u}")
+    } else {
+        format!("https://{u}")
+    }
 }
 
 #[cfg(test)]
