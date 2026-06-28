@@ -20,10 +20,6 @@ pub struct Cli {
 pub enum Command {
     /// Capture a live interactive session, then normalize it to a demo score.
     Capture(CaptureArgs),
-    /// Reveal a browser scene in the running capture (from here or another shell).
-    Open(OpenArgs),
-    /// End the in-progress capture — run this inside a `demo capture` session.
-    Stop,
     /// Execute a demo score in a PTY to (re)produce a recording (a .rec).
     Record(RecordArgs),
     /// Render a recording to one or more formats (playback — never executes).
@@ -32,12 +28,6 @@ pub enum Command {
     Doctor(DoctorArgs),
     /// Interactively edit timing/wait steps in a demo score.
     Edit(EditArgs),
-    /// Define a content source (terminal, browser) for scene composition.
-    Source(SourceArgs),
-    /// Define a scene composition from pre-defined sources.
-    Scene(SceneArgs),
-    /// Switch focus to a scene or pane during capture.
-    Focus(FocusArgs),
 }
 
 #[derive(Debug, Args)]
@@ -53,169 +43,6 @@ pub struct EditArgs {
     /// The demo score to edit interactively.
     #[arg(default_value = "demo.toml")]
     pub input: PathBuf,
-}
-
-#[derive(Debug, Args)]
-pub struct SourceArgs {
-    /// Source ID (e.g. "main", "google"). Prompted if omitted.
-    pub id: Option<String>,
-
-    /// Source type: `terminal` or `browser`. Prompted if omitted.
-    #[arg(short = 't', long, value_enum)]
-    pub r#type: Option<SourceKindArg>,
-
-    /// URL for browser sources (http, https, file://). Prompted if omitted
-    /// for browser sources.
-    #[arg(short = 'u', long)]
-    pub url: Option<String>,
-
-    /// Colour scheme for browser sources (`light`/`dark`). Prompted if omitted.
-    #[arg(short = 'c', long, value_enum)]
-    pub theme: Option<ColorScheme>,
-
-    /// List existing sources and exit.
-    #[arg(long)]
-    pub list: bool,
-
-    /// Remove a source by ID and exit.
-    #[arg(long, value_name = "ID")]
-    pub remove: Option<String>,
-
-    /// The demo score file to modify.
-    #[arg(short, long, default_value = "demo.toml")]
-    pub score: PathBuf,
-}
-
-/// Source type for `demo source`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-pub enum SourceKindArg {
-    Terminal,
-    Browser,
-}
-
-#[derive(Debug, Args)]
-pub struct SceneArgs {
-    /// Scene ID (e.g. "solo", "split"). Prompted if omitted.
-    pub id: Option<String>,
-
-    /// Layout string (e.g. "main", "main+google"). Prompted if omitted.
-    #[arg(short = 'l', long)]
-    pub layout: Option<String>,
-
-    /// List existing scenes and exit.
-    #[arg(long)]
-    pub list: bool,
-
-    /// Remove a scene by ID and exit.
-    #[arg(long, value_name = "ID")]
-    pub remove: Option<String>,
-
-    /// The demo score file to modify.
-    #[arg(short, long, default_value = "demo.toml")]
-    pub score: PathBuf,
-}
-
-#[derive(Debug, Args)]
-pub struct FocusArgs {
-    /// Scene ID to focus. Omit for an interactive picker.
-    pub scene: Option<String>,
-
-    /// Trigger: focus when this substring appears in terminal output.
-    #[arg(long)]
-    pub when: Option<String>,
-
-    /// Trigger: focus after the current command finishes.
-    #[arg(long)]
-    pub after: bool,
-
-    /// Trigger: focus after this many milliseconds from capture start.
-    #[arg(long, value_name = "MS")]
-    pub after_ms: Option<u64>,
-
-    /// Hold focus for this duration in milliseconds (0 = until next focus).
-    #[arg(long, value_name = "MS")]
-    pub hold: Option<u64>,
-
-    /// The demo score file to modify.
-    #[arg(short, long, default_value = "demo.toml")]
-    pub score: PathBuf,
-}
-
-/// How a `demo open` browser scene sits on the canvas.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-pub enum OpenMode {
-    /// Full-canvas: the browser takes over the whole frame (a scene swap).
-    Replace,
-    /// Beside the terminal (terminal keeps showing, browser to the right).
-    Split,
-}
-
-/// Browser colour scheme to emulate for a `demo open` scene (`prefers-color-scheme`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-pub enum ColorScheme {
-    Light,
-    Dark,
-}
-
-impl ColorScheme {
-    /// The `prefers-color-scheme` value Chromium expects.
-    pub fn as_str(self) -> &'static str {
-        match self {
-            ColorScheme::Light => "light",
-            ColorScheme::Dark => "dark",
-        }
-    }
-}
-
-#[derive(Debug, Args)]
-pub struct OpenArgs {
-    /// URL to show (e.g. a repo page, a `file://` PDF, a localhost server).
-    /// Omit it (on a terminal) to be prompted by a small wizard.
-    pub url: Option<String>,
-
-    /// Reveal full-canvas (`replace`, the default) or beside the terminal (`split`).
-    #[arg(long, value_enum, default_value_t = OpenMode::Replace)]
-    pub mode: OpenMode,
-
-    /// Shortcut for `--mode split`.
-    #[arg(long, conflicts_with = "mode")]
-    pub split: bool,
-
-    /// Defer the reveal until this substring appears in the terminal output —
-    /// arm it before running the program, so the scene opens on a cue line.
-    #[arg(long)]
-    pub when: Option<String>,
-
-    /// Reveal when the current foreground command finishes — arm it, then run
-    /// your command; the scene opens once output goes quiet (back at the prompt).
-    #[arg(long, conflicts_with_all = ["when", "view"])]
-    pub after: bool,
-
-    /// Hold the scene on screen this long, in milliseconds, after it opens — so a
-    /// reveal near the end of the capture doesn't just flash by. Mutually
-    /// exclusive with `--scroll`.
-    #[arg(long, value_name = "MS", conflicts_with_all = ["scroll", "view"])]
-    pub hold: Option<u64>,
-
-    /// Slowly scroll the page down while the scene is shown, instead of holding a
-    /// static frame. Mutually exclusive with `--hold`.
-    #[arg(long, conflicts_with_all = ["hold", "view"])]
-    pub scroll: bool,
-
-    /// Open a **real (headed) browser** you drive yourself — navigate freely; the
-    /// session is recorded until you close the window, then composited into the
-    /// demo. No headless Chromium is needed at export. Reveals immediately.
-    #[arg(long, conflicts_with_all = ["when", "after", "scroll", "hold"])]
-    pub view: bool,
-
-    /// Emulate the browser colour scheme so theme-aware pages (GitHub, …) render
-    /// `light` or `dark` instead of guessing. Omit for the page/browser default.
-    #[arg(long, value_enum)]
-    pub theme: Option<ColorScheme>,
-
-    /// Force the interactive wizard even if a URL/flags are given.
-    #[arg(short = 'w', long)]
-    pub wizard: bool,
 }
 
 #[derive(Debug, Args)]

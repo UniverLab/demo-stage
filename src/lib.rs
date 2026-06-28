@@ -42,15 +42,10 @@ use cli::{Cli, Command};
 pub fn run(cli: Cli) -> Result<ExitCode> {
     match cli.command {
         Command::Capture(args) => commands::capture::run(args).map(|()| ExitCode::SUCCESS),
-        Command::Open(args) => commands::open::run(args).map(|()| ExitCode::SUCCESS),
-        Command::Stop => commands::stop::run().map(|()| ExitCode::SUCCESS),
         Command::Record(args) => commands::record::run(args).map(|()| ExitCode::SUCCESS),
         Command::Export(args) => commands::export::run(args).map(|()| ExitCode::SUCCESS),
         Command::Doctor(args) => commands::doctor::run(args).map(|()| ExitCode::SUCCESS),
         Command::Edit(args) => commands::edit::run(args).map(|()| ExitCode::SUCCESS),
-        Command::Source(args) => commands::source::run(args).map(|()| ExitCode::SUCCESS),
-        Command::Scene(args) => commands::scene::run(args).map(|()| ExitCode::SUCCESS),
-        Command::Focus(args) => commands::focus::run(args).map(|()| ExitCode::SUCCESS),
     }
 }
 
