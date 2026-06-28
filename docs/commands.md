@@ -1,6 +1,6 @@
 ---
 title: Commands
-description: Reference for demo capture, open, record, export, edit, source, scene, focus and doctor and their flags.
+description: Reference for demo capture, record, export, edit, doctor and in-capture / commands.
 order: 5
 ---
 
@@ -13,7 +13,7 @@ played back by `demo export`) plus the editable **score** (`demo.toml`, re-run b
 `demo record`). Needs a real terminal.
 
 ```sh
-demo capture [-r demo.rec] [-O demo.toml | --no-score] [--raw macro.raw.toml] [--no-normalize] [--prompt "<PS1>" | --keep-prompt] [--debug] [--idle-timeout-ms 0] [--shell /bin/bash] [--into demo.toml]
+demo capture [-r demo.rec] [-O demo.toml | --no-score] [--raw macro.raw.toml] [--no-normalize] [--prompt "<PS1>" | --keep-prompt] [--debug] [--idle-timeout-ms 0] [--shell /bin/bash] [--into demo.toml] [--font <name>]
 ```
 
 - `-r, --rec` — where to write the recording (default `demo.rec`). It's a faithful
@@ -45,121 +45,46 @@ demo capture [-r demo.rec] [-O demo.toml | --no-score] [--raw macro.raw.toml] [-
 - `--into` — splice this capture into a hand-authored stage score's timeline
   instead of building a fresh single-pane score (advanced); defaults `--score` to
   `demo.toml`.
+- `--font` — font for the exported demo (`dejavu`, `jetbrains`, `ibm-plex`,
+  `liberation`, `ubuntu`). Omit for a wizard prompt.
 
-To add a **browser scene** (show a repo, a PDF, a localhost page) during a
-capture, use [`demo open`](#demo-open) — no layout to author up front.
+**Ending a capture.** Type `/stop` inside the session, or run `demo stop` from
+another shell in the same directory. (`exit` / Ctrl-D still work; a positive
+`--idle-timeout-ms` also stops after that long with no output.)
 
-**Ending a capture.** Run `demo stop` (from inside the session or another shell in
-the same directory) — the clean way to finish, even mid-wizard. (`exit` / Ctrl-D
-still work; a positive `--idle-timeout-ms` also stops after that long with no
-output.) The `demo stop` you type is dropped from the recording.
+## In-capture commands
 
-`capture` writes the normalized `demo.toml` (unless `--no-score`) for the clean
-`demo record` → `demo export` path, **and** a **faithful** `demo.rec` of the real
-session. For interactive tools, secrets and side effects (a `demo record` re-run
-would repeat them), render that faithful recording directly with
-`demo export --force`. The raw macro is dropped unless you pass `--raw`.
+While a `demo capture` is running, you can type these commands directly in the
+captured terminal. They are intercepted before reaching the shell and never
+appear in the recording.
 
-A `demo open` you run **inside** the capture (its typed command and wizard
-prompts) is automatically excised from both the recording and the score, so the
-meta-command never shows up in the finished demo.
+### `/stop`
 
-Arrow keys and other special keys (Home/End, function keys) pressed inside an
-interactive wizard are recorded as control sequences and **swallowed by the
-normalizer** — they won't leak into the clean score as stray `[A`/`[B` text. (To
-keep a wizard's exact navigation, render the raw capture directly with `export`.)
+End the capture. Same as running `demo stop` from another terminal.
 
-**Secrets are redacted, and re-asked at `record`.** When a program shows a secret
-prompt — a line ending in `:` or `?` that mentions *password*, *passphrase*,
-*passcode*, *secret*, *token*, *api key*, *access key*, *credential*, `[sudo]`, …
-— the keystrokes you type are forwarded to the program but **never written
-anywhere** (not the recording, the score, the raw macro, nor the `--debug` log,
-which records only the byte count). Only the prompt's **label** is kept, so a later
-`demo record` knows it needs that secret: it asks for each up front, keeps them
-**only in memory** for the run, and types them at the matching prompt (verifying
-the prompt is showing first, so a secret never lands in the wrong field). The
-captured demo shows only the program's mask (`********`). Notes:
-
-- The detector is a **heuristic** (keyword + a `:`/`?` ending). A prompt without one
-  of those keywords **won't** be caught, so **review the recording before sharing**,
-  and prefer non-interactive bypasses (e.g. export `GITHUB_TOKEN` so ghScaff skips
-  its vault passphrase — nothing is typed at all).
-- A program that *prints* a secret to stdout (a token in its output) is **not**
-  redacted — edit it out, since it lands in the recording and the gif/mp4.
-
-## `demo open`
-
-Reveal a **browser scene** in the running capture — show a repo page, a `file://`
-PDF, a localhost server. Run it **inside** the capture (between commands) **or from
-another terminal in the same directory** — the latter lets you trigger a reveal
-live even while a full-screen TUI owns the captured shell.
-
-```sh
-demo open [url] [--replace | --split] [--when "<line>" | --after] [--hold <ms> | --scroll] [--view] [--theme light|dark] [--wizard]
+```
+/stop
 ```
 
-Run it with no URL (on a terminal) — or with `--wizard` — for a small prompt that
-asks the URL, the theme, how to present it (static hold / scroll / interactive
-view), the placement, and when to reveal. From a second terminal the wizard's
-prompts stay out of the recording.
+### `/focus <scene>`
 
-- `[url]` — what to show. Omit for the wizard.
-- `--replace` (default) — the browser takes over the whole frame (a scene swap).
-- `--split` — the browser sits beside the terminal (which keeps showing).
-- `--when "<line>"` — **defer** the reveal until that substring appears in the
-  terminal output. Arm it *before* running the program, so the scene opens on a cue
-  line (e.g. when a build prints a URL) without you watching.
-- `--after` — **defer** the reveal until the current foreground command finishes
-  (its output goes quiet and the shell is back at the prompt). Arm it, then run
-  your command; the scene opens the moment it returns. Doesn't need a cue line —
-  handy for a wizard whose final output you can't predict. (Conflicts with
-  `--when`.)
-- `--hold <ms>` — hold the scene on screen this long after it opens, so a reveal
-  near the end of the capture doesn't just flash by (defaults to a few seconds).
-  **Mutually exclusive with `--scroll`.**
-- `--scroll` — slowly pan the page down while the scene is shown, instead of a
-  static hold. At `export` the page is scrolled across the window it's visible for.
-- `--view` — open a **real (headed) browser** you drive yourself: navigate, click
-  and scroll however you like; the session is recorded (~8 fps) **until you close
-  the window**, then composited into the demo. It reveals immediately and takes the
-  whole frame. The frames are recorded up front into `demo-scenes/`, so **no
-  headless Chromium is needed at `export`** (handy when export runs on a host
-  without a browser — keep `demo-scenes/` next to the `.rec`). Needs a graphical
-  display (on WSL, WSLg). Conflicts with `--scroll`/`--hold`/`--when`/`--after`.
-- `--theme light|dark` — emulate the browser's colour scheme (`prefers-color-scheme`)
-  so theme-aware pages (GitHub, many docs sites) render the theme you want instead
-  of defaulting to light. Applies to both headless reveals and `--view`. Omit for
-  the page/browser default.
+Switch focus to a scene. The scene must be defined in the score's `[scenes]`
+table.
 
-A reveal (other than `--view`) is composited at `export` via headless Chromium; a
-`--view` scene plays back its recorded frames. Example — open the repo once ghScaff
-finishes, and scroll it:
-
-```sh
-demo capture
-demo open https://github.com/me/new-repo --after --scroll
-ghscaff            # the scene opens when ghScaff returns to the prompt
-demo stop
-demo export gif --force   # ghScaff can't be re-run, so render the capture as-is
+```
+/focus split
+/focus full_github
 ```
 
-## `demo stop`
+### `/open <url>`
 
-End the in-progress capture. Run it **inside** a `demo capture` session, or from
-another terminal in the same directory:
+Reveal a browser scene. The URL is shown in the exported demo at this point in
+the timeline.
 
-```sh
-demo stop
 ```
-
-The recorder writes a control file (`.demo-capture`) in its directory and exports
-its path to the captured shell; `demo open`/`demo stop` append a command to it
-(found by that env var, or by the cwd from another terminal). Outside a capture it
-errors. The `demo stop` you type is dropped from the normalized score.
-
-> **Normalizing** (prune typos, humanize typing, trim idle — see
-> [the normalizer](normalizer.md)) is **not a separate command**: it runs
-> automatically at the end of `demo capture`.
+/open https://github.com/me/repo
+/open localhost:3000
+```
 
 ## `demo record`
 
@@ -224,9 +149,9 @@ revealed at the moment the timeline focuses it.
 ## `demo doctor`
 
 Check the environment for the optional dependencies that browser scenes
-(`demo open`) and the `mp4` target need, and report exactly how to fix what's
-missing on your platform. The core pipeline (`capture` → `record` → `export gif`)
-is pure Rust and needs none of this.
+and the `mp4` target need, and report exactly how to fix what's missing on your
+platform. The core pipeline (`capture` → `record` → `export gif`) is pure Rust
+and needs none of this.
 
 ```sh
 demo doctor [--fix]
@@ -240,8 +165,8 @@ It reports three checks:
   non-snap Google Chrome automatically.
 - **ffmpeg** — needed for `mp4`. Missing is only a warning: `mp4` auto-downloads a
   managed copy on first use.
-- **display** — `demo open --view` (a headed browser) needs a graphical display
-  (on WSL, WSLg). Headless reveals don't.
+- **display** — headed browser sessions need a graphical display (on WSL, WSLg).
+  Headless reveals don't.
 
 `--fix` installs what's missing on apt-based Linux (a non-snap Google Chrome, and
 ffmpeg) — it runs `sudo`, so it prompts in your terminal. On other platforms it
@@ -268,115 +193,3 @@ Editing actions per step type:
 - **Delete** — remove the step
 
 `[input]` defaults to `demo.toml`.
-
-## `demo source`
-
-Define a content source (terminal, browser) for scene composition. Run this
-before `demo capture` to pre-define what goes into each scene.
-
-```sh
-demo source [ID] [-t terminal|browser] [-u URL] [-c light|dark] [--list] [--remove ID] [-s demo.toml]
-```
-
-- `[ID]` — unique identifier (e.g. "main", "google"). Prompted if omitted.
-- `-t, --type` — source type: `terminal` or `browser`. Prompted if omitted.
-- `-u, --url` — URL for browser sources (http, https, file://). Prompted if
-  omitted for browser sources.
-- `-c, --theme` — colour scheme for browser sources (`light`/`dark`). Prompted
-  if omitted.
-- `--list` — list existing sources and exit.
-- `--remove <ID>` — remove a source by ID and exit.
-- `-s, --score` — the demo score file to modify (default `demo.toml`).
-
-**Interactive wizard:** Run with no arguments on a terminal for a guided prompt
-that asks for the source ID, type, URL (for browsers), and theme.
-
-**Examples:**
-
-```sh
-# Define a terminal source
-demo source main --type terminal
-
-# Define a browser source
-demo source google --type browser --url "https://google.com" --theme dark
-
-# List sources
-demo source --list
-
-# Remove a source
-demo source --remove google
-```
-
-## `demo scene`
-
-Define a scene composition from pre-defined sources. Scenes map layout strings
-(e.g. "main+google") to concrete compositions. Run this before `demo capture`.
-
-```sh
-demo scene [ID] [-l LAYOUT] [--list] [--remove ID] [-s demo.toml]
-```
-
-- `[ID]` — unique identifier (e.g. "solo", "split"). Prompted if omitted.
-- `-l, --layout` — layout string defining the composition of sources.
-  Prompted if omitted.
-- `--list` — list existing scenes and exit.
-- `--remove <ID>` — remove a scene by ID and exit.
-- `-s, --score` — the demo score file to modify (default `demo.toml`).
-
-**Layout string syntax:**
-
-- `"main"` — fullscreen single source
-- `"main+google"` — 50/50 split
-- `"main+google+github"` — thirds
-- `"main*2+google"` — weighted (main gets 2/3)
-
-**Interactive wizard:** Run with no arguments on a terminal for a guided prompt
-that shows available sources and validates the layout string.
-
-**Examples:**
-
-```sh
-# Define a scene
-demo scene solo --layout "main"
-demo scene split --layout "main+google"
-demo scene full_github --layout "main+github"
-
-# List scenes
-demo scene --list
-```
-
-## `demo focus`
-
-Switch focus to a scene during capture. Adds a `Step::Focus` entry to the
-timeline. Supports deferred triggers (pattern match, command finish, timer).
-
-```sh
-demo focus [SCENE] [--when "<line>" | --after | --after-ms <MS>] [-s demo.toml]
-```
-
-- `[SCENE]` — scene ID to focus. Omit for an interactive picker.
-- `--when "<line>"` — focus when this substring appears in terminal output.
-- `--after` — focus after the current command finishes.
-- `--after-ms <MS>` — focus after this many milliseconds from capture start.
-- `--hold <MS>` — hold focus for this duration in milliseconds.
-- `-s, --score` — the demo score file to modify (default `demo.toml`).
-
-**Interactive wizard:** Run with no arguments on a terminal for a guided prompt
-that shows available scenes and asks when to focus.
-
-**Examples:**
-
-```sh
-# Focus immediately
-demo focus split
-
-# Focus when a pattern appears
-demo focus github --when "Server started"
-
-# Focus after command finishes
-demo focus preview --after
-```
-
-> **Note:** Deferred triggers (`--when`, `--after`, `--after-ms`) are currently
-> implemented as immediate focus. Full trigger semantics will be implemented in
-> a future update.
