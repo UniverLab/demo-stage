@@ -240,9 +240,23 @@ fn terminal_steps(raw: &RawMacro, reveals: &[Reveal]) -> Vec<Step> {
         .collect();
     secrets.sort_by_key(|(t, _)| *t);
 
-    let mut steps = Vec::with_capacity(actions.len() * 2 + reveals.len() * 3 + secrets.len());
+    // Focus changes triggered via `/focus <scene>` during capture.
+    let mut focus_events: Vec<(u64, String)> = raw
+        .events
+        .iter()
+        .filter_map(|e| match e {
+            RawEvent::Focus { t_ms, scene } => Some((*t_ms, scene.clone())),
+            _ => None,
+        })
+        .collect();
+    focus_events.sort_by_key(|(t, _)| *t);
+
+    let mut steps = Vec::with_capacity(
+        actions.len() * 2 + reveals.len() * 3 + secrets.len() + focus_events.len(),
+    );
     let mut next_reveal = 0;
     let mut next_secret = 0;
+    let mut next_focus = 0;
     for (i, action) in actions.iter().enumerate() {
         // Supply any secret whose moment arrived before this action (it sits where
         // the redacted keystrokes were — between the command and the next input).
@@ -257,6 +271,15 @@ fn terminal_steps(raw: &RawMacro, reveals: &[Reveal]) -> Vec<Step> {
         while next_reveal < reveals.len() && reveals[next_reveal].t_ms <= action_start(action) {
             push_reveal(&mut steps, &reveals[next_reveal], true);
             next_reveal += 1;
+        }
+        // Insert any /focus step whose moment has arrived before this action.
+        while next_focus < focus_events.len() && focus_events[next_focus].0 <= action_start(action)
+        {
+            steps.push(Step::Focus {
+                pane: None,
+                scene: Some(focus_events[next_focus].1.clone()),
+            });
+            next_focus += 1;
         }
 
         match action {
@@ -300,6 +323,13 @@ fn terminal_steps(raw: &RawMacro, reveals: &[Reveal]) -> Vec<Step> {
     // done) — closes out the demo, so it keeps focus and just holds.
     for r in &reveals[next_reveal..] {
         push_reveal(&mut steps, r, false);
+    }
+    // Any /focus after the last command.
+    for (_, scene) in &focus_events[next_focus..] {
+        steps.push(Step::Focus {
+            pane: None,
+            scene: Some(scene.clone()),
+        });
     }
     steps
 }

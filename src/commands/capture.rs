@@ -555,7 +555,7 @@ pub fn run(args: CaptureArgs) -> Result<()> {
     // Tell the user how to end the capture before the shell takes over — the
     // only cues otherwise are typing `exit` or Ctrl-D, neither of which is
     // obvious mid-demo.
-    println!("● capturing — run your demo, then type `demo stop` (or `exit` / Ctrl-D) to stop");
+    println!("● capturing — run your demo, then type `/stop` (or `exit` / Ctrl-D) to stop");
     if args.idle_timeout_ms > 0 {
         println!(
             "  (auto-stops after {} ms with no output)",

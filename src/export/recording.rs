@@ -244,14 +244,17 @@ pub fn from_raw(raw: &RawMacro, name: &str) -> (Recording, Layout, Vec<Step>) {
     // ride the same trimmed clock so they fire at the right composited moment.
     let mut events: Vec<(f64, String)> = Vec::new();
     let mut reveals: Vec<Reveal> = Vec::new();
+    let mut focus_events: Vec<(f64, String)> = Vec::new();
     let mut acc = 0.0;
     let mut prev_ms: Option<u64> = None;
     for e in &raw.events {
         let t_ms = match e {
-            RawEvent::Output { t_ms, .. } | RawEvent::Open { t_ms, .. } => *t_ms,
+            RawEvent::Output { t_ms, .. }
+            | RawEvent::Open { t_ms, .. }
+            | RawEvent::Focus { t_ms, .. } => *t_ms,
             // Input/Secret carry no rendered output — the program already echoed
             // them (a secret as a mask), so faithful playback ignores them.
-            RawEvent::Input { .. } | RawEvent::Secret { .. } | RawEvent::Focus { .. } => continue,
+            RawEvent::Input { .. } | RawEvent::Secret { .. } => continue,
         };
         if cutoff.is_some_and(|c| t_ms >= c) {
             continue;
@@ -287,7 +290,10 @@ pub fn from_raw(raw: &RawMacro, name: &str) -> (Recording, Layout, Vec<Step>) {
                 scroll: *scroll,
                 theme: theme.clone(),
             }),
-            RawEvent::Input { .. } | RawEvent::Secret { .. } | RawEvent::Focus { .. } => {}
+            RawEvent::Input { .. } | RawEvent::Secret { .. } => {}
+            RawEvent::Focus { scene, .. } => {
+                focus_events.push((acc, scene.clone()));
+            }
         }
     }
 
@@ -304,7 +310,16 @@ pub fn from_raw(raw: &RawMacro, name: &str) -> (Recording, Layout, Vec<Step>) {
     let duration = tail.max(reveal_tail);
 
     let (cols, rows) = (raw.meta.cols, raw.meta.rows);
-    let (layout, focuses, timeline) = build_layout(cols, rows, &reveals);
+    let (layout, mut focuses, mut timeline) = build_layout(cols, rows, &reveals);
+
+    // Add /focus steps from in-capture `/focus <scene>` commands.
+    for (t, scene) in &focus_events {
+        timeline.push(Step::Focus {
+            pane: None,
+            scene: Some(scene.clone()),
+        });
+        focuses.push((*t, scene.clone()));
+    }
 
     (
         Recording {

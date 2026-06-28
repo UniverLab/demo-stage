@@ -54,7 +54,7 @@ pub struct CaptureArgs {
     pub rec: PathBuf,
 
     /// Auto-stop after this many milliseconds with no terminal output
-    /// (0 disables — stop the capture yourself with `demo stop`).
+    /// (0 disables — stop the capture yourself with `/stop`).
     #[arg(long, default_value_t = 0)]
     pub idle_timeout_ms: u64,
 
@@ -123,34 +123,6 @@ pub struct RecordArgs {
     /// Where to write the recording (a `.rec` that `export` plays back).
     #[arg(short, long, default_value = "demo.rec")]
     pub output: PathBuf,
-}
-
-#[derive(Debug, Args)]
-pub struct NormalizeArgs {
-    /// The raw macro to refine.
-    #[arg(default_value = "macro.raw.toml")]
-    pub input: PathBuf,
-
-    /// Where to write the normalized score.
-    #[arg(short, long, default_value = "demo.toml")]
-    pub output: PathBuf,
-
-    /// Seed for the humanized typing jitter (deterministic when set).
-    #[arg(long)]
-    pub seed: Option<u64>,
-
-    /// Base typing speed, milliseconds per character.
-    #[arg(long, default_value_t = 80)]
-    pub typing_ms: u64,
-
-    /// Maximum jitter added per character, in milliseconds.
-    #[arg(long, default_value_t = 15)]
-    pub salt_ms: u64,
-
-    /// Splice the recording into this prepared stage (keeps its layout, panes
-    /// and trigger steps). Defaults to the stage stamped by `record --into`.
-    #[arg(long)]
-    pub stage: Option<PathBuf>,
 }
 
 #[derive(Debug, Args)]

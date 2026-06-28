@@ -9,7 +9,7 @@ order: 3
 ## Capture → record → export
 
 ```sh
-# 1. Capture a live session. Run your demo, then type `demo stop` to finish
+# 1. Capture a live session. Run your demo, then type `/stop` to finish
 #    (`exit` / Ctrl-D still work too). capture saves demo.rec (the faithful take)
 #    and demo.toml (the editable score); pass --no-score for just the recording.
 demo capture
@@ -29,7 +29,7 @@ or creates real resources (e.g. a tool that makes a GitHub repo) — should skip
 `record` (re-running would repeat or desync it) and render the faithful capture:
 
 ```sh
-demo capture                 # run the demo, `demo stop`
+demo capture                 # run the demo, `/stop`
 demo export gif --force      # render the capture as-is (typing not re-humanized)
 ```
 
