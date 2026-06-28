@@ -76,16 +76,6 @@ table.
 /focus full_github
 ```
 
-### `/open <url>`
-
-Reveal a browser scene. The URL is shown in the exported demo at this point in
-the timeline.
-
-```
-/open https://github.com/me/repo
-/open localhost:3000
-```
-
 ## `demo record`
 
 Execute a demo score in a real PTY and save the result as a **recording** (a

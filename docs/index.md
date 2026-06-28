@@ -36,7 +36,6 @@ demo capture  ──>  demo.toml  ──>  demo record  ──>  demo.rec  ─�
 |---|---|
 | `/stop` | End the capture. |
 | `/focus <scene>` | Switch to a different scene layout. |
-| `/open <url>` | Reveal a browser page (repo, PDF, localhost). |
 
 The clean path is `capture → record → export`. A `demo.toml` can also be
 **authored by hand**. When a demo **can't be re-run** (interactive, secrets, side

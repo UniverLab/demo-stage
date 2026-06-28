@@ -750,17 +750,6 @@ pub fn run(args: CaptureArgs) -> Result<()> {
                                                 }));
                                             }
                                         }
-                                        s if s.starts_with("/open ") => {
-                                            let rest = s[6..].trim();
-                                            if !rest.is_empty() {
-                                                let url = normalize_slash_url(rest);
-                                                let _ = control::send(serde_json::json!({
-                                                    "cmd": "open",
-                                                    "url": url,
-                                                    "mode": "replace",
-                                                }));
-                                            }
-                                        }
                                         _ => {} // Unknown /-command → ignore.
                                     }
                                     cmd_line.clear();
@@ -1227,18 +1216,6 @@ fn write_faithful_cast(
         }
     }
     std::fs::write(path, cast).map_err(|e| Error::io(path, e))
-}
-
-/// Normalize a URL typed after `/open` — bare domains become https://.
-fn normalize_slash_url(raw: &str) -> String {
-    let u = raw.trim();
-    if u.contains("://") {
-        u.to_string()
-    } else if u.starts_with("localhost") || u.starts_with("127.0.0.1") {
-        format!("http://{u}")
-    } else {
-        format!("https://{u}")
-    }
 }
 
 #[cfg(test)]
