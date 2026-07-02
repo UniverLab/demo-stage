@@ -964,6 +964,7 @@ pub fn run(args: CaptureArgs) -> Result<()> {
             // `demo stop`/`demo focus` span can be excised from the command's echo,
             // not just from the Enter that follows it.
             let mut cmd_start: Option<u64> = None;
+            let mut last_secret_prompt: Option<String> = None;
             while !stop.load(Ordering::SeqCst) {
                 match stdin.read(&mut buf) {
                     Ok(0) => break,
@@ -975,6 +976,7 @@ pub fn run(args: CaptureArgs) -> Result<()> {
                         if !ready.load(Ordering::SeqCst) {
                             continue;
                         }
+                        let saved_cmd_start = cmd_start;
                         let outcome =
                             route_input_chunk(&buf[..n], &mut cmd_line, &mut cmd_start, ms(t0));
                         if outcome.mute_command {
@@ -982,7 +984,7 @@ pub fn run(args: CaptureArgs) -> Result<()> {
                             muting.store(true, Ordering::SeqCst);
                             let mut s = mute_start.lock().unwrap();
                             if s.is_none() {
-                                *s = Some(cmd_start.unwrap_or_else(|| ms(t0)));
+                                *s = Some(saved_cmd_start.unwrap_or_else(|| ms(t0)));
                             }
                         } else if outcome.arm_after
                             && !after_opens.lock().unwrap().is_empty()
@@ -1012,10 +1014,14 @@ pub fn run(args: CaptureArgs) -> Result<()> {
                                 sensitive.store(false, Ordering::SeqCst);
                                 let prompt =
                                     secret_prompt.lock().unwrap().take().unwrap_or_default();
-                                events.lock().unwrap().push(RawEvent::Secret {
-                                    t_ms: ms(t0),
-                                    prompt,
-                                });
+                                let is_dup = last_secret_prompt.as_ref() == Some(&prompt);
+                                if !is_dup {
+                                    last_secret_prompt = Some(prompt.clone());
+                                    events.lock().unwrap().push(RawEvent::Secret {
+                                        t_ms: ms(t0),
+                                        prompt,
+                                    });
+                                }
                             }
                             continue;
                         }
@@ -1351,7 +1357,8 @@ fn read_control(
             Some("reveal") => {
                 // The command finished → stop muting and close its excision span.
                 muting.store(false, Ordering::SeqCst);
-                if let Some(start) = mute_start.lock().unwrap().take() {
+                let mute_span_start = mute_start.lock().unwrap().take();
+                if let Some(start) = mute_span_start {
                     mute_spans.lock().unwrap().push((start, ms(t0)));
                 }
                 let Some(reveal) = parse_reveal(&v) else {
@@ -1373,6 +1380,7 @@ fn read_control(
                     }
                     after.lock().unwrap().push(reveal);
                 } else {
+                    // Immediate reveal: use current time (when command finished)
                     if let Some(d) = debug {
                         d.note(&format!("reveal now: {}", reveal.summary()));
                     }
