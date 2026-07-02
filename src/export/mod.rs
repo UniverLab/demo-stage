@@ -122,6 +122,24 @@ pub fn scale_recording(rec: &mut Recording, speed: f64) {
     rec.duration = scale(rec.duration);
 }
 
+/// Retime the layout's pane reveal/hide windows by `1/speed`. They're absolute
+/// times on the same clock as the recording, so a `--speed` export must scale
+/// them together with [`scale_recording`] — otherwise a pane's window can slide
+/// past the (shortened) playback and the pane never shows.
+pub fn scale_pane_windows(score: &mut Score, speed: f64) {
+    if speed == 1.0 {
+        return;
+    }
+    for pane in &mut score.layout.panes {
+        if let Some(t) = &mut pane.reveal_at {
+            *t /= speed;
+        }
+        if let Some(t) = &mut pane.hide_at {
+            *t /= speed;
+        }
+    }
+}
+
 fn ensure_parent(path: &Path) -> Result<()> {
     if let Some(parent) = path.parent() {
         if !parent.as_os_str().is_empty() {
@@ -196,5 +214,42 @@ mod tests {
         let mut r = rec();
         scale_recording(&mut r, 1.0);
         assert_eq!(r.events, rec().events);
+    }
+
+    #[test]
+    fn speed_scales_pane_windows_with_the_recording() {
+        let mut score: Score = toml::from_str(
+            r#"
+[demo]
+name = "t"
+[layout]
+width = 100
+height = 100
+  [[layout.panes]]
+  id = "main"
+  type = "terminal"
+  x = 0
+  y = 0
+  width = 100
+  height = 100
+  [[layout.panes]]
+  id = "b"
+  type = "browser"
+  x = 0
+  y = 0
+  width = 100
+  height = 100
+  url = "https://x"
+  reveal_at = 20.0
+  hide_at = 30.0
+"#,
+        )
+        .unwrap();
+        scale_pane_windows(&mut score, 2.0);
+        let b = &score.layout.panes[1];
+        assert_eq!(b.reveal_at, Some(10.0));
+        assert_eq!(b.hide_at, Some(15.0));
+        // The terminal pane has no window — untouched.
+        assert_eq!(score.layout.panes[0].reveal_at, None);
     }
 }
