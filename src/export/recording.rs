@@ -24,6 +24,8 @@ use crate::model::{
 /// Assumed monospace cell size (px), matching the recorder's geometry.
 const CELL_W: u32 = 10;
 const CELL_H: u32 = 20;
+/// Minimum padding around the terminal pane so it doesn't touch the canvas edges.
+const MIN_PAD: u32 = 32;
 
 /// The extra demo-stage render config stashed in the cast header.
 #[derive(Serialize, Deserialize)]
@@ -343,22 +345,32 @@ struct Reveal {
 
 /// Pane rectangles for a reveal: 1 pane fills the canvas; 2 split it by
 /// `orientation` (horizontal → left/right, vertical → top/bottom).
+/// Applies minimum padding so panes don't touch canvas edges.
 fn pane_rects(
     tw: u32,
     th: u32,
     count: usize,
     orientation: Orientation,
 ) -> Vec<(u32, u32, u32, u32)> {
+    let pad = MIN_PAD;
+    let inner_w = tw.saturating_sub(2 * pad);
+    let inner_h = th.saturating_sub(2 * pad);
     match count {
-        0 | 1 => vec![(0, 0, tw, th)],
+        0 | 1 => vec![(pad, pad, inner_w, inner_h)],
         _ => match orientation {
             Orientation::Horizontal => {
-                let half = tw / 2;
-                vec![(0, 0, half, th), (half, 0, tw - half, th)]
+                let half = inner_w / 2;
+                vec![
+                    (pad, pad, half, inner_h),
+                    (pad + half, pad, inner_w - half, inner_h),
+                ]
             }
             Orientation::Vertical => {
-                let half = th / 2;
-                vec![(0, 0, tw, half), (0, half, tw, th - half)]
+                let half = inner_h / 2;
+                vec![
+                    (pad, pad, inner_w, half),
+                    (pad, pad + half, inner_w, inner_h - half),
+                ]
             }
         },
     }
@@ -384,7 +396,10 @@ fn build_layout(
     let (cw, ch) = resolution
         .map(|(w, h)| (w.max(tw), h.max(th)))
         .unwrap_or((tw, th));
-    let mut panes = vec![terminal_pane((cw - tw) / 2, (ch - th) / 2, tw, th)];
+    // Center the terminal with minimum padding so it doesn't touch canvas edges
+    let tx = MIN_PAD.saturating_add((cw.saturating_sub(tw).saturating_sub(2 * MIN_PAD)) / 2);
+    let ty = MIN_PAD.saturating_add((ch.saturating_sub(th).saturating_sub(2 * MIN_PAD)) / 2);
+    let mut panes = vec![terminal_pane(tx, ty, tw, th)];
     let mut focuses = Vec::new();
     let mut timeline = Vec::new();
 
@@ -732,8 +747,8 @@ data = "file.txt\n"
         let scene = &layout.panes[1];
         assert_eq!(scene.kind, PaneKind::Browser);
         assert_eq!(scene.url.as_deref(), Some("https://example.com"));
-        // replace → full canvas.
-        assert_eq!(scene.width, layout.width);
+        // replace → full canvas (with padding).
+        assert_eq!(scene.width, layout.width - 2 * MIN_PAD);
         // reveal focus targets the scene at t=0.5s.
         assert_eq!(rec.focuses.len(), 1);
         assert_eq!(rec.focuses[0].1, scene.id);
@@ -775,10 +790,11 @@ data = "file.txt\n"
         // adds none — it just closes the browser's window).
         assert_eq!(layout.panes.len(), 2);
         let docs = &layout.panes[1];
-        // Horizontal split → right half of the canvas.
-        assert_eq!(docs.x, layout.width / 2);
-        assert_eq!(docs.width, layout.width - layout.width / 2);
-        assert_eq!(docs.height, layout.height);
+        // Horizontal split → right half of the canvas (with padding).
+        let inner_w = layout.width - 2 * MIN_PAD;
+        assert_eq!(docs.x, MIN_PAD + inner_w / 2);
+        assert_eq!(docs.width, inner_w - inner_w / 2);
+        assert_eq!(docs.height, layout.height - 2 * MIN_PAD);
         // Revealed at 1s, hidden again at the 2s "back to terminal" reveal.
         assert_eq!(docs.reveal_at, Some(1.0));
         assert_eq!(docs.hide_at, Some(2.0));
@@ -793,10 +809,12 @@ data = "file.txt\n"
         r.meta.resolution = Some((1920, 1080));
         let (_rec, layout, _) = from_raw(&r, "t");
         assert_eq!((layout.width, layout.height), (1920, 1080));
-        // The 80×24 grid renders at 800×480 px, centered on the canvas.
+        // The 80×24 grid renders at 800×480 px, centered on the canvas with padding.
         let term = &layout.panes[0];
         assert_eq!((term.width, term.height), (800, 480));
-        assert_eq!((term.x, term.y), ((1920 - 800) / 2, (1080 - 480) / 2));
+        let expected_x = MIN_PAD + (1920 - 800 - 2 * MIN_PAD) / 2;
+        let expected_y = MIN_PAD + (1080 - 480 - 2 * MIN_PAD) / 2;
+        assert_eq!((term.x, term.y), (expected_x, expected_y));
     }
 
     #[test]
@@ -809,7 +827,8 @@ data = "file.txt\n"
         r.meta.resolution = Some((100, 100));
         let (_rec, layout, _) = from_raw(&r, "t");
         assert_eq!((layout.width, layout.height), (800, 480));
-        assert_eq!((layout.panes[0].x, layout.panes[0].y), (0, 0));
+        // Terminal fills the canvas (resolution raised to fit), but with minimum padding.
+        assert_eq!((layout.panes[0].x, layout.panes[0].y), (MIN_PAD, MIN_PAD));
     }
 
     #[test]
@@ -852,10 +871,11 @@ data = "file.txt\n"
         }]);
         let (_rec, layout, _) = from_raw(&r, "t");
         let docs = &layout.panes[1];
-        // Vertical split → bottom half.
-        assert_eq!(docs.x, 0);
-        assert_eq!(docs.y, layout.height / 2);
-        assert_eq!(docs.width, layout.width);
+        // Vertical split → bottom half (with padding).
+        let inner_h = layout.height - 2 * MIN_PAD;
+        assert_eq!(docs.x, MIN_PAD);
+        assert_eq!(docs.y, MIN_PAD + inner_h / 2);
+        assert_eq!(docs.width, layout.width - 2 * MIN_PAD);
     }
 
     #[test]
