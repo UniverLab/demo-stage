@@ -88,22 +88,8 @@ pub fn render_stage(rec: &Recording, score: &Score, mut on_frame: impl FnMut(&[u
         .filter(|p| p.kind == PaneKind::Browser)
     {
         let scrolls = scroll_keyframes_for(score, &pane.id);
-        // A pane's window: `reveal_at` (else its first focus, else 0) until
-        // `hide_at` (else the end) — so a source can switch away or hand back to
-        // the terminal.
-        let reveal_at = pane.reveal_at.unwrap_or_else(|| {
-            rec.focuses
-                .iter()
-                .find(|(_, id)| *id == pane.id)
-                .map(|(t, _)| *t)
-                .unwrap_or(0.0)
-        });
-        scenes.push((
-            pane,
-            browser::capture(pane, scrolls)?,
-            reveal_at,
-            pane.hide_at,
-        ));
+        let (reveal_at, hide_at) = pane_window(pane, &rec.focuses);
+        scenes.push((pane, browser::capture(pane, scrolls)?, reveal_at, hide_at));
     }
 
     let total = n as f64 / fps;
@@ -146,6 +132,29 @@ pub fn render_stage(rec: &Recording, score: &Score, mut on_frame: impl FnMut(&[u
         on_frame(&canvas);
     }
     Ok(())
+}
+
+/// A browser pane's on-screen window `[reveal, hide)`. The recording's focus
+/// events are the source of truth when they mention the pane: they sit on the
+/// playback clock (and are speed-scaled with the rest of the recording), while
+/// the score's `reveal_at`/`hide_at` may still carry times from an earlier
+/// capture. The pane reveals at its first focus and hides when focus moves to
+/// another pane; the score's window is the fallback for what the events don't
+/// say (e.g. a hide recorded as a back-to-terminal reveal with no focus event,
+/// or a recording that carries no focus for the pane at all).
+fn pane_window(pane: &Pane, focuses: &[(f64, String)]) -> (f64, Option<f64>) {
+    match focuses.iter().position(|(_, id)| *id == pane.id) {
+        Some(i) => {
+            let reveal = focuses[i].0;
+            let hide = focuses[i + 1..]
+                .iter()
+                .find(|(_, id)| *id != pane.id)
+                .map(|(t, _)| *t)
+                .or(pane.hide_at.filter(|h| *h > reveal));
+            (reveal, hide)
+        }
+        None => (pane.reveal_at.unwrap_or(0.0), pane.hide_at),
+    }
 }
 
 /// How many scroll keyframes to capture for a browser pane — roughly one per
@@ -282,5 +291,56 @@ duration_ms = 2100
         // 2100ms / 700 = 3 keyframes for "p", none for "c".
         assert_eq!(scroll_keyframes_for(&s, "p"), 3);
         assert_eq!(scroll_keyframes_for(&s, "c"), 0);
+    }
+
+    fn browser_pane(reveal_at: Option<f64>, hide_at: Option<f64>) -> Pane {
+        Pane {
+            id: "b".into(),
+            kind: PaneKind::Browser,
+            x: 0,
+            y: 0,
+            width: 100,
+            height: 100,
+            font_family: None,
+            font_size: None,
+            url: Some("https://x".into()),
+            theme: None,
+            reveal_at,
+            hide_at,
+        }
+    }
+
+    #[test]
+    fn focus_events_override_a_stale_pane_window() {
+        // The score says 82s (capture clock) but this recording focused the
+        // pane at 21.4s, then went back to the terminal at 28s.
+        let pane = browser_pane(Some(82.1), None);
+        let focuses = vec![(21.4, "b".to_string()), (28.0, "main".to_string())];
+        assert_eq!(pane_window(&pane, &focuses), (21.4, Some(28.0)));
+    }
+
+    #[test]
+    fn score_hide_backs_up_missing_focus_events() {
+        // Faithful capture: the hide was recorded as a back-to-terminal reveal
+        // (no focus event), so the pane's own hide_at closes the window…
+        let pane = browser_pane(Some(1.0), Some(2.0));
+        assert_eq!(
+            pane_window(&pane, &[(1.0, "b".to_string())]),
+            (1.0, Some(2.0))
+        );
+        // …but a hide that predates the observed reveal is stale — ignored.
+        let stale = browser_pane(Some(82.0), Some(15.0));
+        assert_eq!(
+            pane_window(&stale, &[(21.4, "b".to_string())]),
+            (21.4, None)
+        );
+    }
+
+    #[test]
+    fn without_focus_events_the_scores_window_stands() {
+        let pane = browser_pane(Some(3.0), Some(9.0));
+        assert_eq!(pane_window(&pane, &[]), (3.0, Some(9.0)));
+        let bare = browser_pane(None, None);
+        assert_eq!(pane_window(&bare, &[]), (0.0, None));
     }
 }
