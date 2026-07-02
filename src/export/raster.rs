@@ -250,10 +250,69 @@ pub fn render_frames(
     Ok(plan(rec, score))
 }
 
-/// Coverage (0–255 per pixel, row-major) for a block-element or box-drawing glyph
-/// drawn to fill a `w`×`h` cell, or `None` for an ordinary glyph (use the font).
+/// Coverage (0–255 per pixel, row-major) for a block-element, box-drawing, or
+/// braille glyph drawn procedurally to fill a `w`×`h` cell, or `None` for an
+/// ordinary glyph (use the font).
 fn solid_cell(ch: char, w: usize, h: usize) -> Option<Vec<u8>> {
-    block_cell(ch, w, h).or_else(|| box_cell(ch, w, h))
+    block_cell(ch, w, h)
+        .or_else(|| box_cell(ch, w, h))
+        .or_else(|| braille_cell(ch, w, h))
+}
+
+/// Braille patterns (U+2800–U+28FF): a 2-column × 4-row dot matrix encoded in the
+/// low 8 bits of the codepoint. The bundled monospace fonts ship **no** braille
+/// glyphs (they'd rasterize to `.notdef` tofu), yet braille is exactly how
+/// `mapscii` and similar tools draw — so paint the dots procedurally instead.
+fn braille_cell(ch: char, w: usize, h: usize) -> Option<Vec<u8>> {
+    let cp = ch as u32;
+    if !(0x2800..=0x28ff).contains(&cp) {
+        return None;
+    }
+    let bits = (cp - 0x2800) as u8;
+    let mut v = vec![0u8; w * h];
+    // (col, row) → Unicode dot bit. Left column = dots 1,2,3,7; right = 4,5,6,8.
+    let dot_bit = |col: usize, row: usize| -> u8 {
+        match (col, row) {
+            (0, 0) => 0x01,
+            (0, 1) => 0x02,
+            (0, 2) => 0x04,
+            (0, 3) => 0x40,
+            (1, 0) => 0x08,
+            (1, 1) => 0x10,
+            (1, 2) => 0x20,
+            (1, 3) => 0x80,
+            _ => 0,
+        }
+    };
+    let sub_w = w as f32 / 2.0;
+    let sub_h = h as f32 / 4.0;
+    // Dot radius: a fraction of the smaller sub-cell axis, so adjacent dots read
+    // as distinct but the pattern still fills densely (min 1px so it never vanishes).
+    let r = (sub_w.min(sub_h) * 0.42).max(1.0);
+    let r2 = r * r;
+    for col in 0..2 {
+        for row in 0..4 {
+            if bits & dot_bit(col, row) == 0 {
+                continue;
+            }
+            let cx = col as f32 * sub_w + sub_w / 2.0;
+            let cy = row as f32 * sub_h + sub_h / 2.0;
+            let x0 = (cx - r).floor().max(0.0) as usize;
+            let x1 = ((cx + r).ceil() as usize).min(w);
+            let y0 = (cy - r).floor().max(0.0) as usize;
+            let y1 = ((cy + r).ceil() as usize).min(h);
+            for y in y0..y1 {
+                for x in x0..x1 {
+                    let dx = x as f32 + 0.5 - cx;
+                    let dy = y as f32 + 0.5 - cy;
+                    if dx * dx + dy * dy <= r2 {
+                        v[y * w + x] = 255;
+                    }
+                }
+            }
+        }
+    }
+    Some(v)
 }
 
 /// Block elements (U+2580–U+259F): full block, shades, halves, eighths, quadrants.
@@ -643,6 +702,25 @@ mod tests {
         assert_eq!(xterm256(16), [0, 0, 0]);
         assert_eq!(xterm256(231), [255, 255, 255]);
         assert_eq!(xterm256(232), [8, 8, 8]);
+    }
+
+    #[test]
+    fn braille_dots_render_procedurally() {
+        // The bundled fonts have no braille glyphs, so these must come from
+        // solid_cell (procedural), not the font — and each pattern must differ.
+        let cov = |ch: char| solid_cell(ch, 10, 20).map(|v| v.iter().filter(|&&p| p > 0).count());
+        // Blank braille → an empty (space-like) cell, but still handled here.
+        assert_eq!(cov('\u{2800}'), Some(0));
+        // A single dot has far less ink than the full 8-dot pattern.
+        let one = cov('⠁').expect("single dot handled");
+        let full = cov('⣿').expect("full pattern handled");
+        assert!(one > 0, "single braille dot must draw ink");
+        assert!(
+            full > one * 4,
+            "8-dot braille must be much denser than 1-dot: {full} vs {one}"
+        );
+        // A non-braille char falls through to the font (None here).
+        assert_eq!(solid_cell('a', 10, 20), None);
     }
 
     #[test]

@@ -32,15 +32,17 @@ pub fn render(rec: &Recording, score: &Score, target: Target) -> Result<PathBuf>
     if !problems.is_empty() {
         return Err(Error::Validation(problems.join("\n")));
     }
-    // A multi-pane stage composites the recorded terminal with its browser panes
-    // (Chromium) on the pixel targets. The text targets (cast/html) can only carry
-    // the terminal stream — browser panes are dropped there.
     let staged = stage::needs_stage(score);
-    let (cw, ch, fps) = (
-        score.layout.width as usize,
-        score.layout.height as usize,
-        score.layout.fps.max(1),
-    );
+    let fps = score.layout.fps.max(1);
+    // Two distinct frame geometries:
+    //  - staged: compositing on the canvas → layout.width/height
+    //  - single-terminal: the pane grid → cols*cell_w × rows*cell_h
+    let (cw, ch) = if staged {
+        (score.layout.width as usize, score.layout.height as usize)
+    } else {
+        let plan = raster::plan(rec, score);
+        (plan.width, plan.height)
+    };
     let total_frames = (rec.duration * fps as f64).ceil() as usize + 1;
 
     match target {

@@ -28,6 +28,18 @@ pub enum Command {
     Doctor(DoctorArgs),
     /// Interactively edit timing/wait steps in a demo score.
     Edit(EditArgs),
+    /// End the in-progress capture. Run from inside it, or from another
+    /// terminal in the same directory.
+    Stop,
+    /// Reveal an ad-hoc browser page (a URL not pre-configured as a source) in the
+    /// running capture. Run from inside it or another terminal in the same
+    /// directory. With no URL on a terminal it runs a wizard. For pre-configured
+    /// sources use `demo focus`.
+    Open(OpenArgs),
+    /// Switch the live capture's view to one or two sources (`demo focus main`,
+    /// `demo focus main docs`). Run from inside the capture or another terminal in
+    /// the same directory. With no source on a terminal it runs a wizard.
+    Focus(FocusArgs),
 }
 
 #[derive(Debug, Args)]
@@ -54,7 +66,7 @@ pub struct CaptureArgs {
     pub rec: PathBuf,
 
     /// Auto-stop after this many milliseconds with no terminal output
-    /// (0 disables — stop the capture yourself with `/stop`).
+    /// (0 disables — stop the capture yourself with `demo stop`).
     #[arg(long, default_value_t = 0)]
     pub idle_timeout_ms: u64,
 
@@ -112,6 +124,30 @@ pub struct CaptureArgs {
     /// Mono, Liberation Mono, Ubuntu Mono). Omit for a wizard prompt.
     #[arg(long)]
     pub font: Option<String>,
+
+    /// Export canvas aspect ratio: `16:9`, `9:16`, `4:3`, or `1:1`. Combined
+    /// with `--quality` to pick the pixel resolution (e.g. `16:9` + `fullhd` →
+    /// 1920×1080). Omit for a wizard prompt. Use `--resolution` instead for an
+    /// explicit `WxH` or `auto`.
+    #[arg(long, conflicts_with = "resolution")]
+    pub aspect: Option<String>,
+
+    /// Quality tier for the canvas: `fullhd` (short side 1080) or `hd` (short
+    /// side 720). Defaults to `fullhd` when an `--aspect` is given.
+    #[arg(long, conflicts_with = "resolution")]
+    pub quality: Option<String>,
+
+    /// Frame rate of the exported gif/mp4: `15`, `24`, or `30`. Defaults to
+    /// `15`. Omit for a wizard prompt.
+    #[arg(long)]
+    pub fps: Option<u32>,
+
+    /// Export canvas as an explicit resolution: a `WxH` pair (e.g.
+    /// `1600x900`), `auto` (derive from the terminal size — the default), or a
+    /// legacy preset name (`landscape`, `portrait`, `square`, `standard`).
+    /// Conflicts with `--aspect`/`--quality`. Omit for a wizard prompt.
+    #[arg(long)]
+    pub resolution: Option<String>,
 }
 
 #[derive(Debug, Args)]
@@ -199,8 +235,92 @@ fn parse_speed(s: &str) -> Result<f64, String> {
 /// Supported export targets.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum Target {
-    /// Animated GIF (rasterized) — for READMEs, chat, anywhere `<img>` works.
     Gif,
-    /// MP4 video (rasterized) — for landings and the web (`<video>`).
     Mp4,
+}
+
+#[derive(Debug, Args)]
+pub struct OpenArgs {
+    /// URL (or local file) to reveal. Omit on a terminal to run the wizard.
+    pub url: Option<String>,
+
+    /// Force the wizard even when a URL is given.
+    #[arg(long)]
+    pub wizard: bool,
+
+    /// Place beside the terminal (split) instead of replacing the whole frame.
+    #[arg(long)]
+    pub split: bool,
+
+    /// `replace` (full screen) or `split` (beside terminal).
+    #[arg(long, value_enum, default_value = "replace")]
+    pub mode: OpenMode,
+
+    /// Reveal only when a line containing this substring appears in the output.
+    #[arg(long)]
+    pub when: Option<String>,
+
+    /// Reveal when the current foreground command finishes (shell returns to prompt).
+    #[arg(long)]
+    pub after: bool,
+
+    /// Hold the scene on screen for this many milliseconds (static, not scrolling).
+    #[arg(long)]
+    pub hold: Option<u64>,
+
+    /// Scroll the page down while the scene is on screen.
+    #[arg(long)]
+    pub scroll: bool,
+
+    /// Emulated colour scheme: `light` or `dark`. Default = page preference.
+    #[arg(long)]
+    pub theme: Option<String>,
+
+    /// Open a real (headed) browser you drive yourself; records until you close it.
+    #[arg(long)]
+    pub view: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum OpenMode {
+    Replace,
+    Split,
+}
+
+#[derive(Debug, Args)]
+pub struct FocusArgs {
+    /// Source(s) to show: `main` (the terminal) or a browser source id (e.g.
+    /// `docs`). One fills the canvas; two are shown side by side. Omit on a
+    /// terminal for a wizard that lists the capture's sources.
+    #[arg(value_name = "SOURCE", num_args = 0..=2)]
+    pub sources: Vec<String>,
+
+    /// Stack the two sources (top/bottom) instead of side by side.
+    #[arg(long, conflicts_with = "horizontal")]
+    pub vertical: bool,
+
+    /// Place the two sources side by side (the default).
+    #[arg(long)]
+    pub horizontal: bool,
+
+    /// Hold the view on screen for this many seconds, then move on.
+    #[arg(long)]
+    pub hold: Option<f64>,
+
+    /// Scroll any browser pane down while it's on screen.
+    #[arg(long)]
+    pub scroll: bool,
+
+    /// Reveal only when a line matches this cue — a substring, or a regex with a
+    /// `re:` prefix (e.g. `--when 're:built .*\.pdf'`).
+    #[arg(long)]
+    pub when: Option<String>,
+
+    /// Reveal when the current foreground command finishes (back at the prompt).
+    #[arg(long)]
+    pub after: bool,
+
+    /// Emulated colour scheme for browser panes: `light` or `dark`.
+    #[arg(long)]
+    pub theme: Option<String>,
 }

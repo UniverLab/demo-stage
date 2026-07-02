@@ -1,217 +1,170 @@
-//! `demo focus` — switch focus to a scene during capture.
+//! `demo focus` — switch the live capture's view to one or two sources.
 //!
-//! Adds a `Step::Focus` entry to the timeline. When a scene is specified,
-//! it resolves the scene's layout to pane positions at export time. Supports
-//! deferred triggers (pattern match, command finish, timer).
+//! A *live* control command (like `demo stop`/`demo open`): run it inside the
+//! captured shell, or from **another terminal in the same directory** (so it
+//! works even while a full-screen TUI owns the captured terminal). It signals the
+//! running recorder, which records the view switch at the live moment.
+//!
+//! `demo focus main` shows just the terminal; `demo focus docs` a browser source
+//! full-screen; `demo focus main docs` the two side by side (`--vertical` stacks
+//! them). Timing/behaviour flags — `--hold`, `--scroll`, `--when`, `--after` —
+//! defer or shape the reveal. With no source on a terminal it runs a wizard.
 
 use std::io::IsTerminal;
-use std::path::Path;
 
-use inquire::{Select, Text};
+use inquire::{MultiSelect, Select};
 
 use crate::cli::FocusArgs;
+use crate::commands::control;
 use crate::error::{Error, Result};
-use crate::model::{Score, Step};
+use crate::model::{Source, SourceKind};
 
 pub fn run(args: FocusArgs) -> Result<()> {
-    let score_path = &args.score;
+    // Live command: it only makes sense while a capture is running. `find` gives
+    // the shared "no capture in progress" error (also used by `demo stop`).
+    control::find()?;
+    let sources = control::read_sources();
 
-    let (scene, trigger) = if !std::io::stdin().is_terminal() || args.scene.is_some() {
-        resolve_from_args(&args)?
+    let (chosen, orientation) = if args.sources.is_empty() {
+        if !std::io::stdin().is_terminal() {
+            return Err(Error::Export(
+                "demo focus needs a source (e.g. `demo focus main`), or a terminal for the wizard"
+                    .to_string(),
+            ));
+        }
+        wizard(&sources, &args)?
     } else {
-        wizard(score_path)?
+        (args.sources.clone(), orientation_flag(&args))
     };
 
-    let mut score = load_score(score_path)?;
+    if chosen.len() > 2 {
+        return Err(Error::Export(
+            "demo focus shows at most two sources at once".to_string(),
+        ));
+    }
 
-    // Build the Step::Focus with trigger info
-    let step = build_focus_step(&scene, &trigger, &score)?;
-    score.timeline.push(step);
-    save_score(score_path, &score)?;
+    // Resolve each id to a reveal pane (terminal, or a browser source's URL).
+    let panes: Vec<serde_json::Value> = chosen
+        .iter()
+        .map(|id| resolve_pane(id, &sources, args.theme.as_deref()))
+        .collect::<Result<_>>()?;
 
-    println!(
-        "✓ Focus on '{scene}' added to timeline in {}",
-        score_path.display()
-    );
+    // In-session, mute this command's echo/wizard from now (from another terminal
+    // there's nothing in the captured shell to mute).
+    if in_session() {
+        let _ = control::send(serde_json::json!({ "cmd": "reveal_begin" }));
+    }
+
+    let label = chosen.join(if orientation == "vertical" {
+        " / "
+    } else {
+        " | "
+    });
+    println!("● focus → {label}");
+    control::send(serde_json::json!({
+        "cmd": "reveal",
+        "panes": panes,
+        "orientation": orientation,
+        "hold": args.hold.map(|s| (s.max(0.0) * 1000.0) as u64),
+        "scroll": args.scroll,
+        "when": args.when,
+        "after": args.after,
+    }))?;
     Ok(())
 }
 
-fn load_score(path: &Path) -> Result<Score> {
-    if !path.exists() {
-        return Ok(default_score());
+/// Resolve a source id to a reveal-pane JSON object. `main`/`terminal` is the
+/// terminal (no URL); anything else must be a browser source from the capture.
+fn resolve_pane(
+    id: &str,
+    sources: &[Source],
+    theme_override: Option<&str>,
+) -> Result<serde_json::Value> {
+    if id == "main" || id == "terminal" {
+        return Ok(serde_json::json!({ "id": "main" }));
     }
-    let content = std::fs::read_to_string(path)
-        .map_err(|e| Error::Export(format!("cannot read {}: {e}", path.display())))?;
-    toml::from_str(&content)
-        .map_err(|e| Error::Export(format!("invalid score {}: {e}", path.display())))
-}
-
-fn default_score() -> Score {
-    Score {
-        demo: crate::model::DemoMeta {
-            name: "demo".to_string(),
-            output_dir: "./dist".into(),
-            prompt: None,
-        },
-        env: None,
-        typing: None,
-        sources: vec![],
-        scenes: vec![],
-        layout: crate::model::Layout {
-            width: 1920,
-            height: 1080,
-            fps: 15,
-            line_height: 1.2,
-            background: Some("#0b0f14".to_string()),
-            font_family: None,
-            font_size: None,
-            panes: vec![],
-        },
-        timeline: vec![],
+    match sources.iter().find(|s| s.id == id) {
+        Some(s) if s.kind == SourceKind::Browser => Ok(serde_json::json!({
+            "id": s.id,
+            "url": s.url,
+            "theme": theme_override.map(str::to_string).or_else(|| s.theme.clone()),
+        })),
+        Some(_) => Ok(serde_json::json!({ "id": "main" })), // a terminal source
+        None => Err(Error::Export(format!(
+            "unknown source '{id}' — configure it in `demo capture`, or use `demo open <url>` for an ad-hoc page{}",
+            source_hint(sources)
+        ))),
     }
 }
 
-fn save_score(path: &Path, score: &Score) -> Result<()> {
-    let content = toml::to_string_pretty(score)
-        .map_err(|e| Error::Export(format!("serialize score: {e}")))?;
-    std::fs::write(path, content)
-        .map_err(|e| Error::Export(format!("write {}: {e}", path.display())))
-}
-
-fn resolve_from_args(args: &FocusArgs) -> Result<(String, Trigger)> {
-    let scene = args
-        .scene
-        .clone()
-        .ok_or_else(|| Error::Export("scene ID is required (or run interactively)".to_string()))?;
-
-    let trigger = if let Some(pat) = &args.when {
-        Trigger::When(pat.clone())
-    } else if args.after {
-        Trigger::After
-    } else if let Some(ms) = args.after_ms {
-        Trigger::AfterMs(ms)
+/// `--vertical`/`--horizontal` → the orientation string (default horizontal).
+fn orientation_flag(args: &FocusArgs) -> String {
+    if args.vertical {
+        "vertical"
     } else {
-        Trigger::Now
-    };
-
-    Ok((scene, trigger))
+        "horizontal"
+    }
+    .to_string()
 }
 
-enum Trigger {
-    Now,
-    When(String),
-    After,
-    AfterMs(u64),
+/// True when run inside the captured shell (found via the env var, not the cwd).
+fn in_session() -> bool {
+    std::env::var(control::CONTROL_ENV)
+        .map(|p| !p.is_empty() && std::path::Path::new(&p).exists())
+        .unwrap_or(false)
+}
+
+/// A hint listing the configured source ids, for error messages.
+fn source_hint(sources: &[Source]) -> String {
+    let ids: Vec<&str> = sources.iter().map(|s| s.id.as_str()).collect();
+    if ids.is_empty() {
+        String::new()
+    } else {
+        format!(" (sources: {})", ids.join(", "))
+    }
+}
+
+/// Pick 1–2 sources (and orientation for two) from the capture's sources.
+fn wizard(sources: &[Source], args: &FocusArgs) -> Result<(Vec<String>, String)> {
+    println!("\n  demo focus — switch the view\n");
+    // "main" (the terminal) is always available, plus any browser sources.
+    let mut ids: Vec<String> = vec!["main".to_string()];
+    ids.extend(
+        sources
+            .iter()
+            .filter(|s| s.kind == SourceKind::Browser)
+            .map(|s| s.id.clone()),
+    );
+    if ids.len() == 1 {
+        println!("  (this capture has no browser sources — only the terminal.");
+        println!("   configure them when starting `demo capture`, or reveal an ad-hoc page with `demo open <url>`)\n");
+    }
+
+    let chosen = ask(MultiSelect::new("Show (pick one or two):", ids)
+        .with_help_message("space toggles, enter accepts")
+        .prompt())?;
+    if chosen.is_empty() {
+        return Err(Error::Export("pick at least one source".to_string()));
+    }
+    if chosen.len() > 2 {
+        return Err(Error::Export("pick at most two sources".to_string()));
+    }
+
+    let orientation = if chosen.len() == 2 {
+        let pick =
+            ask(Select::new("Arrange:", vec!["side by side", "stacked (top/bottom)"]).prompt())?;
+        if pick.starts_with("stacked") {
+            "vertical"
+        } else {
+            "horizontal"
+        }
+        .to_string()
+    } else {
+        orientation_flag(args)
+    };
+    Ok((chosen, orientation))
 }
 
 fn ask<T>(r: std::result::Result<T, inquire::InquireError>) -> Result<T> {
     r.map_err(|e| Error::Export(format!("wizard: {e}")))
-}
-
-fn wizard(score_path: &Path) -> Result<(String, Trigger)> {
-    println!("\n  demo focus — switch to a scene\n");
-
-    let score = load_score(score_path)?;
-    let scene_ids = score.scene_ids();
-
-    if scene_ids.is_empty() {
-        println!("  ℹ  No scenes defined yet. Define scenes first with `demo scene`.");
-        println!("     You can still enter a scene ID manually.\n");
-    } else {
-        println!("  Available scenes: {}\n", scene_ids.join(", "));
-    }
-
-    let scene = ask(Text::new("Scene ID:")
-        .with_help_message("which scene to focus")
-        .prompt())?;
-    let scene = scene.trim().to_string();
-    if scene.is_empty() {
-        return Err(Error::Export("scene ID cannot be empty".to_string()));
-    }
-
-    let trigger = ask(Select::new(
-        "When:",
-        vec![
-            "now — focus immediately",
-            "when a line appears in the output",
-            "when the current command finishes",
-            "after a delay (milliseconds)",
-        ],
-    )
-    .prompt())?;
-
-    let t = if trigger.starts_with("when a line") {
-        let pat = ask(Text::new("Cue line (substring of terminal output):").prompt())?;
-        let pat = pat.trim().to_string();
-        if pat.is_empty() {
-            Trigger::Now
-        } else {
-            Trigger::When(pat)
-        }
-    } else if trigger.starts_with("when the current") {
-        Trigger::After
-    } else if trigger.starts_with("after a delay") {
-        let ms = ask(Text::new("Delay in milliseconds:")
-            .with_default("0")
-            .with_validator(|s: &str| match s.trim().parse::<u64>() {
-                Ok(_) => Ok(inquire::validator::Validation::Valid),
-                Err(_) => Ok(inquire::validator::Validation::Invalid(
-                    "enter a number in milliseconds".into(),
-                )),
-            })
-            .prompt())?;
-        let ms: u64 = ms.trim().parse().unwrap_or(0);
-        if ms == 0 {
-            Trigger::Now
-        } else {
-            Trigger::AfterMs(ms)
-        }
-    } else {
-        Trigger::Now
-    };
-
-    Ok((scene, t))
-}
-
-fn build_focus_step(scene: &str, trigger: &Trigger, score: &Score) -> Result<Step> {
-    // Validate the scene exists
-    if score.scene(scene).is_none() {
-        return Err(Error::Export(format!(
-            "unknown scene '{scene}' — define it with `demo scene` first"
-        )));
-    }
-
-    // For now, all triggers produce a simple Step::Focus with scene set.
-    // The trigger semantics (when/after/delay) will be implemented in Paso 5
-    // when we update capture to handle deferred focus steps.
-    // For immediate focus, we just add the step.
-    match trigger {
-        Trigger::Now => Ok(Step::Focus {
-            pane: None,
-            scene: Some(scene.to_string()),
-        }),
-        Trigger::When(pat) => {
-            // TODO: store pattern in Step for deferred focus
-            // For now, emit a warning and add as immediate
-            eprintln!("⚠ deferred trigger 'when {pat}' — currently fires immediately");
-            Ok(Step::Focus {
-                pane: None,
-                scene: Some(scene.to_string()),
-            })
-        }
-        Trigger::After => {
-            eprintln!("⚠ deferred trigger 'after' — currently fires immediately");
-            Ok(Step::Focus {
-                pane: None,
-                scene: Some(scene.to_string()),
-            })
-        }
-        Trigger::AfterMs(ms) => {
-            eprintln!("⚠ deferred trigger 'after {ms}ms' — currently fires immediately");
-            Ok(Step::Focus {
-                pane: None,
-                scene: Some(scene.to_string()),
-            })
-        }
-    }
 }

@@ -10,7 +10,9 @@ pub mod salt;
 
 pub use rng::Rng;
 
-use crate::model::{DemoMeta, Layout, Pane, PaneKind, Score, Step, Typing};
+use crate::model::{
+    DemoMeta, Layout, Orientation, Pane, PaneKind, RevealPane, Score, Step, Typing,
+};
 use crate::model::{RawEvent, RawMacro, ScrollDirection, Velocity};
 use edit::Action;
 
@@ -27,6 +29,10 @@ const MAX_SETTLE_MS: u64 = 2500;
 /// Longest tail held after the final command (the idle that stopped the
 /// recording is trimmed away entirely).
 const MAX_TAIL_MS: u64 = 1500;
+/// A pause right before an `enter` is hesitation, not content — every fixed
+/// wait immediately followed by an enter keypress is normalized to this, so
+/// commands fire with one deliberate rhythm.
+const ENTER_SETTLE_MS: u64 = 200;
 
 /// Assumed monospace cell size (px) used to size the default canvas.
 const CELL_W: u32 = 10;
@@ -42,7 +48,6 @@ pub fn normalize(raw: &RawMacro, name: &str, opts: &Options) -> Score {
     let mut timeline = Vec::new();
     timeline.push(Step::Focus {
         pane: Some("main".to_string()),
-        scene: None,
     });
     timeline.extend(terminal_steps(raw, &reveals));
     timeline.push(Step::Terminate);
@@ -56,21 +61,32 @@ pub fn normalize(raw: &RawMacro, name: &str, opts: &Options) -> Score {
         env: None,
         typing: Some(typing(opts)),
         sources: vec![],
-        scenes: vec![],
         layout: layout_with_reveals(raw, &reveals),
         timeline,
     }
 }
 
-/// A `demo open` reveal lifted from the raw capture, with a stable scene id.
+/// A reveal lifted from the raw capture: the panes to show, how arranged.
 struct Reveal {
     t_ms: u64,
-    id: String,
-    url: String,
-    mode: String,
+    /// Position among the reveals — makes the per-pane ids stable and unique.
+    index: usize,
+    panes: Vec<RevealPane>,
+    orientation: Orientation,
     hold_ms: Option<u64>,
     scroll: bool,
-    theme: Option<String>,
+}
+
+impl Reveal {
+    /// The browser panes of this reveal (the terminal excluded), each with a
+    /// stable id matching the faithful path (`<source>-r<n>`).
+    fn browsers(&self) -> Vec<(String, &RevealPane)> {
+        self.panes
+            .iter()
+            .filter(|p| !p.is_terminal())
+            .map(|p| (format!("{}-r{}", p.id, self.index + 1), p))
+            .collect()
+    }
 }
 
 /// Default time a revealed browser scene is held on screen when no `--hold` was
@@ -86,49 +102,34 @@ fn reveal_hold_ms(hold: Option<u64>, scroll: bool) -> u64 {
     })
 }
 
-/// Collect the capture's `demo open` reveals in time order, using custom names
-/// when provided or falling back to `scene1`, `scene2`, etc.
+/// Collect the capture's reveals in time order.
 fn collect_reveals(raw: &RawMacro) -> Vec<Reveal> {
-    let mut opens: Vec<_> = raw
+    let mut revs: Vec<Reveal> = raw
         .events
         .iter()
         .filter_map(|e| match e {
-            RawEvent::Open {
+            RawEvent::Reveal {
                 t_ms,
-                url,
-                name,
-                mode,
+                panes,
+                orientation,
                 hold_ms,
                 scroll,
-                theme,
-            } => Some((
-                *t_ms,
-                url.clone(),
-                name.clone(),
-                mode.clone(),
-                *hold_ms,
-                *scroll,
-                theme.clone(),
-            )),
+            } => Some(Reveal {
+                t_ms: *t_ms,
+                index: 0,
+                panes: panes.clone(),
+                orientation: *orientation,
+                hold_ms: *hold_ms,
+                scroll: *scroll,
+            }),
             _ => None,
         })
         .collect();
-    opens.sort_by_key(|(t, ..)| *t);
-    opens
-        .into_iter()
-        .enumerate()
-        .map(
-            |(i, (t_ms, url, name, mode, hold_ms, scroll, theme))| Reveal {
-                t_ms,
-                id: name.unwrap_or_else(|| format!("scene{}", i + 1)),
-                url,
-                mode,
-                hold_ms,
-                scroll,
-                theme,
-            },
-        )
-        .collect()
+    revs.sort_by_key(|r| r.t_ms);
+    for (i, r) in revs.iter_mut().enumerate() {
+        r.index = i;
+    }
+    revs
 }
 
 /// Splice the captured terminal flow into a prepared `stage`, keeping its
@@ -162,7 +163,6 @@ pub fn merge_into_stage(mut stage: Score, raw: &RawMacro, opts: &Options) -> Sco
         if let Some(id) = &term_id {
             head.push(Step::Focus {
                 pane: Some(id.clone()),
-                scene: None,
             });
         }
         head.extend(steps);
@@ -240,23 +240,9 @@ fn terminal_steps(raw: &RawMacro, reveals: &[Reveal]) -> Vec<Step> {
         .collect();
     secrets.sort_by_key(|(t, _)| *t);
 
-    // Focus changes triggered via `/focus <scene>` during capture.
-    let mut focus_events: Vec<(u64, String)> = raw
-        .events
-        .iter()
-        .filter_map(|e| match e {
-            RawEvent::Focus { t_ms, scene } => Some((*t_ms, scene.clone())),
-            _ => None,
-        })
-        .collect();
-    focus_events.sort_by_key(|(t, _)| *t);
-
-    let mut steps = Vec::with_capacity(
-        actions.len() * 2 + reveals.len() * 3 + secrets.len() + focus_events.len(),
-    );
+    let mut steps = Vec::with_capacity(actions.len() * 2 + reveals.len() * 3 + secrets.len());
     let mut next_reveal = 0;
     let mut next_secret = 0;
-    let mut next_focus = 0;
     for (i, action) in actions.iter().enumerate() {
         // Supply any secret whose moment arrived before this action (it sits where
         // the redacted keystrokes were — between the command and the next input).
@@ -272,16 +258,6 @@ fn terminal_steps(raw: &RawMacro, reveals: &[Reveal]) -> Vec<Step> {
             push_reveal(&mut steps, &reveals[next_reveal], true);
             next_reveal += 1;
         }
-        // Insert any /focus step whose moment has arrived before this action.
-        while next_focus < focus_events.len() && focus_events[next_focus].0 <= action_start(action)
-        {
-            steps.push(Step::Focus {
-                pane: None,
-                scene: Some(focus_events[next_focus].1.clone()),
-            });
-            next_focus += 1;
-        }
-
         match action {
             Action::Type { text, .. } => steps.push(Step::Type {
                 text: text.clone(),
@@ -324,38 +300,56 @@ fn terminal_steps(raw: &RawMacro, reveals: &[Reveal]) -> Vec<Step> {
     for r in &reveals[next_reveal..] {
         push_reveal(&mut steps, r, false);
     }
-    // Any /focus after the last command.
-    for (_, scene) in &focus_events[next_focus..] {
-        steps.push(Step::Focus {
-            pane: None,
-            scene: Some(scene.clone()),
-        });
-    }
+    settle_waits_before_enter(&mut steps);
     steps
 }
 
-/// Append the steps that reveal one browser scene: focus it, optionally scroll
-/// it, and hold it on screen. `refocus_main` returns focus to the terminal after
-/// (for a reveal in the middle of the flow, where typing continues).
+/// Normalize every fixed `wait` that immediately precedes an `enter` keypress
+/// to [`ENTER_SETTLE_MS`]: that pause is hesitation before firing the command,
+/// not part of the demo. Event-based waits (`wait_for_quiet`, …) are left alone.
+fn settle_waits_before_enter(steps: &mut [Step]) {
+    for i in 0..steps.len().saturating_sub(1) {
+        let before_enter =
+            matches!(&steps[i + 1], Step::Keypress { key } if key.eq_ignore_ascii_case("enter"));
+        if before_enter {
+            if let Step::Wait { duration_ms } = &mut steps[i] {
+                *duration_ms = ENTER_SETTLE_MS;
+            }
+        }
+    }
+}
+
+/// Append the steps that reveal a scene: focus each of its browser panes (and
+/// optionally scroll them) and hold on screen. A reveal with only the terminal
+/// just refocuses `main`. `refocus_main` returns focus to the terminal after (for
+/// a reveal mid-flow, where typing continues).
 fn push_reveal(steps: &mut Vec<Step>, r: &Reveal, refocus_main: bool) {
     let hold = reveal_hold_ms(r.hold_ms, r.scroll);
-    steps.push(Step::Focus {
-        pane: Some(r.id.clone()),
-        scene: None,
-    });
-    if r.scroll {
-        steps.push(Step::Scroll {
-            direction: ScrollDirection::Down,
-            velocity: Velocity::Constant,
-            duration_ms: hold,
-            pane: Some(r.id.clone()),
+    let browsers = r.browsers();
+    if browsers.is_empty() {
+        // "Back to the terminal" — just focus it.
+        steps.push(Step::Focus {
+            pane: Some("main".to_string()),
         });
+        return;
+    }
+    for (id, _) in &browsers {
+        steps.push(Step::Focus {
+            pane: Some(id.clone()),
+        });
+        if r.scroll {
+            steps.push(Step::Scroll {
+                direction: ScrollDirection::Down,
+                velocity: Velocity::Constant,
+                duration_ms: hold,
+                pane: Some(id.clone()),
+            });
+        }
     }
     steps.push(Step::Wait { duration_ms: hold });
     if refocus_main {
         steps.push(Step::Focus {
             pane: Some("main".to_string()),
-            scene: None,
         });
     }
 }
@@ -420,73 +414,106 @@ fn strip_trailing_stop(actions: &mut Vec<Action>) {
     }
 }
 
-/// Build the layout for a capture: a terminal pane, plus one browser pane per
-/// `demo open` reveal — `replace` covers the canvas, `split` sits to the right of
-/// the terminal (doubling the canvas width). No reveals → the single-pane default.
+/// Pane rectangles for a reveal: 1 pane fills the canvas; 2 split it by
+/// `orientation` (horizontal → left/right, vertical → top/bottom).
+fn pane_rects(
+    tw: u32,
+    th: u32,
+    count: usize,
+    orientation: Orientation,
+) -> Vec<(u32, u32, u32, u32)> {
+    match count {
+        0 | 1 => vec![(0, 0, tw, th)],
+        _ => match orientation {
+            Orientation::Horizontal => {
+                let half = tw / 2;
+                vec![(0, 0, half, th), (half, 0, tw - half, th)]
+            }
+            Orientation::Vertical => {
+                let half = th / 2;
+                vec![(0, 0, tw, half), (0, half, tw, th - half)]
+            }
+        },
+    }
+}
+
+/// Build the layout for a capture: the canvas is the terminal size, the terminal
+/// pane is the always-on background, and each reveal overlays its browser panes
+/// for a window `[reveal_at, hide_at)` so views can switch or hand back to the
+/// terminal. No reveals → the single-pane default.
 fn layout_with_reveals(raw: &RawMacro, reveals: &[Reveal]) -> Layout {
     if reveals.is_empty() {
         return default_layout(raw);
     }
-    // Use explicit resolution if set, otherwise derive from terminal grid.
-    let (canvas_w, canvas_h) = if let Some((w, h)) = raw.meta.resolution {
-        (w, h)
-    } else {
+    let (canvas_w, canvas_h) = raw.meta.resolution.unwrap_or_else(|| {
         let tw = (raw.meta.cols as u32 * CELL_W).max(CELL_W);
         let th = (raw.meta.rows as u32 * CELL_H).max(CELL_H);
-        let any_split = reveals.iter().any(|r| r.mode == "split");
-        if any_split {
-            (tw * 2, th)
-        } else {
-            (tw, th)
-        }
-    };
-
-    let any_split = reveals.iter().any(|r| r.mode == "split");
-    // Terminal pane: full width unless split, then half.
-    let tw = if any_split { canvas_w / 2 } else { canvas_w };
-    let th = canvas_h;
+        (tw, th)
+    });
 
     let mut panes = vec![Pane {
         id: "main".to_string(),
         kind: PaneKind::Terminal,
         x: 0,
         y: 0,
-        width: tw,
-        height: th,
+        width: canvas_w,
+        height: canvas_h,
         font_family: Some("monospace".to_string()),
         font_size: Some(16),
         url: None,
         theme: None,
+        reveal_at: None,
+        hide_at: None,
     }];
-    for r in reveals {
-        let (x, y, w, h) = if r.mode == "split" {
-            (tw, 0, canvas_w - tw, canvas_h)
-        } else {
-            (0, 0, canvas_w, canvas_h)
-        };
-        panes.push(Pane {
-            id: r.id.clone(),
-            kind: PaneKind::Browser,
-            x,
-            y,
-            width: w,
-            height: h,
-            font_family: None,
-            font_size: None,
-            url: Some(r.url.clone()),
-            theme: r.theme.clone(),
-        });
+    for (i, r) in reveals.iter().enumerate() {
+        let reveal_at = r.t_ms as f64 / 1000.0;
+        let hide_at = reveals.get(i + 1).map(|n| n.t_ms as f64 / 1000.0);
+        let rects = pane_rects(canvas_w, canvas_h, r.panes.len(), r.orientation);
+        for ((id, p), (x, y, w, h)) in r
+            .browsers()
+            .into_iter()
+            .zip(browser_rects(&rects, &r.panes))
+        {
+            panes.push(Pane {
+                id,
+                kind: PaneKind::Browser,
+                x,
+                y,
+                width: w,
+                height: h,
+                font_family: None,
+                font_size: None,
+                url: p.url.clone(),
+                theme: p.theme.clone(),
+                reveal_at: Some(reveal_at),
+                hide_at,
+            });
+        }
     }
     Layout {
         width: canvas_w,
         height: canvas_h,
-        fps: 15,
+        fps: raw.meta.fps.unwrap_or(15),
         line_height: 1.2,
         background: Some("#0b0f14".to_string()),
         font_family: None,
         font_size: None,
         panes,
     }
+}
+
+/// Pick the rectangles for the browser panes (in `panes` order, terminal skipped)
+/// out of the full reveal `rects`.
+fn browser_rects(
+    rects: &[(u32, u32, u32, u32)],
+    panes: &[RevealPane],
+) -> Vec<(u32, u32, u32, u32)> {
+    panes
+        .iter()
+        .enumerate()
+        .filter(|(_, p)| !p.is_terminal())
+        .map(|(idx, _)| rects.get(idx).copied().unwrap_or((0, 0, 0, 0)))
+        .collect()
 }
 
 /// A single terminal pane sized to the captured grid (or explicit resolution).
@@ -499,7 +526,7 @@ fn default_layout(raw: &RawMacro) -> Layout {
     Layout {
         width,
         height,
-        fps: 15,
+        fps: raw.meta.fps.unwrap_or(15),
         line_height: 1.2,
         background: Some("#0b0f14".to_string()),
         font_family: None,
@@ -515,6 +542,8 @@ fn default_layout(raw: &RawMacro) -> Layout {
             font_size: Some(16),
             url: None,
             theme: None,
+            reveal_at: None,
+            hide_at: None,
         }],
     }
 }
@@ -532,6 +561,7 @@ mod tests {
                 rows: 24,
                 idle_timeout_ms: 3000,
                 resolution: None,
+                fps: None,
                 stage: None,
                 mute_spans: Vec::new(),
             },
@@ -594,6 +624,33 @@ mod tests {
             })
             .collect();
         assert!(waits.contains(&MAX_SETTLE_MS));
+    }
+
+    #[test]
+    fn settles_the_hesitation_wait_before_enter() {
+        // 1.5s of thinking between typing the command and pressing enter →
+        // pinned to ENTER_SETTLE_MS; other waits keep their computed value.
+        let r = raw(vec![
+            RawEvent::Input {
+                t_ms: 0,
+                bytes: "ls".into(),
+            },
+            RawEvent::Input {
+                t_ms: 1500,
+                bytes: "\r".into(),
+            },
+        ]);
+        let score = normalize(&r, "demo", &opts());
+        let mut saw = false;
+        for w in score.timeline.windows(2) {
+            if let (Step::Wait { duration_ms }, Step::Keypress { key }) = (&w[0], &w[1]) {
+                if key == "enter" {
+                    assert_eq!(*duration_ms, ENTER_SETTLE_MS);
+                    saw = true;
+                }
+            }
+        }
+        assert!(saw, "expected a wait right before the enter keypress");
     }
 
     #[test]
@@ -747,14 +804,16 @@ mod tests {
                 t_ms: 100,
                 data: "file.txt".into(),
             },
-            RawEvent::Open {
+            RawEvent::Reveal {
                 t_ms: 500,
-                url: "https://example.com".into(),
-                name: None,
-                mode: "replace".into(),
+                panes: vec![RevealPane {
+                    id: "browser".into(),
+                    url: Some("https://example.com".into()),
+                    theme: None,
+                }],
+                orientation: Orientation::Horizontal,
                 hold_ms: Some(5000),
                 scroll: true,
-                theme: None,
             },
         ]);
         let score = normalize(&r, "demo", &opts());

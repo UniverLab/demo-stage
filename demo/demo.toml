@@ -1,0 +1,210 @@
+[demo]
+name = "demo"
+output_dir = "./dist"
+prompt = '\[\e[1;32m\]demoStage@univerlab\[\e[0m\]:\[\e[1;34m\]~\[\e[0m\]$ '
+
+[typing]
+base_ms = 80
+salt_ms = 15
+
+[[sources]]
+id = "main"
+type = "terminal"
+
+[[sources]]
+id = "github"
+type = "browser"
+url = "https://github.com/univerlab"
+theme = "dark"
+
+[layout]
+width = 1290
+height = 920
+fps = 15
+line_height = 1.2000000476837158
+background = "#0b0f14"
+font_family = "DejaVu Sans Mono"
+
+[[layout.panes]]
+id = "main"
+type = "terminal"
+x = 0
+y = 0
+width = 1290
+height = 920
+font_family = "monospace"
+font_size = 16
+
+[[layout.panes]]
+id = "github-r1"
+type = "browser"
+x = 645
+y = 0
+width = 645
+height = 920
+url = "https://github.com/univerlab"
+theme = "dark"
+reveal_at = 45.121
+
+[[timeline]]
+action = "focus"
+pane = "main"
+
+[[timeline]]
+action = "type"
+text = "mapscii"
+human_salt = true
+
+[[timeline]]
+action = "wait"
+duration_ms = 546
+
+[[timeline]]
+action = "keypress"
+key = "enter"
+
+[[timeline]]
+action = "wait"
+duration_ms = 1506
+
+[[timeline]]
+action = "type"
+text = "jjjlllllllkklljjñññhhhhhhhxaaaahhhhhhzz"
+human_salt = true
+
+[[timeline]]
+action = "wait"
+duration_ms = 733
+
+[[timeline]]
+action = "keypress"
+key = "tab"
+
+[[timeline]]
+action = "wait_for_quiet"
+quiet_ms = 500
+
+[[timeline]]
+action = "keypress"
+key = "ctrl+c"
+
+[[timeline]]
+action = "wait"
+duration_ms = 289
+
+[[timeline]]
+action = "focus"
+pane = "github-r1"
+
+[[timeline]]
+action = "wait"
+duration_ms = 6000
+
+[[timeline]]
+action = "focus"
+pane = "main"
+
+[[timeline]]
+action = "type"
+text = "opencode"
+human_salt = true
+
+[[timeline]]
+action = "wait"
+duration_ms = 818
+
+[[timeline]]
+action = "keypress"
+key = "enter"
+
+[[timeline]]
+action = "wait_for_quiet"
+quiet_ms = 500
+
+[[timeline]]
+action = "type"
+text = "/model"
+human_salt = true
+
+[[timeline]]
+action = "wait"
+duration_ms = 200
+
+[[timeline]]
+action = "keypress"
+key = "enter"
+
+[[timeline]]
+action = "wait"
+duration_ms = 877
+
+[[timeline]]
+action = "type"
+text = "free"
+human_salt = true
+
+[[timeline]]
+action = "wait"
+duration_ms = 1086
+
+[[timeline]]
+action = "keypress"
+key = "enter"
+
+[[timeline]]
+action = "wait"
+duration_ms = 2500
+
+[[timeline]]
+action = "type"
+text = "count mee a cool history about programing code"
+human_salt = true
+
+[[timeline]]
+action = "wait"
+duration_ms = 387
+
+[[timeline]]
+action = "keypress"
+key = "enter"
+
+[[timeline]]
+action = "wait_for_quiet"
+quiet_ms = 2500
+
+[[timeline]]
+action = "type"
+text = "thx"
+human_salt = true
+
+[[timeline]]
+action = "wait"
+duration_ms = 489
+
+[[timeline]]
+action = "keypress"
+key = "enter"
+
+[[timeline]]
+action = "wait_for_quiet"
+quiet_ms = 2500
+
+[[timeline]]
+action = "type"
+text = "/exit"
+human_salt = true
+
+[[timeline]]
+action = "wait"
+duration_ms = 845
+
+[[timeline]]
+action = "keypress"
+key = "enter"
+
+[[timeline]]
+action = "wait_for_quiet"
+quiet_ms = 500
+
+[[timeline]]
+action = "terminate"

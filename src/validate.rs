@@ -69,21 +69,15 @@ pub fn validate(score: &Score) -> Vec<String> {
     for (i, step) in score.timeline.iter().enumerate() {
         let at = format!("timeline[{i}]");
         match step {
-            Step::Focus { pane, scene } => {
+            Step::Focus { pane } => {
                 if let Some(pane_id) = pane {
                     match kind_of(pane_id) {
                         None => problems
                             .push(format!("{at}: focus references unknown pane '{pane_id}'")),
                         Some(_) => focused = Some(pane_id.as_str()),
                     }
-                } else if let Some(scene_id) = scene {
-                    if score.scene(scene_id).is_none() {
-                        problems.push(format!("{at}: focus references unknown scene '{scene_id}'"));
-                    }
-                    // Scene focus doesn't set focused for type/keypress validation
-                    // since scenes resolve to panes at export time.
                 } else {
-                    problems.push(format!("{at}: focus must have either 'pane' or 'scene'"));
+                    problems.push(format!("{at}: focus must reference a 'pane'"));
                 }
             }
             Step::Type { .. } | Step::Keypress { .. } | Step::Secret { .. } => match focused {

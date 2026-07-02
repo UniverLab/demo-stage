@@ -16,6 +16,10 @@ use crate::error::{Error, Result};
 pub const CONTROL_ENV: &str = "DEMO_CAPTURE_CONTROL";
 /// Control file name written in the recorder's working directory.
 pub const CONTROL_FILE: &str = ".demo-capture";
+/// Sidecar (beside the control file) listing the sources configured at capture
+/// start, so `demo focus`/`demo open` wizards can offer them live — the
+/// `demo.toml` score isn't written until the capture ends.
+pub const SOURCES_FILE: &str = ".demo-capture.sources";
 
 /// Locate the active capture's control file: the env var (inside the capture)
 /// first, then `./.demo-capture` (from another terminal in the same directory).
@@ -34,6 +38,27 @@ pub fn find() -> Result<PathBuf> {
          the directory where `demo capture` is running"
             .to_string(),
     ))
+}
+
+/// Sidecar path beside the active control file (the sources list).
+fn sources_path() -> Option<PathBuf> {
+    let control = find().ok()?;
+    Some(control.with_file_name(SOURCES_FILE))
+}
+
+/// Write the sources configured at capture start next to the control file.
+pub fn write_sources(control: &std::path::Path, sources: &[crate::model::Source]) -> Result<()> {
+    let path = control.with_file_name(SOURCES_FILE);
+    let json = serde_json::to_string(sources)?;
+    std::fs::write(&path, json).map_err(|e| Error::io(&path, e))
+}
+
+/// Read the active capture's sources sidecar (empty if there's no capture).
+pub fn read_sources() -> Vec<crate::model::Source> {
+    sources_path()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default()
 }
 
 /// Append one JSON command line to the active capture's control file.

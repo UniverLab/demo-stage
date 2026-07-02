@@ -1,8 +1,11 @@
 //! `demo edit` — interactive timeline editor.
 //!
-//! Shows the full timeline. Navigate with arrows, press **enter** to edit the
-//! current step, **esc** when done. Edits are applied immediately so you can
-//! see the result and re-edit if needed.
+//! Shows the full timeline. Mark one or several steps with **space**, press
+//! **enter** to apply an action to everything marked (edit, convert waits,
+//! delete, …), **esc** when done. Edits are applied immediately so you can see
+//! the result and re-edit if needed. Marking a group is how you do bulk work —
+//! delete a wizard's leftover steps at once, or turn every `wait` of a section
+//! into a `wait_for_quiet`.
 
 use crate::cli::EditArgs;
 use crate::error::{Error, Result};
@@ -13,14 +16,14 @@ pub fn run(args: EditArgs) -> Result<()> {
 
     println!("{}\n", crate::BANNER);
     println!(
-        "demo edit — {}\n  {} steps · navigate ↑↓ · enter=edit · esc=done\n",
+        "demo edit — {}\n  {} steps · ↑↓ navigate · space=mark (several for a bulk edit) · enter=apply · esc=done\n",
         args.input.display(),
         score.timeline.len()
     );
 
     let mut cursor: usize = 0;
 
-    loop {
+    while !score.timeline.is_empty() {
         let labels: Vec<String> = score
             .timeline
             .iter()
@@ -28,85 +31,155 @@ pub fn run(args: EditArgs) -> Result<()> {
             .map(|(i, s)| format!("{:>3}. {}", i + 1, step_summary(s)))
             .collect();
 
-        let selection = inquire::Select::new("Timeline:", labels)
+        let picked = inquire::MultiSelect::new("Timeline:", labels)
+            .with_page_size(list_page_size())
             .with_starting_cursor(cursor.min(score.timeline.len().saturating_sub(1)))
+            .with_help_message("space marks · enter applies to the marked steps · esc done")
             .prompt_skippable()
             .map_err(|e| Error::Export(format!("edit: {e}")))?;
 
-        // Esc at the list → ask if done.
-        let Some(selection) = selection else {
-            let cont = inquire::Confirm::new("Done editing?")
-                .with_default(false)
+        // Esc at the list (or enter with nothing marked) → ask if done.
+        let indices = picked.map(|sel| selection_indices(&sel, score.timeline.len()));
+        let Some(indices) = indices.filter(|idx| !idx.is_empty()) else {
+            let done = inquire::Confirm::new("Done editing?")
+                .with_default(true)
                 .prompt()
                 .unwrap_or(true);
-            if !cont {
-                continue;
+            if done {
+                break;
             }
-            break;
+            continue;
         };
 
-        // Find the index from the label prefix.
-        let idx = selection
-            .trim_start()
-            .split('.')
-            .next()
-            .and_then(|n| n.trim().parse::<usize>().ok())
-            .map(|n| n - 1)
-            .unwrap_or(0);
-
-        if idx >= score.timeline.len() {
-            continue;
-        }
-
-        cursor = idx;
+        cursor = indices[0];
         println!();
-        match ask_action(&score.timeline[idx])? {
-            None => {} // Esc = cancel
-            Some(EditAction::Keep) => {}
-            Some(EditAction::WaitForQuiet) => {
-                let quiet = ask_u64("quiet_ms", current_ms(&score.timeline[idx]))?;
-                score.timeline[idx] = Step::WaitForQuiet {
-                    quiet_ms: quiet,
-                    max_ms: None,
-                };
-                println!("  ✓ updated\n");
-            }
-            Some(EditAction::WaitForScreen) => {
-                let pattern = ask_string("match pattern")?;
-                score.timeline[idx] = Step::WaitForScreen {
-                    pattern,
-                    timeout_ms: None,
-                };
-                println!("  ✓ updated\n");
-            }
-            Some(EditAction::WaitForStdout) => {
-                let pattern = ask_string("match pattern")?;
-                score.timeline[idx] = Step::WaitForStdout {
-                    pattern,
-                    pane: None,
-                };
-                println!("  ✓ updated\n");
-            }
-            Some(EditAction::ChangeDuration) => {
-                let ms = ask_u64("duration_ms", current_ms(&score.timeline[idx]))?;
-                score.timeline[idx] = Step::Wait { duration_ms: ms };
-                println!("  ✓ updated\n");
-            }
-            Some(EditAction::SplitType) => {
-                split_type_step(&mut score.timeline, idx)?;
-            }
-            Some(EditAction::Delete) => {
-                score.timeline.remove(idx);
-                if cursor >= score.timeline.len() && cursor > 0 {
-                    cursor -= 1;
-                }
-                println!("  ✓ deleted\n");
-            }
+        apply_action(&mut score.timeline, &indices)?;
+        if cursor >= score.timeline.len() && cursor > 0 {
+            cursor = score.timeline.len() - 1;
         }
     }
 
     score.save(&args.input)?;
     println!("✓ saved → {}", args.input.display());
+    Ok(())
+}
+
+/// Fit the list to the terminal (leave room for the prompt/help lines), so a
+/// long timeline shows as many steps as the screen allows instead of 7.
+fn list_page_size() -> usize {
+    let rows = crossterm::terminal::size().map(|(_, r)| r).unwrap_or(24) as usize;
+    rows.saturating_sub(5).clamp(10, 40)
+}
+
+/// Map the marked labels back to timeline indices (from the `N.` prefix),
+/// sorted and de-duplicated.
+fn selection_indices(selected: &[String], len: usize) -> Vec<usize> {
+    let mut indices: Vec<usize> = selected
+        .iter()
+        .filter_map(|s| {
+            s.trim_start()
+                .split('.')
+                .next()
+                .and_then(|n| n.trim().parse::<usize>().ok())
+                .map(|n| n - 1)
+        })
+        .filter(|&i| i < len)
+        .collect();
+    indices.sort_unstable();
+    indices.dedup();
+    indices
+}
+
+/// Ask for one action and apply it to every selected step.
+fn apply_action(timeline: &mut Vec<Step>, indices: &[usize]) -> Result<()> {
+    let all_type = indices
+        .iter()
+        .all(|&i| matches!(timeline[i], Step::Type { .. }));
+
+    match ask_action(indices.len(), all_type)? {
+        None | Some(EditAction::Keep) => {} // Esc = cancel
+        Some(EditAction::WaitForQuiet) => {
+            let quiet = ask_u64("quiet_ms", current_ms(&timeline[indices[0]]))?;
+            for &i in indices {
+                timeline[i] = Step::WaitForQuiet {
+                    quiet_ms: quiet,
+                    max_ms: None,
+                };
+            }
+            println!("  ✓ updated {}\n", plural(indices.len()));
+        }
+        Some(EditAction::WaitForScreen) => {
+            let pattern = ask_string("match pattern")?;
+            for &i in indices {
+                timeline[i] = Step::WaitForScreen {
+                    pattern: pattern.clone(),
+                    timeout_ms: None,
+                };
+            }
+            println!("  ✓ updated {}\n", plural(indices.len()));
+        }
+        Some(EditAction::WaitForStdout) => {
+            let pattern = ask_string("match pattern")?;
+            for &i in indices {
+                timeline[i] = Step::WaitForStdout {
+                    pattern: pattern.clone(),
+                    pane: None,
+                };
+            }
+            println!("  ✓ updated {}\n", plural(indices.len()));
+        }
+        Some(EditAction::ChangeDuration) => {
+            let ms = ask_u64("duration_ms", current_ms(&timeline[indices[0]]))?;
+            for &i in indices {
+                timeline[i] = Step::Wait { duration_ms: ms };
+            }
+            println!("  ✓ updated {}\n", plural(indices.len()));
+        }
+        Some(EditAction::SplitType) => {
+            split_type_step(timeline, indices[0])?;
+        }
+        Some(EditAction::ReplaceInTypes) => {
+            replace_in_types(timeline, indices)?;
+        }
+        Some(EditAction::Delete) => {
+            // Back to front so earlier indices stay valid while removing.
+            for &i in indices.iter().rev() {
+                timeline.remove(i);
+            }
+            println!("  ✓ deleted {}\n", plural(indices.len()));
+        }
+    }
+    Ok(())
+}
+
+fn plural(n: usize) -> String {
+    if n == 1 {
+        "1 step".to_string()
+    } else {
+        format!("{n} steps")
+    }
+}
+
+/// Find & replace across several `type` steps at once — the shared treatment
+/// that makes sense when editing many texts together.
+fn replace_in_types(timeline: &mut [Step], indices: &[usize]) -> Result<()> {
+    let find = ask_string("find")?;
+    let replace = inquire::Text::new("replace with:")
+        .prompt()
+        .map_err(|e| Error::Export(format!("edit: {e}")))?;
+    let mut changed = 0;
+    for &i in indices {
+        if let Step::Type { text, human_salt } = &timeline[i] {
+            if text.contains(&find) {
+                timeline[i] = Step::Type {
+                    text: text.replace(&find, &replace),
+                    human_salt: *human_salt,
+                };
+                changed += 1;
+            }
+        }
+    }
+    println!("  ✓ replaced in {}\n", plural(changed));
     Ok(())
 }
 
@@ -130,13 +203,7 @@ fn step_summary(step: &Step) -> String {
         Step::WaitForQuiet { quiet_ms, .. } => format!("wait_for_quiet {quiet_ms}ms"),
         Step::WaitForScreen { pattern, .. } => format!("wait_for_screen {:?}", pattern),
         Step::WaitForStdout { pattern, .. } => format!("wait_for_stdout {:?}", pattern),
-        Step::Focus { pane, scene } => {
-            if let Some(s) = scene {
-                format!("focus → scene:{s}")
-            } else {
-                format!("focus → {}", pane.as_deref().unwrap_or("?"))
-            }
-        }
+        Step::Focus { pane } => format!("focus → {}", pane.as_deref().unwrap_or("?")),
         Step::Caption { text } => format!("caption {:?}", text),
         Step::Secret { prompt } => format!("secret {:?}", prompt),
         Step::Scroll {
@@ -157,24 +224,37 @@ enum EditAction {
     WaitForStdout,
     ChangeDuration,
     SplitType,
+    ReplaceInTypes,
     Delete,
 }
 
-fn ask_action(step: &Step) -> Result<Option<EditAction>> {
+/// The action menu for `n` marked steps. Every action applies to all of them;
+/// text editing appears when the whole selection is `type` steps (in-place
+/// split/edit for one, find & replace across several).
+fn ask_action(n: usize, all_type: bool) -> Result<Option<EditAction>> {
     let mut opts = vec![
         "Keep as-is",
         "→ wait_for_quiet (silence-based)",
         "→ wait_for_screen (VT pattern)",
         "→ wait_for_stdout (raw output pattern)",
         "Change duration",
-        "Delete step",
+        "Delete",
     ];
 
-    if matches!(step, Step::Type { .. }) {
-        opts.push("Split/Edit text");
+    if all_type {
+        opts.push(if n == 1 {
+            "Split/Edit text"
+        } else {
+            "Find & replace in texts"
+        });
     }
 
-    let choice = inquire::Select::new("Action:", opts)
+    let prompt = if n == 1 {
+        "Action:".to_string()
+    } else {
+        format!("Action for the {n} marked steps:")
+    };
+    let choice = inquire::Select::new(&prompt, opts)
         .prompt_skippable()
         .map_err(|e| Error::Export(format!("edit: {e}")))?;
 
@@ -189,7 +269,8 @@ fn ask_action(step: &Step) -> Result<Option<EditAction>> {
         "→ wait_for_stdout (raw output pattern)" => EditAction::WaitForStdout,
         "Change duration" => EditAction::ChangeDuration,
         "Split/Edit text" => EditAction::SplitType,
-        "Delete step" => EditAction::Delete,
+        "Find & replace in texts" => EditAction::ReplaceInTypes,
+        "Delete" => EditAction::Delete,
         _ => EditAction::Keep,
     }))
 }

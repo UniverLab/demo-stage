@@ -20,7 +20,7 @@ use crate::commands::control;
 use crate::error::{Error, Result};
 use crate::export::recording;
 use crate::export::run::{is_zsh, sh_single_quote};
-use crate::model::{DemoMeta, RawEvent, RawMacro, RawMeta, Score};
+use crate::model::{DemoMeta, Orientation, RawEvent, RawMacro, RawMeta, RevealPane, Score};
 use crate::normalize::{merge_into_stage, normalize, Options};
 
 /// Marker the captured shell echoes once it's at our forced prompt — recording
@@ -28,20 +28,39 @@ use crate::normalize::{merge_into_stage, normalize, Options};
 /// shell so the typed command doesn't itself match (only the printed output).
 const PROMPT_READY: &str = "demostage_capture_ready";
 
-/// A `demo open` reveal: where, how, how long/whether to scroll, and theme.
+/// A resolved reveal requested during capture (via `demo focus` or `demo open`):
+/// the 1–2 panes to show and how they're arranged, plus hold/scroll. The
+/// `--when`/`--after` deferral is handled at the control layer, so by the time a
+/// `Reveal` is recorded it fires *now*.
 #[derive(Clone)]
 struct Reveal {
-    url: String,
-    name: Option<String>,
-    mode: String,
+    panes: Vec<crate::model::RevealPane>,
+    orientation: crate::model::Orientation,
     hold_ms: Option<u64>,
     scroll: bool,
-    theme: Option<String>,
 }
 
-/// Reveals armed by `demo open --when <pat>`, each with its cue pattern.
+impl Reveal {
+    /// Turn this reveal into the recorded event at time `t_ms`.
+    fn to_event(&self, t_ms: u64) -> RawEvent {
+        RawEvent::Reveal {
+            t_ms,
+            panes: self.panes.clone(),
+            orientation: self.orientation,
+            hold_ms: self.hold_ms,
+            scroll: self.scroll,
+        }
+    }
+    /// One-line summary for the debug log.
+    fn summary(&self) -> String {
+        let ids: Vec<&str> = self.panes.iter().map(|p| p.id.as_str()).collect();
+        format!("{:?} ({:?})", ids, self.orientation)
+    }
+}
+
+/// Reveals armed by `--when <pat>`, each with its cue pattern.
 type PendingWhen = Arc<Mutex<Vec<(Reveal, String)>>>;
-/// Reveals armed by `demo open --after`, fired when the running command finishes.
+/// Reveals armed by `--after`, fired when the running command finishes.
 type PendingAfter = Arc<Mutex<Vec<Reveal>>>;
 
 /// How long the output must stay quiet, after a command produced output, before
@@ -275,40 +294,6 @@ fn choose_prompt(args: &CaptureArgs, shell: &str) -> Result<(bool, String)> {
     Ok((true, ps1))
 }
 
-/// Ask the user for the target export resolution.
-fn choose_resolution() -> Result<Option<(u32, u32)>> {
-    let choice = inquire::Select::new("Export font:", crate::fonts::FONT_NAMES.to_vec())
-        .prompt()
-        .map_err(|e| Error::Export(format!("resolution wizard: {e}")))?;
-
-    let res = if choice.starts_with("Landscape") {
-        Some((1920, 1080))
-    } else if choice.starts_with("Portrait") {
-        Some((1080, 1920))
-    } else if choice.starts_with("Square") {
-        Some((1080, 1080))
-    } else if choice.starts_with("Standard") {
-        Some((1024, 768))
-    } else if choice.starts_with("Compact") {
-        Some((1280, 720))
-    } else if choice.starts_with("Custom") {
-        let w = inquire::Text::new("width:")
-            .with_default("1920")
-            .prompt()
-            .map_err(|e| Error::Export(format!("resolution wizard: {e}")))?;
-        let h = inquire::Text::new("height:")
-            .with_default("1080")
-            .prompt()
-            .map_err(|e| Error::Export(format!("resolution wizard: {e}")))?;
-        let w: u32 = w.trim().parse().unwrap_or(1920);
-        let h: u32 = h.trim().parse().unwrap_or(1080);
-        Some((w, h))
-    } else {
-        None
-    };
-    Ok(res)
-}
-
 /// Choose the export font. `--font` skips the wizard; otherwise a picker
 /// offers the bundled options.
 fn choose_font(args: &CaptureArgs) -> Result<String> {
@@ -322,6 +307,172 @@ fn choose_font(args: &CaptureArgs) -> Result<String> {
         .prompt()
         .map_err(|e| Error::Export(format!("font wizard: {e}")))?;
     Ok(crate::fonts::parse_font_name(choice).to_string())
+}
+
+/// Legacy named resolution presets, accepted as `--resolution` aliases. Each
+/// maps onto an aspect-ratio × quality pair under the new scheme (e.g.
+/// `landscape` = `16:9` × `fullhd`, `standard` = `16:9` × `hd`).
+const RESOLUTIONS: [(&str, u32, u32); 4] = [
+    ("landscape", 1920, 1080),
+    ("portrait", 1080, 1920),
+    ("square", 1080, 1080),
+    ("standard", 1280, 720),
+];
+
+/// Aspect ratios offered at capture. `a:b` means width:height = a:b; the canvas
+/// is scaled so its short side matches the quality base.
+const ASPECTS: [(&str, u32, u32); 4] = [
+    ("16:9", 16, 9),
+    ("9:16", 9, 16),
+    ("4:3", 4, 3),
+    ("1:1", 1, 1),
+];
+
+/// Quality tiers — the short side of the canvas, in pixels.
+const QUALITIES: [(&str, u32); 2] = [("fullhd", 1080), ("hd", 720)];
+
+/// Default frame rate (matches `[layout] fps` default in the score model).
+const DEFAULT_FPS: u32 = 15;
+
+/// Permitted frame rates for the exported gif/mp4.
+const FPS_CHOICES: [u32; 3] = [15, 24, 30];
+
+/// Compute the canvas `(width, height)` for an aspect ratio + quality. The
+/// short side is the quality base; the long side scales by the ratio. Every
+/// combination lands on integer pixels (1080 and 720 are divisible by 9, 3, 1).
+fn canvas_from_aspect_quality(aspect: &str, quality: &str) -> Result<(u32, u32)> {
+    let av = aspect.trim().to_ascii_lowercase();
+    let &(_, a, b) = ASPECTS
+        .iter()
+        .find(|(name, ..)| *name == av)
+        .ok_or_else(|| {
+            Error::Export(format!(
+                "invalid aspect '{aspect}' — try 16:9, 9:16, 4:3, or 1:1"
+            ))
+        })?;
+    let qv = quality.trim().to_ascii_lowercase();
+    let base = QUALITIES
+        .iter()
+        .find(|(name, _)| *name == qv)
+        .map(|(_, b)| *b)
+        .ok_or_else(|| Error::Export(format!("invalid quality '{quality}' — try fullhd or hd")))?;
+    let short = a.min(b);
+    Ok((a * base / short, b * base / short))
+}
+
+/// Parse a `--resolution` value: a legacy preset name, `WxH`, or `auto` (→
+/// `None`, meaning the canvas derives from the terminal size).
+fn parse_resolution(s: &str) -> Result<Option<(u32, u32)>> {
+    let v = s.trim().to_ascii_lowercase();
+    if v == "auto" {
+        return Ok(None);
+    }
+    if let Some(&(_, w, h)) = RESOLUTIONS.iter().find(|(name, ..)| *name == v) {
+        return Ok(Some((w, h)));
+    }
+    if let Some((w, h)) = v.split_once(['x', '×']) {
+        if let (Ok(w), Ok(h)) = (w.trim().parse::<u32>(), h.trim().parse::<u32>()) {
+            if w > 0 && h > 0 {
+                return Ok(Some((w, h)));
+            }
+        }
+    }
+    Err(Error::Export(format!(
+        "invalid resolution '{s}' — try a WxH pair (e.g. 1600x900) or auto; or use --aspect/--quality"
+    )))
+}
+
+/// Parse a `--fps` value: must be one of 15, 24, 30.
+fn parse_fps(s: &str) -> Result<u32> {
+    let n: u32 = s
+        .trim()
+        .parse()
+        .map_err(|_| Error::Export(format!("invalid fps '{s}' — try 15, 24, or 30")))?;
+    if FPS_CHOICES.contains(&n) {
+        Ok(n)
+    } else {
+        Err(Error::Export(format!(
+            "unsupported fps {n} — try 15, 24, or 30"
+        )))
+    }
+}
+
+/// Canvas for the export: `--resolution` (explicit/auto) wins, else
+/// `--aspect`×`--quality`, else a wizard. `None` = auto (derive from the
+/// terminal size) — also the non-interactive default.
+fn choose_canvas(args: &CaptureArgs) -> Result<Option<(u32, u32)>> {
+    if let Some(r) = &args.resolution {
+        return parse_resolution(r);
+    }
+    if let Some(a) = &args.aspect {
+        let q = args.quality.as_deref().unwrap_or("fullhd");
+        return Ok(Some(canvas_from_aspect_quality(a, q)?));
+    }
+    if let Some(q) = &args.quality {
+        return Ok(Some(canvas_from_aspect_quality("16:9", q)?));
+    }
+    if !std::io::stdin().is_terminal() {
+        return Ok(None);
+    }
+    let choice = inquire::Select::new(
+        "Aspect ratio:",
+        vec![
+            "16:9   (widescreen)",
+            "9:16   (portrait / vertical)",
+            "4:3    (classic)",
+            "1:1    (square)",
+            "Auto   (derive from terminal size)",
+            "Custom (enter WxH)",
+        ],
+    )
+    .prompt()
+    .map_err(|e| Error::Export(format!("aspect wizard: {e}")))?;
+
+    let av = choice.to_ascii_lowercase();
+    if av.starts_with("auto") {
+        return Ok(None);
+    }
+    if av.starts_with("custom") {
+        let w = inquire::Text::new("width:")
+            .with_default("1920")
+            .prompt()
+            .map_err(|e| Error::Export(format!("aspect wizard: {e}")))?;
+        let h = inquire::Text::new("height:")
+            .with_default("1080")
+            .prompt()
+            .map_err(|e| Error::Export(format!("aspect wizard: {e}")))?;
+        return parse_resolution(&format!("{}x{}", w.trim(), h.trim()));
+    }
+    let ratio = av.split_whitespace().next().unwrap_or(&av);
+    let quality = inquire::Select::new("Quality:", vec!["FullHD  (1080p)", "HD      (720p)"])
+        .prompt()
+        .map_err(|e| Error::Export(format!("quality wizard: {e}")))?;
+    let q = if quality.to_ascii_lowercase().starts_with("full") {
+        "fullhd"
+    } else {
+        "hd"
+    };
+    canvas_from_aspect_quality(ratio, q).map(Some)
+}
+
+/// Frame rate for the export: `--fps`, else a wizard. Defaults to
+/// [`DEFAULT_FPS`] when non-interactive.
+fn choose_fps(args: &CaptureArgs) -> Result<u32> {
+    if let Some(f) = args.fps {
+        return parse_fps(&f.to_string());
+    }
+    if !std::io::stdin().is_terminal() {
+        return Ok(DEFAULT_FPS);
+    }
+    let choice = inquire::Select::new("Frame rate:", vec!["15 fps", "24 fps", "30 fps"])
+        .prompt()
+        .map_err(|e| Error::Export(format!("fps wizard: {e}")))?;
+    choice
+        .split_whitespace()
+        .next()
+        .unwrap()
+        .parse::<u32>()
+        .map_err(|e| Error::Export(format!("fps wizard: {e}")))
 }
 
 /// Ask if the user wants to add browser sources, loop through adding them.
@@ -384,54 +535,6 @@ fn choose_sources() -> Result<Vec<crate::model::Source>> {
     Ok(sources)
 }
 
-/// Ask if the user wants to define scenes from the available sources.
-fn choose_scenes(sources: &[crate::model::Source]) -> Result<Vec<crate::model::Scene>> {
-    if !std::io::stdin().is_terminal() || sources.len() <= 1 {
-        // Only a terminal source — no scenes to compose.
-        return Ok(vec![]);
-    }
-    let source_ids: Vec<&str> = sources.iter().map(|s| s.id.as_str()).collect();
-    let add = inquire::Confirm::new("Define scene compositions? (split, side-by-side, etc.)")
-        .with_default(false)
-        .prompt()
-        .map_err(|e| Error::Export(format!("scene wizard: {e}")))?;
-    if !add {
-        return Ok(vec![]);
-    }
-    println!("  Available sources: {}\n", source_ids.join(", "));
-    let mut scenes = vec![crate::model::Scene {
-        id: "solo".to_string(),
-        layout: "main".to_string(),
-    }];
-    loop {
-        let id = inquire::Text::new("Scene ID:")
-            .with_help_message("unique name (e.g. 'split', 'full_github')")
-            .prompt()
-            .map_err(|e| Error::Export(format!("scene wizard: {e}")))?;
-        let id = id.trim().to_string();
-        if id.is_empty() {
-            break;
-        }
-        let layout = inquire::Text::new("Layout string:")
-            .with_help_message("\"main+github\" = 50/50, \"main*2+docs\" = 2/3 + 1/3")
-            .with_default(&source_ids.join("+"))
-            .prompt()
-            .map_err(|e| Error::Export(format!("scene wizard: {e}")))?;
-        let layout = layout.trim().to_string();
-        if !layout.is_empty() {
-            scenes.push(crate::model::Scene { id, layout });
-        }
-        let more = inquire::Confirm::new("Add another scene?")
-            .with_default(false)
-            .prompt()
-            .map_err(|e| Error::Export(format!("scene wizard: {e}")))?;
-        if !more {
-            break;
-        }
-    }
-    Ok(scenes)
-}
-
 fn normalize_url(url: &str) -> String {
     let u = url.trim();
     if u.contains("://") {
@@ -441,6 +544,153 @@ fn normalize_url(url: &str) -> String {
     } else {
         format!("https://{u}")
     }
+}
+
+/// Decode PTY bytes to text across read boundaries. `pending` holds bytes left
+/// over from a previous chunk that ended mid-sequence; new `bytes` are appended,
+/// the longest valid UTF-8 prefix is returned, and any incomplete trailing
+/// sequence is kept in `pending` for the next call. Genuinely invalid bytes are
+/// replaced with `U+FFFD` so a bad byte can't stall the stream. Without this, a
+/// multi-byte glyph split across two reads (dense braille from `mapscii`) would
+/// be corrupted in the recording even though the live terminal looks right.
+fn decode_streaming(pending: &mut Vec<u8>, bytes: &[u8]) -> String {
+    pending.extend_from_slice(bytes);
+    let mut out = String::new();
+    loop {
+        match std::str::from_utf8(pending) {
+            Ok(s) => {
+                out.push_str(s);
+                pending.clear();
+                break;
+            }
+            Err(e) => {
+                let valid = e.valid_up_to();
+                // SAFETY: `valid_up_to` is the length of a checked valid prefix.
+                out.push_str(unsafe { std::str::from_utf8_unchecked(&pending[..valid]) });
+                match e.error_len() {
+                    // An invalid byte (not merely incomplete): emit a replacement
+                    // and skip past it, then keep decoding the remainder.
+                    Some(bad) => {
+                        out.push('\u{FFFD}');
+                        pending.drain(..valid + bad);
+                    }
+                    // Incomplete sequence at the end: hold it for the next read.
+                    None => {
+                        pending.drain(..valid);
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Length in bytes of a UTF-8 sequence given its leading byte. A stray
+/// continuation byte (`0x80..=0xbf`, not a valid lead) is treated as length 1.
+fn utf8_len(b: u8) -> usize {
+    if b < 0xc0 {
+        1
+    } else if b < 0xe0 {
+        2
+    } else if b < 0xf0 {
+        3
+    } else {
+        4
+    }
+}
+
+/// What routing a chunk of keystrokes implies for the recorder. Input is passed
+/// straight through to the PTY (so the shell echoes it — no hidden commands); we
+/// only *watch* the typed line to know when a demo meta-command needs muting or
+/// when an `--after` reveal should be armed.
+struct RouteOutcome {
+    to_pty: Vec<u8>,
+    /// A `demo open`/`demo stop`/`demo focus` was just entered — its echo and any
+    /// wizard/confirmation must be excised from the recording.
+    mute_command: bool,
+    /// A normal command was just entered — arm any pending `--after` reveal.
+    arm_after: bool,
+}
+
+/// Forward a keystroke chunk to the PTY and track the current command line so the
+/// caller can mute demo meta-commands and arm `--after` reveals. Everything typed
+/// reaches the shell verbatim (and is echoed by it) — control now lives in the
+/// top-level `demo stop`/`demo focus`/`demo open` commands, not hidden keystrokes.
+fn route_input_chunk(
+    chunk: &[u8],
+    cmd_line: &mut String,
+    cmd_start: &mut Option<u64>,
+    now: u64,
+) -> RouteOutcome {
+    let mut to_pty: Vec<u8> = Vec::with_capacity(chunk.len());
+    let mut mute_command = false;
+    let mut arm_after = false;
+    let mut i = 0;
+    let n = chunk.len();
+    // Mark the start of a fresh command line at its first printable char, so a
+    // muted meta-command span covers the whole echoed line, not just its Enter.
+    let mark_start = |cmd_line: &String, cmd_start: &mut Option<u64>| {
+        if cmd_line.is_empty() {
+            *cmd_start = Some(now);
+        }
+    };
+    while i < n {
+        let b = chunk[i];
+        if b == b'\r' || b == b'\n' {
+            to_pty.push(b);
+            let t = cmd_line.trim_start();
+            if is_meta_command(t) {
+                mute_command = true;
+            } else if !t.is_empty() {
+                arm_after = true;
+            }
+            cmd_line.clear();
+            *cmd_start = None;
+            i += 1;
+            continue;
+        }
+        if b == 0x7f {
+            to_pty.push(b);
+            cmd_line.pop();
+            i += 1;
+            continue;
+        }
+        if b < 0x20 {
+            to_pty.push(b);
+            i += 1;
+            continue;
+        }
+        if b >= 0x80 {
+            let seq_len = utf8_len(b);
+            let end = (i + seq_len).min(n);
+            to_pty.extend_from_slice(&chunk[i..end]);
+            if let Ok(s) = std::str::from_utf8(&chunk[i..end]) {
+                if let Some(ch) = s.chars().next() {
+                    mark_start(cmd_line, cmd_start);
+                    cmd_line.push(ch);
+                }
+            }
+            i = end;
+            continue;
+        }
+        mark_start(cmd_line, cmd_start);
+        to_pty.push(b);
+        cmd_line.push(b as char);
+        i += 1;
+    }
+    RouteOutcome {
+        to_pty,
+        mute_command,
+        arm_after,
+    }
+}
+
+/// Does this typed line invoke a `demo` control command whose echo + wizard must
+/// stay out of the recording?
+fn is_meta_command(line: &str) -> bool {
+    let t = line.trim_start();
+    t.starts_with("demo open") || t.starts_with("demo stop") || t.starts_with("demo focus")
 }
 
 pub fn run(args: CaptureArgs) -> Result<()> {
@@ -457,7 +707,12 @@ pub fn run(args: CaptureArgs) -> Result<()> {
         .clone()
         .or_else(|| std::env::var("SHELL").ok())
         .unwrap_or_else(|| "/bin/bash".to_string());
-    let (cols, rows) = size().unwrap_or((80, 24));
+    // A detached/odd terminal can report 0×0 — that would produce a degenerate
+    // recording (and a divide-by-zero deeper in the renderer), so fall back.
+    let (cols, rows) = match size() {
+        Ok((c, r)) if c > 0 && r > 0 => (c, r),
+        _ => (80, 24),
+    };
 
     let pair = native_pty_system()
         .openpty(PtySize {
@@ -527,10 +782,13 @@ pub fn run(args: CaptureArgs) -> Result<()> {
     // the shell echoes a readiness marker, so its rc/PS1-setup chatter is dropped.
     // With neither flag a quick wizard asks how to set it before recording.
     let (force_prompt, forced_ps1) = choose_prompt(&args, &shell)?;
-    let resolution = choose_resolution()?;
+    let resolution = choose_canvas(&args)?;
+    let fps = choose_fps(&args)?;
     let font_family = choose_font(&args)?;
     let sources = choose_sources()?;
-    let scenes = choose_scenes(&sources)?;
+    // Publish the sources beside the control file so `demo focus`/`demo open` can
+    // list them live (the score isn't written until the capture ends).
+    let _ = control::write_sources(&control_abs, &sources);
     let ready = Arc::new(AtomicBool::new(!force_prompt));
     let t0 = Instant::now();
 
@@ -552,10 +810,8 @@ pub fn run(args: CaptureArgs) -> Result<()> {
         None
     };
 
-    // Tell the user how to end the capture before the shell takes over — the
-    // only cues otherwise are typing `exit` or Ctrl-D, neither of which is
-    // obvious mid-demo.
-    println!("● capturing — run your demo, then type `/stop` (or `exit` / Ctrl-D) to stop");
+    println!("● capturing — run your demo, then `demo stop` (or `exit` / Ctrl-D) to stop");
+    println!("  during capture: `demo focus <source>` and `demo open <url>` — here or from another terminal in this directory");
     if args.idle_timeout_ms > 0 {
         println!(
             "  (auto-stops after {} ms with no output)",
@@ -598,6 +854,11 @@ pub fn run(args: CaptureArgs) -> Result<()> {
             let mut recent = String::new();
             // Pre-roll buffer: output before the readiness marker (prompt setup).
             let mut pre = String::new();
+            // Trailing bytes of an incomplete UTF-8 sequence, carried to the next
+            // read: a PTY read can split a multi-byte glyph (e.g. braille from
+            // mapscii) across the 4 KiB boundary, and decoding each chunk in
+            // isolation would corrupt it into replacement chars in the recording.
+            let mut pending: Vec<u8> = Vec::new();
             loop {
                 match reader.read(&mut buf) {
                     Ok(0) => break,
@@ -612,7 +873,9 @@ pub fn run(args: CaptureArgs) -> Result<()> {
                         if let Some(d) = &debug {
                             d.chunk("OUT", &buf[..n]);
                         }
-                        let text = String::from_utf8_lossy(&buf[..n]).into_owned();
+                        // Decode across the read boundary: keep any incomplete
+                        // trailing sequence in `pending` for the next chunk.
+                        let text = decode_streaming(&mut pending, &buf[..n]);
                         // Detect the secret prompt at each line boundary and LATCH
                         // the flag (only set here; the input thread clears it on
                         // Enter), so the masked redraws can't unset it mid-secret.
@@ -648,22 +911,14 @@ pub fn run(args: CaptureArgs) -> Result<()> {
                         if after_running.load(Ordering::SeqCst) {
                             *after_last_out.lock().unwrap() = Instant::now();
                         }
-                        // Fire any `demo open --when <pat>` whose cue just appeared.
+                        // Fire any `--when <pat>` reveal whose cue just appeared.
                         {
                             let mut pend = pending_opens.lock().unwrap();
                             if !pend.is_empty() {
                                 let mut evs = events.lock().unwrap();
                                 pend.retain(|(r, pat)| {
-                                    if recent.contains(pat.as_str()) {
-                                        evs.push(RawEvent::Open {
-                                            t_ms: now,
-                                            url: r.url.clone(),
-                                            name: r.name.clone(),
-                                            mode: r.mode.clone(),
-                                            hold_ms: r.hold_ms,
-                                            scroll: r.scroll,
-                                            theme: r.theme.clone(),
-                                        });
+                                    if cue_matches(&recent, pat) {
+                                        evs.push(r.to_event(now));
                                         false
                                     } else {
                                         true
@@ -706,13 +961,9 @@ pub fn run(args: CaptureArgs) -> Result<()> {
             let mut stdin = std::io::stdin();
             let mut cmd_line = String::new();
             // When the current input line started (first char), so a `demo open`/
-            // `demo stop` span can be excised from the command's echo, not just
-            // from the Enter that follows it.
+            // `demo stop`/`demo focus` span can be excised from the command's echo,
+            // not just from the Enter that follows it.
             let mut cmd_start: Option<u64> = None;
-            // True while typing a `/` command — keystrokes are buffered, not sent
-            // to the PTY, so they never appear in the recording.
-            let mut slash_cmd = false;
-            let mut slash_buf = String::new();
             while !stop.load(Ordering::SeqCst) {
                 match stdin.read(&mut buf) {
                     Ok(0) => break,
@@ -724,84 +975,27 @@ pub fn run(args: CaptureArgs) -> Result<()> {
                         if !ready.load(Ordering::SeqCst) {
                             continue;
                         }
-                        // ── /-command interception ────────────────────────────
-                        // Detect `/` at the start of a line. While in a slash
-                        // command, buffer keystrokes without sending to the PTY.
-                        let text = String::from_utf8_lossy(&buf[..n]);
-                        let mut input_suppressed = false;
-                        for ch in text.chars() {
-                            if ch == '\r' || ch == '\n' {
-                                if slash_cmd {
-                                    let line = slash_buf.trim().to_string();
-                                    slash_cmd = false;
-                                    slash_buf.clear();
-                                    input_suppressed = true;
-                                    match line.as_str() {
-                                        "/stop" => {
-                                            let _ =
-                                                control::send(serde_json::json!({"cmd":"stop"}));
-                                        }
-                                        s if s.starts_with("/focus ") => {
-                                            let scene = s[7..].trim().to_string();
-                                            if !scene.is_empty() {
-                                                let _ = control::send(serde_json::json!({
-                                                    "cmd": "focus",
-                                                    "scene": scene,
-                                                }));
-                                            }
-                                        }
-                                        _ => {} // Unknown /-command → ignore.
-                                    }
-                                    cmd_line.clear();
-                                    cmd_start = None;
-                                }
-                            } else if !ch.is_control() {
-                                if slash_cmd {
-                                    slash_buf.push(ch);
-                                    continue;
-                                }
-                                if cmd_line.is_empty() {
-                                    cmd_start = Some(ms(t0));
-                                    if ch == '/' {
-                                        slash_cmd = true;
-                                        slash_buf.clear();
-                                        input_suppressed = true;
-                                        continue;
-                                    }
-                                }
-                                cmd_line.push(ch);
+                        let outcome =
+                            route_input_chunk(&buf[..n], &mut cmd_line, &mut cmd_start, ms(t0));
+                        if outcome.mute_command {
+                            *mute_since.lock().unwrap() = Instant::now();
+                            muting.store(true, Ordering::SeqCst);
+                            let mut s = mute_start.lock().unwrap();
+                            if s.is_none() {
+                                *s = Some(cmd_start.unwrap_or_else(|| ms(t0)));
                             }
+                        } else if outcome.arm_after
+                            && !after_opens.lock().unwrap().is_empty()
+                            && !after_running.load(Ordering::SeqCst)
+                        {
+                            *after_last_out.lock().unwrap() = Instant::now();
+                            after_running.store(true, Ordering::SeqCst);
                         }
-                        if input_suppressed {
-                            continue;
-                        }
-                        // Forward raw bytes to the PTY for echo.
-                        if writer.write_all(&buf[..n]).is_err() {
-                            break;
-                        }
-                        let _ = writer.flush();
-                        // Watch typed lines for a `demo open`/`demo stop` command and
-                        // start muting its output (cleared when the recorder gets it).
-                        for ch in text.chars() {
-                            if ch == '\r' || ch == '\n' {
-                                let t = cmd_line.trim_start();
-                                if t.starts_with("demo open") || t.starts_with("demo stop") {
-                                    *mute_since.lock().unwrap() = Instant::now();
-                                    muting.store(true, Ordering::SeqCst);
-                                    let mut s = mute_start.lock().unwrap();
-                                    if s.is_none() {
-                                        *s = Some(cmd_start.unwrap_or_else(|| ms(t0)));
-                                    }
-                                } else if !t.is_empty()
-                                    && !after_opens.lock().unwrap().is_empty()
-                                    && !after_running.load(Ordering::SeqCst)
-                                {
-                                    *after_last_out.lock().unwrap() = Instant::now();
-                                    after_running.store(true, Ordering::SeqCst);
-                                }
-                                cmd_line.clear();
-                                cmd_start = None;
+                        if !outcome.to_pty.is_empty() {
+                            if writer.write_all(&outcome.to_pty).is_err() {
+                                break;
                             }
+                            let _ = writer.flush();
                         }
                         // Secret prompt active → forward the keystrokes but do NOT
                         // record them; clear once the prompt is answered (Enter).
@@ -810,11 +1004,11 @@ pub fn run(args: CaptureArgs) -> Result<()> {
                             if masked {
                                 d.note(&format!("IN* {n} bytes (redacted — secret prompt)"));
                             } else {
-                                d.chunk("IN ", &buf[..n]);
+                                d.chunk("IN ", &outcome.to_pty);
                             }
                         }
                         if masked {
-                            if buf[..n].iter().any(|b| *b == b'\r' || *b == b'\n') {
+                            if outcome.to_pty.iter().any(|b| *b == b'\r' || *b == b'\n') {
                                 sensitive.store(false, Ordering::SeqCst);
                                 let prompt =
                                     secret_prompt.lock().unwrap().take().unwrap_or_default();
@@ -830,9 +1024,12 @@ pub fn run(args: CaptureArgs) -> Result<()> {
                         if muting.load(Ordering::SeqCst) {
                             continue;
                         }
+                        if outcome.to_pty.is_empty() {
+                            continue;
+                        }
                         events.lock().unwrap().push(RawEvent::Input {
                             t_ms: ms(t0),
-                            bytes: String::from_utf8_lossy(&buf[..n]).into_owned(),
+                            bytes: String::from_utf8_lossy(&outcome.to_pty).into_owned(),
                         });
                     }
                 }
@@ -875,17 +1072,9 @@ pub fn run(args: CaptureArgs) -> Result<()> {
             let mut evs = events.lock().unwrap();
             for r in drained {
                 if let Some(d) = &debug {
-                    d.note(&format!("open (after): {} ({})", r.url, r.mode));
+                    d.note(&format!("reveal (after): {}", r.summary()));
                 }
-                evs.push(RawEvent::Open {
-                    t_ms: now,
-                    url: r.url,
-                    name: r.name,
-                    mode: r.mode,
-                    hold_ms: r.hold_ms,
-                    scroll: r.scroll,
-                    theme: r.theme,
-                });
+                evs.push(r.to_event(now));
             }
             after_running.store(false, Ordering::SeqCst);
         }
@@ -920,6 +1109,7 @@ pub fn run(args: CaptureArgs) -> Result<()> {
     let _ = out_handle.join();
     let _ = disable_raw_mode();
     let _ = std::fs::remove_file(&control_abs);
+    let _ = std::fs::remove_file(control_abs.with_file_name(control::SOURCES_FILE));
 
     let events = events.lock().unwrap().clone();
     let mut mute_spans = mute_spans.lock().unwrap().clone();
@@ -934,6 +1124,7 @@ pub fn run(args: CaptureArgs) -> Result<()> {
             rows,
             idle_timeout_ms: idle,
             resolution,
+            fps: (fps != DEFAULT_FPS).then_some(fps),
             stage: args.into.as_ref().map(|p| p.display().to_string()),
             mute_spans,
         },
@@ -948,7 +1139,7 @@ pub fn run(args: CaptureArgs) -> Result<()> {
         let (ins, outs) = raw.events.iter().fold((0, 0), |(i, o), e| match e {
             RawEvent::Input { .. } => (i + 1, o),
             RawEvent::Output { .. } => (i, o + 1),
-            RawEvent::Open { .. } | RawEvent::Secret { .. } | RawEvent::Focus { .. } => (i, o),
+            RawEvent::Reveal { .. } | RawEvent::Secret { .. } => (i, o),
         });
         d.note(&format!(
             "recorded {} events ({ins} input, {outs} output)",
@@ -993,14 +1184,12 @@ pub fn run(args: CaptureArgs) -> Result<()> {
         Some(path) => merge_into_stage(Score::load(path)?, &raw, &opts),
         None => {
             let normalized = normalize(&raw, name, &opts);
-            // Preserve sources/scenes from an existing score file (defined with
-            // `demo source` / `demo scene` before capture).
+            // Preserve sources from an existing score file (defined before capture).
             if !args.no_score && args.normalized_output.exists() {
                 if let Ok(existing) = Score::load(&args.normalized_output) {
-                    if !existing.sources.is_empty() || !existing.scenes.is_empty() {
+                    if !existing.sources.is_empty() {
                         let mut score = normalized;
                         score.sources = existing.sources;
-                        score.scenes = existing.scenes;
                         score
                     } else {
                         normalized
@@ -1020,12 +1209,9 @@ pub fn run(args: CaptureArgs) -> Result<()> {
     }
     // Store the chosen font in the layout so `demo export` uses it.
     score.layout.font_family = Some(font_family);
-    // Store wizard-selected sources and scenes (skip if already set from --into).
+    // Store wizard-selected sources (skip if already set from --into).
     if score.sources.is_empty() && !sources.is_empty() {
         score.sources = sources;
-    }
-    if score.scenes.is_empty() && !scenes.is_empty() {
-        score.scenes = scenes;
     }
     let score_path = if args.no_score {
         None
@@ -1064,8 +1250,64 @@ pub fn run(args: CaptureArgs) -> Result<()> {
     Ok(())
 }
 
-/// Read any new control-file commands (`demo open` / `demo stop`). Records
-/// immediate reveals, arms `--when` reveals, and returns `Some(reason)` on stop.
+/// Parse a `reveal` control message into a [`Reveal`] — its panes, orientation,
+/// hold and scroll. Returns `None` if it carries no panes.
+fn parse_reveal(v: &serde_json::Value) -> Option<Reveal> {
+    let panes_json = v.get("panes")?.as_array()?;
+    let mut panes = Vec::new();
+    for p in panes_json {
+        let id = p
+            .get("id")
+            .and_then(|x| x.as_str())
+            .filter(|s| !s.is_empty())
+            .unwrap_or("main")
+            .to_string();
+        let url = p
+            .get("url")
+            .and_then(|x| x.as_str())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string());
+        let theme = p
+            .get("theme")
+            .and_then(|x| x.as_str())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string());
+        panes.push(RevealPane { id, url, theme });
+    }
+    if panes.is_empty() {
+        return None;
+    }
+    let orientation = match v.get("orientation").and_then(|o| o.as_str()) {
+        Some("vertical") => Orientation::Vertical,
+        _ => Orientation::Horizontal,
+    };
+    let hold_ms = v.get("hold").and_then(|h| h.as_u64());
+    let scroll = v.get("scroll").and_then(|s| s.as_bool()).unwrap_or(false);
+    Some(Reveal {
+        panes,
+        orientation,
+        hold_ms,
+        scroll,
+    })
+}
+
+/// Does the recent output match a `--when` cue? A `re:` prefix is a regular
+/// expression; otherwise it's a plain substring match.
+fn cue_matches(recent: &str, pattern: &str) -> bool {
+    if let Some(rx) = pattern.strip_prefix("re:") {
+        match regex::Regex::new(rx) {
+            Ok(re) => re.is_match(recent),
+            // A bad pattern never matches (rather than firing spuriously).
+            Err(_) => false,
+        }
+    } else {
+        recent.contains(pattern)
+    }
+}
+
+/// Read any new control-file commands (`demo focus`/`demo open`/`demo stop`).
+/// Records immediate reveals, arms `--when`/`--after` reveals, and returns
+/// `Some(reason)` on stop.
 #[allow(clippy::too_many_arguments)]
 fn read_control(
     path: &std::path::Path,
@@ -1092,10 +1334,10 @@ fn read_control(
             continue;
         };
         match v.get("cmd").and_then(|c| c.as_str()) {
-            // A `demo open` is starting in the captured shell → mute its wizard.
-            // If input detection didn't already mark the start, fall back to a
-            // little before now so the wizard's first output is still excised.
-            Some("open_begin") => {
+            // A `demo focus`/`demo open` is starting in the captured shell → mute
+            // its echo/wizard. If input detection didn't already mark the start,
+            // fall back to a little before now so its first output is still excised.
+            Some("reveal_begin") => {
                 muting.store(true, Ordering::SeqCst);
                 let mut s = mute_start.lock().unwrap();
                 if s.is_none() {
@@ -1106,35 +1348,14 @@ fn read_control(
                 muting.store(false, Ordering::SeqCst);
                 stop = Some("demo stop");
             }
-            Some("open") => {
+            Some("reveal") => {
                 // The command finished → stop muting and close its excision span.
                 muting.store(false, Ordering::SeqCst);
                 if let Some(start) = mute_start.lock().unwrap().take() {
                     mute_spans.lock().unwrap().push((start, ms(t0)));
                 }
-                let url = v.get("url").and_then(|u| u.as_str()).unwrap_or("");
-                if url.is_empty() {
+                let Some(reveal) = parse_reveal(&v) else {
                     continue;
-                }
-                let mode = v.get("mode").and_then(|m| m.as_str()).unwrap_or("replace");
-                let hold_ms = v.get("hold").and_then(|h| h.as_u64());
-                let scroll = v.get("scroll").and_then(|s| s.as_bool()).unwrap_or(false);
-                let theme = v
-                    .get("theme")
-                    .and_then(|t| t.as_str())
-                    .map(|s| s.to_string());
-                let name = v
-                    .get("name")
-                    .and_then(|n| n.as_str())
-                    .filter(|s| !s.is_empty())
-                    .map(|s| s.to_string());
-                let reveal = Reveal {
-                    url: url.into(),
-                    name,
-                    mode: mode.into(),
-                    hold_ms,
-                    scroll,
-                    theme,
                 };
                 let when = v
                     .get("when")
@@ -1143,39 +1364,19 @@ fn read_control(
                 let after_flag = v.get("after").and_then(|a| a.as_bool()).unwrap_or(false);
                 if let Some(pat) = when {
                     if let Some(d) = debug {
-                        d.note(&format!("open armed: {url} ({mode}) when {pat:?}"));
+                        d.note(&format!("reveal armed: {} when {pat:?}", reveal.summary()));
                     }
                     pending.lock().unwrap().push((reveal, pat.into()));
                 } else if after_flag {
                     if let Some(d) = debug {
-                        d.note(&format!("open armed: {url} ({mode}) after command"));
+                        d.note(&format!("reveal armed: {} after command", reveal.summary()));
                     }
                     after.lock().unwrap().push(reveal);
                 } else {
                     if let Some(d) = debug {
-                        d.note(&format!("open now: {url} ({mode})"));
+                        d.note(&format!("reveal now: {}", reveal.summary()));
                     }
-                    events.lock().unwrap().push(RawEvent::Open {
-                        t_ms: ms(t0),
-                        url: reveal.url,
-                        name: reveal.name,
-                        mode: reveal.mode,
-                        hold_ms: reveal.hold_ms,
-                        scroll: reveal.scroll,
-                        theme: reveal.theme,
-                    });
-                }
-            }
-            Some("focus") => {
-                let scene = v.get("scene").and_then(|s| s.as_str()).unwrap_or("");
-                if !scene.is_empty() {
-                    if let Some(d) = debug {
-                        d.note(&format!("focus → {scene}"));
-                    }
-                    events.lock().unwrap().push(RawEvent::Focus {
-                        t_ms: ms(t0),
-                        scene: scene.to_string(),
-                    });
+                    events.lock().unwrap().push(reveal.to_event(ms(t0)));
                 }
             }
             _ => {}
@@ -1195,7 +1396,12 @@ fn write_faithful_cast(
     // The layout comes from the capture's `demo open` scenes (terminal + browser
     // panes); the demo meta/typing come from the normalized score. The timeline
     // carries only browser-scroll steps (it isn't executed — playback is faithful).
-    let (rec, layout, timeline) = recording::from_raw(raw, name);
+    let (rec, mut layout, timeline) = recording::from_raw(raw, name);
+    // The reveal-built layout has no styling of its own — the font chosen in the
+    // capture wizard lives on the score's layout.
+    if let Some(s) = score {
+        layout.font_family = s.layout.font_family.clone();
+    }
     let final_score = Score {
         demo: score.map(|s| s.demo.clone()).unwrap_or_else(|| DemoMeta {
             name: name.to_string(),
@@ -1205,7 +1411,6 @@ fn write_faithful_cast(
         env: None,
         typing: score.and_then(|s| s.typing.clone()),
         sources: score.map(|s| s.sources.clone()).unwrap_or_default(),
-        scenes: score.map(|s| s.scenes.clone()).unwrap_or_default(),
         layout,
         timeline,
     };
@@ -1223,6 +1428,81 @@ mod tests {
     use super::*;
     use std::sync::atomic::AtomicBool;
     use std::sync::Mutex;
+
+    #[test]
+    fn parses_resolution_presets_and_custom_sizes() {
+        assert_eq!(parse_resolution("landscape").unwrap(), Some((1920, 1080)));
+        assert_eq!(parse_resolution("Portrait").unwrap(), Some((1080, 1920)));
+        assert_eq!(parse_resolution("square").unwrap(), Some((1080, 1080)));
+        assert_eq!(parse_resolution("standard").unwrap(), Some((1280, 720)));
+        assert_eq!(parse_resolution("1600x900").unwrap(), Some((1600, 900)));
+        assert_eq!(parse_resolution("1600×900").unwrap(), Some((1600, 900)));
+        assert_eq!(parse_resolution("auto").unwrap(), None);
+        assert!(parse_resolution("0x100").is_err());
+        assert!(parse_resolution("huge").is_err());
+    }
+
+    #[test]
+    fn canvas_from_aspect_and_quality_covers_all_combos() {
+        // FullHD (short side 1080).
+        assert_eq!(
+            canvas_from_aspect_quality("16:9", "fullhd").unwrap(),
+            (1920, 1080)
+        );
+        assert_eq!(
+            canvas_from_aspect_quality("9:16", "fullhd").unwrap(),
+            (1080, 1920)
+        );
+        assert_eq!(
+            canvas_from_aspect_quality("4:3", "fullhd").unwrap(),
+            (1440, 1080)
+        );
+        assert_eq!(
+            canvas_from_aspect_quality("1:1", "fullhd").unwrap(),
+            (1080, 1080)
+        );
+        // HD (short side 720).
+        assert_eq!(
+            canvas_from_aspect_quality("16:9", "hd").unwrap(),
+            (1280, 720)
+        );
+        assert_eq!(
+            canvas_from_aspect_quality("9:16", "hd").unwrap(),
+            (720, 1280)
+        );
+        assert_eq!(canvas_from_aspect_quality("4:3", "hd").unwrap(), (960, 720));
+        assert_eq!(canvas_from_aspect_quality("1:1", "hd").unwrap(), (720, 720));
+        // Case-insensitive.
+        assert_eq!(
+            canvas_from_aspect_quality("16:9", "FullHD").unwrap(),
+            (1920, 1080)
+        );
+        assert_eq!(canvas_from_aspect_quality("1:1", "HD").unwrap(), (720, 720));
+        // The legacy presets map onto the new scheme exactly.
+        assert_eq!(
+            canvas_from_aspect_quality("16:9", "fullhd").unwrap(),
+            parse_resolution("landscape").unwrap().unwrap()
+        );
+        assert_eq!(
+            canvas_from_aspect_quality("16:9", "hd").unwrap(),
+            parse_resolution("standard").unwrap().unwrap()
+        );
+    }
+
+    #[test]
+    fn canvas_rejects_unknown_aspect_or_quality() {
+        assert!(canvas_from_aspect_quality("3:2", "fullhd").is_err());
+        assert!(canvas_from_aspect_quality("16:9", "4k").is_err());
+    }
+
+    #[test]
+    fn parse_fps_accepts_15_24_30_and_rejects_others() {
+        assert_eq!(parse_fps("15").unwrap(), 15);
+        assert_eq!(parse_fps("24").unwrap(), 24);
+        assert_eq!(parse_fps("30").unwrap(), 30);
+        assert!(parse_fps("60").is_err());
+        assert!(parse_fps("smooth").is_err());
+    }
 
     #[test]
     fn detects_secret_at_a_carriage_return_boundary() {
@@ -1266,18 +1546,88 @@ mod tests {
         assert!(is_secret_prompt("Password: "));
         assert!(is_secret_prompt("[sudo] password for jheison:"));
         assert!(is_secret_prompt("Vault passphrase?"));
-        // Tokens / API keys are secrets too.
-        assert!(is_secret_prompt("GitHub token:"));
-        assert!(is_secret_prompt("Personal access token: "));
-        assert!(is_secret_prompt("API key:"));
-        // A typed command that mentions the word is NOT a prompt.
         assert!(!is_secret_prompt("$ echo my secret plan"));
         assert!(!is_secret_prompt("Cloning into 'repo'..."));
         assert!(!is_secret_prompt("Refreshing access token cache"));
-        // A masked prompt redraws as it's typed (`Vault passphrase: ***`) — those
-        // redraws no longer end in `:`/`?`, so they are NOT detected. This is why
-        // the recorder LATCHES the secret flag once set and only clears it on Enter
-        // (otherwise the rest of the secret would be recorded).
         assert!(!is_secret_prompt("Vault passphrase: ***"));
+    }
+
+    #[test]
+    fn decode_streaming_reassembles_a_split_braille_glyph() {
+        // U+2839 (⠹) is 3 bytes: e2 a0 b9. Split it across two reads, as a PTY
+        // can at a 4 KiB boundary, and it must reassemble — not corrupt.
+        let glyph = "⠹";
+        let bytes = glyph.as_bytes();
+        let mut pending = Vec::new();
+        let first = decode_streaming(&mut pending, &bytes[..2]);
+        assert_eq!(first, "", "an incomplete sequence yields nothing yet");
+        let second = decode_streaming(&mut pending, &bytes[2..]);
+        assert_eq!(second, glyph, "the rest completes the glyph intact");
+        assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn decode_streaming_replaces_a_truly_invalid_byte() {
+        // A lone 0xFF is invalid UTF-8 — it must become U+FFFD, not stall.
+        let mut pending = Vec::new();
+        let out = decode_streaming(&mut pending, &[b'a', 0xff, b'b']);
+        assert_eq!(out, "a\u{FFFD}b");
+        assert!(pending.is_empty());
+    }
+
+    /// Route a sequence of read chunks, returning the bytes forwarded to the PTY
+    /// and whether a `demo` meta-command was seen (so its echo gets muted).
+    fn route(input: &[&[u8]]) -> (Vec<u8>, bool) {
+        let mut cmd_line = String::new();
+        let mut cmd_start: Option<u64> = None;
+        let mut to_pty = Vec::new();
+        let mut mute = false;
+        for chunk in input {
+            let o = route_input_chunk(chunk, &mut cmd_line, &mut cmd_start, 0);
+            to_pty.extend(o.to_pty);
+            mute |= o.mute_command;
+        }
+        (to_pty, mute)
+    }
+
+    #[test]
+    fn everything_typed_reaches_the_pty_and_is_echoed() {
+        // No hidden commands anymore: whatever you type is forwarded verbatim so
+        // the shell echoes it. A leading `/` is just a normal character now.
+        let (to_pty, mute) = route(&[b"/stop\r"]);
+        assert_eq!(to_pty, b"/stop\r");
+        assert!(!mute);
+    }
+
+    #[test]
+    fn regular_command_still_works() {
+        let (to_pty, mute) = route(&[b"ls -la\n"]);
+        assert_eq!(to_pty, b"ls -la\n");
+        assert!(!mute);
+    }
+
+    #[test]
+    fn meta_command_is_flagged_for_muting() {
+        // `demo focus`/`demo open`/`demo stop` typed in-session must mute so their
+        // echo and wizard never reach the recording — even split across reads.
+        assert!(route(&[b"demo focus fill-main\n"]).1);
+        assert!(route(&[b"demo ", b"open ", b"github.com\r"]).1);
+        assert!(route(&[b"demo stop\n"]).1);
+        assert!(
+            !route(&[b"demodocs\n"]).1,
+            "a lookalike command must not mute"
+        );
+    }
+
+    #[test]
+    fn backspace_is_forwarded_and_erases_cmd_line() {
+        let (to_pty, _) = route(&[b"ab\x7f\n"]);
+        assert_eq!(to_pty, b"ab\x7f\n");
+    }
+
+    #[test]
+    fn utf8_round_trip_through_routing() {
+        let (to_pty, _) = route(&["héllo\n".as_bytes()]);
+        assert_eq!(to_pty, "héllo\n".as_bytes());
     }
 }

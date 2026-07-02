@@ -27,15 +27,17 @@ demo capture  ──>  demo.toml  ──>  demo record  ──>  demo.rec  ─�
 | `capture`   | TTY               | `demo.toml` + `demo.rec` (`--raw` adds the macro) | Capture a live session into an editable score + a faithful recording (forces a clean prompt). |
 | `record`    | `demo.toml`       | `demo.rec`      | Validate, then re-execute the score in a PTY → a clean, humanized recording. |
 | `export`    | `demo.rec`       | `dist/…`         | Render the recording to `gif` or `mp4`. Never executes. Needs `--force` for a faithful capture. |
-| `edit`      | `demo.toml`       | `demo.toml`     | Interactively edit timing and wait steps in a demo score. |
+| `edit`      | `demo.toml`       | `demo.toml`     | Edit the timeline interactively — mark several steps for bulk edits. |
 | `doctor`    | —                 | a report         | Check the browser/ffmpeg/display deps and report fixes (`--fix` installs them on apt). |
 
-**In-capture commands** (typed inside a `demo capture` session):
+**Live control** (run during a `demo capture`, from the captured shell or another
+terminal in the same directory):
 
 | Command | Does |
 |---|---|
-| `/stop` | End the capture. |
-| `/focus <scene>` | Switch to a different scene layout. |
+| `demo stop` | End the capture (`exit` / Ctrl-D also work). |
+| `demo focus <source> [<source2>]` | Switch the view to one or two configured sources. |
+| `demo open <url>` | Reveal an ad-hoc browser page (a URL not pre-configured). |
 
 The clean path is `capture → record → export`. A `demo.toml` can also be
 **authored by hand**. When a demo **can't be re-run** (interactive, secrets, side

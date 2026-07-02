@@ -17,8 +17,8 @@ use serde_json::{json, Value};
 use super::run::Recording;
 use crate::error::{Error, Result};
 use crate::model::{
-    DemoMeta, Layout, Pane, PaneKind, RawEvent, RawMacro, Score, ScrollDirection, Step, Typing,
-    Velocity,
+    DemoMeta, Layout, Orientation, Pane, PaneKind, RawEvent, RawMacro, RevealPane, Score,
+    ScrollDirection, Step, Typing, Velocity,
 };
 
 /// Assumed monospace cell size (px), matching the recorder's geometry.
@@ -36,6 +36,11 @@ struct DemoStageMeta {
     captions: Vec<(f64, String)>,
     #[serde(default)]
     focuses: Vec<(f64, String)>,
+    /// Browser-scroll steps for staged playback (never executed — they only tell
+    /// the stage how to animate a scrolling pane). Without persisting them, a
+    /// `--scroll` reveal would lose its scroll on the write→read round trip.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    timeline: Vec<Step>,
     /// `true` for a faithful capture (real output, typing/idle as recorded);
     /// `false` for a `demo record` run (normalized typing & spacing).
     #[serde(default)]
@@ -57,6 +62,7 @@ pub fn write(rec: &Recording, score: &Score, faithful: bool) -> Result<String> {
         typing: score.typing.clone(),
         captions: rec.captions.clone(),
         focuses: rec.focuses.clone(),
+        timeline: score.timeline.clone(),
         faithful,
         duration: rec.duration,
     };
@@ -102,8 +108,16 @@ fn read_cast(text: &str) -> Result<(Recording, Score, bool)> {
             serde_json::from_str(l).map_err(|e| Error::Export(format!("cast header: {e}")))
         })?;
 
-    let cols = header["width"].as_u64().unwrap_or(80) as u16;
-    let rows = header["height"].as_u64().unwrap_or(24) as u16;
+    // A rec captured from a size-less terminal can carry 0×0 — rendering that
+    // panics in the VT parser, so treat it as absent.
+    let cols = match header["width"].as_u64() {
+        Some(c) if c > 0 => c as u16,
+        _ => 80,
+    };
+    let rows = match header["height"].as_u64() {
+        Some(r) if r > 0 => r as u16,
+        _ => 24,
+    };
     let title = header["title"].as_str().unwrap_or("demo").to_string();
 
     let mut events = Vec::new();
@@ -135,9 +149,10 @@ fn read_cast(text: &str) -> Result<(Recording, Score, bool)> {
                 env: None,
                 typing: meta.typing,
                 sources: vec![],
-                scenes: vec![],
                 layout: meta.layout,
-                timeline: Vec::new(),
+                // Only browser-scroll steps survive the round trip; playback
+                // still never executes a timeline.
+                timeline: meta.timeline,
             };
             (
                 score,
@@ -199,7 +214,6 @@ fn score_with_layout(name: &str, layout: Layout, timeline: Vec<Step>) -> Score {
         env: None,
         typing: None,
         sources: vec![],
-        scenes: vec![],
         layout,
         timeline,
     }
@@ -244,14 +258,11 @@ pub fn from_raw(raw: &RawMacro, name: &str) -> (Recording, Layout, Vec<Step>) {
     // ride the same trimmed clock so they fire at the right composited moment.
     let mut events: Vec<(f64, String)> = Vec::new();
     let mut reveals: Vec<Reveal> = Vec::new();
-    let mut focus_events: Vec<(f64, String)> = Vec::new();
     let mut acc = 0.0;
     let mut prev_ms: Option<u64> = None;
     for e in &raw.events {
         let t_ms = match e {
-            RawEvent::Output { t_ms, .. }
-            | RawEvent::Open { t_ms, .. }
-            | RawEvent::Focus { t_ms, .. } => *t_ms,
+            RawEvent::Output { t_ms, .. } | RawEvent::Reveal { t_ms, .. } => *t_ms,
             // Input/Secret carry no rendered output — the program already echoed
             // them (a secret as a mask), so faithful playback ignores them.
             RawEvent::Input { .. } | RawEvent::Secret { .. } => continue,
@@ -259,9 +270,9 @@ pub fn from_raw(raw: &RawMacro, name: &str) -> (Recording, Layout, Vec<Step>) {
         if cutoff.is_some_and(|c| t_ms >= c) {
             continue;
         }
-        // Drop output inside a `demo open` meta-command span (the echo + wizard)
-        // without advancing the clock, so the region collapses away. Reveal (Open)
-        // events sit at the span's end and are kept.
+        // Drop output inside a meta-command span (the echo + wizard of a
+        // `demo focus`/`demo open`) without advancing the clock, so the region
+        // collapses away. Reveal events sit at the span's end and are kept.
         if matches!(e, RawEvent::Output { .. }) && raw.meta.is_muted(t_ms) {
             continue;
         }
@@ -273,27 +284,20 @@ pub fn from_raw(raw: &RawMacro, name: &str) -> (Recording, Layout, Vec<Step>) {
         prev_ms = Some(t_ms);
         match e {
             RawEvent::Output { data, .. } => events.push((acc, data.clone())),
-            RawEvent::Open {
-                url,
-                name,
-                mode,
+            RawEvent::Reveal {
+                panes,
+                orientation,
                 hold_ms,
                 scroll,
-                theme,
                 t_ms: _,
             } => reveals.push(Reveal {
                 t: acc,
-                url: url.clone(),
-                name: name.clone(),
-                mode: mode.clone(),
+                panes: panes.clone(),
+                orientation: *orientation,
                 hold_ms: *hold_ms,
                 scroll: *scroll,
-                theme: theme.clone(),
             }),
             RawEvent::Input { .. } | RawEvent::Secret { .. } => {}
-            RawEvent::Focus { scene, .. } => {
-                focus_events.push((acc, scene.clone()));
-            }
         }
     }
 
@@ -310,16 +314,8 @@ pub fn from_raw(raw: &RawMacro, name: &str) -> (Recording, Layout, Vec<Step>) {
     let duration = tail.max(reveal_tail);
 
     let (cols, rows) = (raw.meta.cols, raw.meta.rows);
-    let (layout, mut focuses, mut timeline) = build_layout(cols, rows, &reveals);
-
-    // Add /focus steps from in-capture `/focus <scene>` commands.
-    for (t, scene) in &focus_events {
-        timeline.push(Step::Focus {
-            pane: None,
-            scene: Some(scene.clone()),
-        });
-        focuses.push((*t, scene.clone()));
-    }
+    let (layout, focuses, timeline) =
+        build_layout(cols, rows, raw.meta.resolution, raw.meta.fps, &reveals);
 
     (
         Recording {
@@ -336,64 +332,99 @@ pub fn from_raw(raw: &RawMacro, name: &str) -> (Recording, Layout, Vec<Step>) {
     )
 }
 
-/// A `demo open` reveal, on the trimmed playback clock.
+/// A reveal on the trimmed playback clock: the panes to show, how arranged.
 struct Reveal {
     t: f64,
-    url: String,
-    name: Option<String>,
-    mode: String,
+    panes: Vec<RevealPane>,
+    orientation: Orientation,
     hold_ms: Option<u64>,
     scroll: bool,
-    theme: Option<String>,
 }
 
-/// Build the render layout (the reveal focuses, and any browser-scroll steps)
-/// from a capture's `demo open` scenes: a terminal pane plus one browser pane per
-/// reveal — `replace` covers the whole canvas, `split` sits to the right of the
-/// terminal. A reveal marked `scroll` adds a focus + scroll step so the stage
-/// captures scroll keyframes for it.
+/// Pane rectangles for a reveal: 1 pane fills the canvas; 2 split it by
+/// `orientation` (horizontal → left/right, vertical → top/bottom).
+fn pane_rects(
+    tw: u32,
+    th: u32,
+    count: usize,
+    orientation: Orientation,
+) -> Vec<(u32, u32, u32, u32)> {
+    match count {
+        0 | 1 => vec![(0, 0, tw, th)],
+        _ => match orientation {
+            Orientation::Horizontal => {
+                let half = tw / 2;
+                vec![(0, 0, half, th), (half, 0, tw - half, th)]
+            }
+            Orientation::Vertical => {
+                let half = th / 2;
+                vec![(0, 0, tw, half), (0, half, tw, th - half)]
+            }
+        },
+    }
+}
+
+/// Build the render layout from a capture's reveals. The canvas is the chosen
+/// `resolution` (else the terminal size) and the terminal pane is the always-on
+/// background, centered when the canvas is larger. Each reveal overlays its
+/// browser panes for a window `[reveal_at, hide_at)` — `hide_at` being the
+/// next reveal — so switching sources, or returning to the terminal (a reveal
+/// with only the terminal pane), works. A `scroll` reveal adds scroll steps.
 fn build_layout(
     cols: u16,
     rows: u16,
+    resolution: Option<(u32, u32)>,
+    fps: Option<u32>,
     reveals: &[Reveal],
 ) -> (Layout, Vec<(f64, String)>, Vec<Step>) {
     let tw = (cols as u32 * CELL_W).max(CELL_W);
     let th = (rows as u32 * CELL_H).max(CELL_H);
-    let mut panes = vec![terminal_pane(tw, th)];
+    // A faithful capture replays the recorded grid, so a smaller resolution
+    // can't shrink it — the canvas is at least the terminal's pixel size.
+    let (cw, ch) = resolution
+        .map(|(w, h)| (w.max(tw), h.max(th)))
+        .unwrap_or((tw, th));
+    let mut panes = vec![terminal_pane((cw - tw) / 2, (ch - th) / 2, tw, th)];
     let mut focuses = Vec::new();
     let mut timeline = Vec::new();
 
-    let any_split = reveals.iter().any(|r| r.mode == "split");
-    let (canvas_w, canvas_h) = if any_split { (tw * 2, th) } else { (tw, th) };
-
     for (i, r) in reveals.iter().enumerate() {
-        let id = r.name.clone().unwrap_or_else(|| format!("scene{}", i + 1));
-        let (x, y, w, h) = if r.mode == "split" {
-            (tw, 0, canvas_w - tw, th)
-        } else {
-            (0, 0, canvas_w, canvas_h) // replace: full canvas
-        };
-        panes.push(browser_pane(&id, &r.url, x, y, w, h, r.theme.clone()));
-        focuses.push((r.t, id.clone()));
-        if r.scroll {
-            timeline.push(Step::Focus {
-                pane: Some(id.clone()),
-                scene: None,
-            });
-            timeline.push(Step::Scroll {
-                direction: ScrollDirection::Down,
-                velocity: Velocity::Constant,
-                duration_ms: reveal_hold_ms(r.hold_ms, r.scroll) as u64,
-                pane: Some(id),
-            });
+        let reveal_at = r.t;
+        let hide_at = reveals.get(i + 1).map(|n| n.t);
+        let rects = pane_rects(cw, ch, r.panes.len(), r.orientation);
+        for (idx, p) in r.panes.iter().enumerate() {
+            // The terminal is the background; only browser panes become overlays.
+            if p.is_terminal() {
+                continue;
+            }
+            let (x, y, w, h) = rects.get(idx).copied().unwrap_or((0, 0, cw, ch));
+            // Unique per reveal so re-showing a source captures it afresh.
+            let id = format!("{}-r{}", p.id, i + 1);
+            let url = p.url.clone().unwrap_or_default();
+            let mut pane = browser_pane(&id, &url, x, y, w, h, p.theme.clone());
+            pane.reveal_at = Some(reveal_at);
+            pane.hide_at = hide_at;
+            panes.push(pane);
+            focuses.push((reveal_at, id.clone()));
+            if r.scroll {
+                timeline.push(Step::Focus {
+                    pane: Some(id.clone()),
+                });
+                timeline.push(Step::Scroll {
+                    direction: ScrollDirection::Down,
+                    velocity: Velocity::Constant,
+                    duration_ms: reveal_hold_ms(r.hold_ms, r.scroll) as u64,
+                    pane: Some(id),
+                });
+            }
         }
     }
 
     (
         Layout {
-            width: canvas_w,
-            height: canvas_h,
-            fps: 15,
+            width: cw,
+            height: ch,
+            fps: fps.unwrap_or(15),
             line_height: 1.2,
             background: Some("#0b0f14".to_string()),
             font_family: None,
@@ -405,18 +436,20 @@ fn build_layout(
     )
 }
 
-fn terminal_pane(width: u32, height: u32) -> Pane {
+fn terminal_pane(x: u32, y: u32, width: u32, height: u32) -> Pane {
     Pane {
         id: "main".to_string(),
         kind: PaneKind::Terminal,
-        x: 0,
-        y: 0,
+        x,
+        y,
         width,
         height,
         font_family: Some("monospace".to_string()),
         font_size: Some(16),
         url: None,
         theme: None,
+        reveal_at: None,
+        hide_at: None,
     }
 }
 
@@ -440,6 +473,8 @@ fn browser_pane(
         font_size: None,
         url: Some(url.to_string()),
         theme,
+        reveal_at: None,
+        hide_at: None,
     }
 }
 
@@ -478,7 +513,7 @@ fn stop_cutoff_ms(raw: &RawMacro) -> Option<u64> {
 /// A plain single-terminal score sized to a `cols`×`rows` capture, used to render
 /// a recording that carries no layout of its own.
 pub fn default_score(name: &str, cols: u16, rows: u16) -> Score {
-    let (layout, _, timeline) = build_layout(cols, rows, &[]);
+    let (layout, _, timeline) = build_layout(cols, rows, None, None, &[]);
     score_with_layout(name, layout, timeline)
 }
 
@@ -581,6 +616,7 @@ data = "file.txt\n"
                 rows: 24,
                 idle_timeout_ms: 0,
                 resolution: None,
+                fps: None,
                 stage: None,
                 mute_spans: Vec::new(),
             },
@@ -605,14 +641,16 @@ data = "file.txt\n"
                 t_ms: 500,
                 data: "Show as: replace".into(),
             },
-            RawEvent::Open {
+            RawEvent::Reveal {
                 t_ms: 900,
-                url: "https://example.com".into(),
-                name: None,
-                mode: "replace".into(),
+                panes: vec![RevealPane {
+                    id: "browser".into(),
+                    url: Some("https://example.com".into()),
+                    theme: None,
+                }],
+                orientation: Orientation::Horizontal,
                 hold_ms: None,
                 scroll: false,
-                theme: None,
             },
         ]);
         r.meta.mute_spans = vec![(200, 900)];
@@ -676,14 +714,16 @@ data = "file.txt\n"
                 t_ms: 0,
                 data: "building...".into(),
             },
-            RawEvent::Open {
+            RawEvent::Reveal {
                 t_ms: 500,
-                url: "https://example.com".into(),
-                name: None,
-                mode: "replace".into(),
+                panes: vec![RevealPane {
+                    id: "browser".into(),
+                    url: Some("https://example.com".into()),
+                    theme: None,
+                }],
+                orientation: Orientation::Horizontal,
                 hold_ms: None,
                 scroll: false,
-                theme: None,
             },
         ]);
         let (rec, layout, _) = from_raw(&r, "t");
@@ -701,15 +741,135 @@ data = "file.txt\n"
     }
 
     #[test]
-    fn reveal_theme_threads_into_the_browser_pane() {
-        let r = raw(vec![RawEvent::Open {
-            t_ms: 100,
-            url: "https://github.com/x".into(),
-            name: None,
-            mode: "replace".into(),
+    fn two_source_split_places_panes_and_windows_them() {
+        // A horizontal terminal|browser split, then a "back to terminal" reveal.
+        let r = raw(vec![
+            RawEvent::Output {
+                t_ms: 0,
+                data: "a".into(),
+            },
+            RawEvent::Reveal {
+                t_ms: 1000,
+                panes: vec![
+                    RevealPane::terminal(),
+                    RevealPane {
+                        id: "docs".into(),
+                        url: Some("https://d".into()),
+                        theme: None,
+                    },
+                ],
+                orientation: Orientation::Horizontal,
+                hold_ms: None,
+                scroll: false,
+            },
+            RawEvent::Reveal {
+                t_ms: 2000,
+                panes: vec![RevealPane::terminal()],
+                orientation: Orientation::Horizontal,
+                hold_ms: None,
+                scroll: false,
+            },
+        ]);
+        let (_rec, layout, _) = from_raw(&r, "t");
+        // Terminal background + exactly one browser overlay (the terminal reveal
+        // adds none — it just closes the browser's window).
+        assert_eq!(layout.panes.len(), 2);
+        let docs = &layout.panes[1];
+        // Horizontal split → right half of the canvas.
+        assert_eq!(docs.x, layout.width / 2);
+        assert_eq!(docs.width, layout.width - layout.width / 2);
+        assert_eq!(docs.height, layout.height);
+        // Revealed at 1s, hidden again at the 2s "back to terminal" reveal.
+        assert_eq!(docs.reveal_at, Some(1.0));
+        assert_eq!(docs.hide_at, Some(2.0));
+    }
+
+    #[test]
+    fn explicit_resolution_sizes_the_canvas_and_centers_the_terminal() {
+        let mut r = raw(vec![RawEvent::Output {
+            t_ms: 0,
+            data: "a".into(),
+        }]);
+        r.meta.resolution = Some((1920, 1080));
+        let (_rec, layout, _) = from_raw(&r, "t");
+        assert_eq!((layout.width, layout.height), (1920, 1080));
+        // The 80×24 grid renders at 800×480 px, centered on the canvas.
+        let term = &layout.panes[0];
+        assert_eq!((term.width, term.height), (800, 480));
+        assert_eq!((term.x, term.y), ((1920 - 800) / 2, (1080 - 480) / 2));
+    }
+
+    #[test]
+    fn resolution_never_crops_the_terminal() {
+        // A resolution smaller than the recorded grid is raised to fit it.
+        let mut r = raw(vec![RawEvent::Output {
+            t_ms: 0,
+            data: "a".into(),
+        }]);
+        r.meta.resolution = Some((100, 100));
+        let (_rec, layout, _) = from_raw(&r, "t");
+        assert_eq!((layout.width, layout.height), (800, 480));
+        assert_eq!((layout.panes[0].x, layout.panes[0].y), (0, 0));
+    }
+
+    #[test]
+    fn capture_fps_threads_into_the_layout() {
+        // A 24 fps choice at capture reaches the score's [layout] fps.
+        let mut r = raw(vec![RawEvent::Output {
+            t_ms: 0,
+            data: "a".into(),
+        }]);
+        r.meta.fps = Some(24);
+        let (_rec, layout, _) = from_raw(&r, "t");
+        assert_eq!(layout.fps, 24);
+    }
+
+    #[test]
+    fn layout_fps_defaults_to_15_when_unset() {
+        let r = raw(vec![RawEvent::Output {
+            t_ms: 0,
+            data: "a".into(),
+        }]);
+        let (_rec, layout, _) = from_raw(&r, "t");
+        assert_eq!(layout.fps, 15);
+    }
+
+    #[test]
+    fn vertical_split_stacks_the_browser_pane() {
+        let r = raw(vec![RawEvent::Reveal {
+            t_ms: 0,
+            panes: vec![
+                RevealPane::terminal(),
+                RevealPane {
+                    id: "docs".into(),
+                    url: Some("https://d".into()),
+                    theme: None,
+                },
+            ],
+            orientation: Orientation::Vertical,
             hold_ms: None,
             scroll: false,
-            theme: Some("dark".into()),
+        }]);
+        let (_rec, layout, _) = from_raw(&r, "t");
+        let docs = &layout.panes[1];
+        // Vertical split → bottom half.
+        assert_eq!(docs.x, 0);
+        assert_eq!(docs.y, layout.height / 2);
+        assert_eq!(docs.width, layout.width);
+    }
+
+    #[test]
+    fn reveal_theme_threads_into_the_browser_pane() {
+        let r = raw(vec![RawEvent::Reveal {
+            t_ms: 100,
+            panes: vec![RevealPane {
+                id: "browser".into(),
+                url: Some("https://github.com/x".into()),
+                theme: Some("dark".into()),
+            }],
+            orientation: Orientation::Horizontal,
+            hold_ms: None,
+            scroll: false,
         }]);
         let (_rec, layout, _) = from_raw(&r, "t");
         let scene = &layout.panes[1];
@@ -725,14 +885,16 @@ data = "file.txt\n"
                 t_ms: 0,
                 data: "done".into(),
             },
-            RawEvent::Open {
+            RawEvent::Reveal {
                 t_ms: 100,
-                url: "https://example.com".into(),
-                name: None,
-                mode: "replace".into(),
+                panes: vec![RevealPane {
+                    id: "browser".into(),
+                    url: Some("https://example.com".into()),
+                    theme: None,
+                }],
+                orientation: Orientation::Horizontal,
                 hold_ms: Some(5000),
                 scroll: true,
-                theme: None,
             },
         ]);
         let (rec, _layout, timeline) = from_raw(&r, "t");

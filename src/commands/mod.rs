@@ -8,4 +8,7 @@ pub mod control;
 pub mod doctor;
 pub mod edit;
 pub mod export;
+pub mod focus;
+pub mod open;
 pub mod record;
+pub mod stop;

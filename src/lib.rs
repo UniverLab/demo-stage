@@ -19,18 +19,33 @@ pub use error::{Error, Result};
 /// normalizer drops it from the score so it never shows up in the finished demo.
 pub const STOP_COMMAND: &str = "demo stop";
 
-pub const BANNER: &str = "\
-     █████                                    █████████   █████\n\
-    ░░███                                    ███░░░░░███ ░░███\n\
-  ███████   ██████  █████████████    ██████ ░███    ░░░  ███████    ██████    ███████  ██████\n\
- ███░░███  ███░░███░░███░░███░░███  ███░░███░░█████████ ░░░███░    ░░░░░███  ███░░███ ███░░███\n\
-░███ ░███ ░███████  ░███ ░███ ░███ ░███ ░███ ░░░░░░░░███  ░███      ███████ ░███ ░███░███████\n\
-░███ ░███ ░███░░░   ░███ ░███ ░███ ░███ ░███ ███    ░███  ░███ ███ ███░░███ ░███ ░███░███░░░\n\
-░░████████░░██████  █████░███ █████░░██████ ░░█████████   ░░█████ ░░████████░░███████░░██████\n\
- ░░░░░░░░  ░░░░░░  ░░░░░ ░░░ ░░░░░  ░░░░░░   ░░░░░░░░░     ░░░░░   ░░░░░░░░  ░░░░░███ ░░░░░░\n\
-                                                                              ███ ░███\n\
-                                                                             ░░██████\n\
-                                                                              ░░░░░░";
+/// The DemoStage wordmark, shown at the top of a capture. Built with
+/// `concat!` (not a `\`-continued literal) so each line keeps its leading
+/// spaces — Rust's string-continuation escape would otherwise strip the
+/// indentation and collapse the art against the left margin.
+pub const BANNER: &str = concat!(
+    "     █████                                    █████████   █████
+",
+    "    ░░███                                    ███░░░░░███ ░░███
+",
+    "  ███████   ██████  █████████████    ██████ ░███    ░░░  ███████    ██████    ███████  ██████
+",
+    " ███░░███  ███░░███░░███░░███░░███  ███░░███░░█████████ ░░░███░    ░░░░░███  ███░░███ ███░░███
+",
+    "░███ ░███ ░███████  ░███ ░███ ░███ ░███ ░███ ░░░░░░░░███  ░███      ███████ ░███ ░███░███████
+",
+    "░███ ░███ ░███░░░   ░███ ░███ ░███ ░███ ░███ ███    ░███  ░███ ███ ███░░███ ░███ ░███░███░░░
+",
+    "░░████████░░██████  █████░███ █████░░██████ ░░█████████   ░░█████ ░░████████░░███████░░██████
+",
+    " ░░░░░░░░  ░░░░░░  ░░░░░ ░░░ ░░░░░  ░░░░░░   ░░░░░░░░░     ░░░░░   ░░░░░░░░  ░░░░░███ ░░░░░░
+",
+    "                                                                              ███ ░███
+",
+    "                                                                             ░░██████
+",
+    "                                                                              ░░░░░░",
+);
 
 use std::process::ExitCode;
 
@@ -46,6 +61,9 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
         Command::Export(args) => commands::export::run(args).map(|()| ExitCode::SUCCESS),
         Command::Doctor(args) => commands::doctor::run(args).map(|()| ExitCode::SUCCESS),
         Command::Edit(args) => commands::edit::run(args).map(|()| ExitCode::SUCCESS),
+        Command::Stop => commands::stop::run().map(|()| ExitCode::SUCCESS),
+        Command::Open(args) => commands::open::run(args).map(|()| ExitCode::SUCCESS),
+        Command::Focus(args) => commands::focus::run(args).map(|()| ExitCode::SUCCESS),
     }
 }
 

@@ -108,7 +108,7 @@ pub fn run(args: OpenArgs) -> Result<()> {
         .map(|p| !p.is_empty() && std::path::Path::new(&p).exists())
         .unwrap_or(false);
     if in_session {
-        let _ = control::send(serde_json::json!({ "cmd": "open_begin" }));
+        let _ = control::send(serde_json::json!({ "cmd": "reveal_begin" }));
     }
 
     let r = resolve(args)?;
@@ -139,17 +139,35 @@ pub fn run(args: OpenArgs) -> Result<()> {
     }
 
     control::send(serde_json::json!({
-        "cmd": "open",
-        "url": r.url,
-        "name": r.name,
-        "mode": r.mode,
+        "cmd": "reveal",
+        "panes": reveal_panes(&r.url, &r.name, &r.mode, &r.theme),
+        "orientation": "horizontal",
         "when": r.when,
         "after": r.after,
         "hold": r.hold_ms,
         "scroll": r.scroll,
-        "theme": r.theme,
     }))?;
     Ok(())
+}
+
+/// Panes for an ad-hoc `demo open`: a `split` sits the browser beside the
+/// terminal (horizontal); otherwise the browser fills the canvas.
+fn reveal_panes(
+    url: &str,
+    name: &Option<String>,
+    mode: &str,
+    theme: &Option<String>,
+) -> Vec<serde_json::Value> {
+    let browser = serde_json::json!({
+        "id": name.clone().unwrap_or_else(|| "browser".to_string()),
+        "url": url,
+        "theme": theme,
+    });
+    if mode == "split" {
+        vec![serde_json::json!({ "id": "main" }), browser]
+    } else {
+        vec![browser]
+    }
 }
 
 /// `--view`: open a headed browser, record the user's session to a frames dir,
@@ -188,9 +206,9 @@ fn run_view(r: &Reveal) -> Result<()> {
     // Confirm before signalling (see `run`): keeps the line out of the recording.
     println!("● recorded {n} frames → {dir} ({hold_ms} ms scene)");
     control::send(serde_json::json!({
-        "cmd": "open",
-        "url": crate::model::view_frames_url(&dir),
-        "mode": r.mode,
+        "cmd": "reveal",
+        "panes": reveal_panes(&crate::model::view_frames_url(&dir), &r.name, &r.mode, &None),
+        "orientation": "horizontal",
         "when": serde_json::Value::Null,
         "after": false,
         "hold": hold_ms,

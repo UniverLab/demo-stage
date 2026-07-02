@@ -42,7 +42,9 @@ several formats. One demo, version-controlled, re-runnable, diffable.
 - **🔒 Clean prompt** — Capture forces a realistic generic prompt (`user@demo:~$`), so demos never leak your real `user@host`.
 - **🎬 Multi-scene** — Composite browser scenes (repo pages, PDFs, localhost) beside the terminal.
 - **🔤 Font selection** — Choose from 5 bundled monospace fonts during capture (DejaVu Sans Mono default, IBM Plex Mono, JetBrains Mono, Liberation Mono, Ubuntu Mono).
-- **⚡ In-capture commands** — Type `/stop` to finish capture or `/focus <scene>` to switch layouts mid-session.
+- **🖼️ Canvas & frame rate** — Pick the canvas at capture by **aspect ratio** (`16:9`, `9:16`, `4:3`, `1:1`) × **quality** (FullHD 1080p or HD 720p), plus a **frame rate** of 15/24/30 fps (`--aspect`, `--quality`, `--fps`, or the wizard). A custom `WxH` or `auto` is still available via `--resolution`.
+- **⚡ Live control commands** — Run `demo stop` to finish, `demo focus <source>` to switch the view (one or two sources, split or stacked), or `demo open <url>` to reveal an ad-hoc browser page mid-session — from the captured shell or another terminal.
+- **✂️ Bulk timeline editing** — `demo edit` marks several steps at once (space) and applies one action to all: delete, convert waits, find & replace.
 - **📦 Single binary** — Pure Rust, no Node.js, no Python, no runtime dependencies.
 
 ---
@@ -72,7 +74,7 @@ rm -f ~/.local/bin/demo-stage
 ## Quick Start
 
 ```sh
-demo capture                      # run the demo, then type `/stop` to finish
+demo capture                      # run the demo, then `demo stop` (or exit / Ctrl-D) to finish
                                   # → demo.toml (editable score) + demo.rec (faithful take)
 demo record                       # re-run demo.toml for a clean, humanized demo.rec
 demo export                       # no args → every format (gif, mp4)
@@ -97,8 +99,9 @@ demo capture  ──>  demo.toml ──> demo record ──> demo.rec ──> de
 
 **Capture** runs the demo live, writing an editable `demo.toml` score and a
 faithful `demo.rec` of the real session; it forces a clean prompt so your real
-`user@host` never shows. Sources (terminals, browsers) and scene layouts are
-configured during the capture wizard or defined in the score beforehand.
+`user@host` never shows. Browser **sources** (repo pages, docs, localhost) are
+configured in the capture wizard and revealed at the live moment with
+`demo focus <source>`.
 
 **Record** re-executes `demo.toml` for a clean, humanized recording — the default
 render path. **Export** is pure playback: it renders a recording and never executes
@@ -121,17 +124,21 @@ the clean path the default.
 | `demo capture` | Live capture: record the session, auto-normalize into a clean score and faithful `.rec` |
 | `demo record` | Re-execute `demo.toml` cleanly, producing a humanized recording |
 | `demo export` | Pure playback: render to gif or mp4 (no re-execution, ffmpeg/chromium auto-provisioned) |
-| `demo edit` | Interactively edit timing and wait steps in a demo score |
+| `demo edit` | Edit the timeline interactively — mark several steps (space) for bulk delete/convert/replace |
 | `demo doctor` | Verify the environment and install missing tools |
 
-### In-capture
+### Live control (during a capture)
 
-Type these in the terminal during a `demo capture` session:
+Run these while a `demo capture` is in progress — from the captured shell itself,
+or from **another terminal in the same directory** (handy when a full-screen TUI
+owns the captured terminal). They signal the running recorder; their own echo and
+wizards are kept out of the finished demo.
 
 | Command | Description |
 |---|---|
-| `/stop` | Stop the capture |
-| `/focus <scene>` | Switch the layout to a different scene |
+| `demo stop` | End the capture (also: type `exit` or press Ctrl-D) |
+| `demo focus <source> [<source2>]` | Switch the view to one or two configured sources (`demo focus main docs`); `--vertical`, `--hold`, `--scroll`, `--when`, `--after` (no source → a picker) |
+| `demo open <url>` | Reveal an ad-hoc browser page not pre-configured as a source — same flags plus `--split`/`--view` (no URL → a wizard) |
 
 ---
 

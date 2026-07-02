@@ -44,6 +44,10 @@ pub struct RawMeta {
     /// normalizer sizes the layout to this instead of deriving from cols×rows.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resolution: Option<(u32, u32)>,
+    /// Frame rate chosen at capture start (15/24/30). When set, the normalizer
+    /// writes it into the score's `[layout]` instead of the 15 fps default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fps: Option<u32>,
     /// Stage this macro was recorded into (`record --into`); `normalize` splices
     /// the captured flow into that stage unless `--stage` overrides it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -77,28 +81,70 @@ pub enum RawEvent {
     /// kept (e.g. `Vault passphrase:`), NEVER the value, so `demo record` can ask
     /// for it again (in memory) when it re-executes. See [`crate::model::Step`].
     Secret { t_ms: u64, prompt: String },
-    /// A browser scene revealed via `demo open` at this moment — `mode` is
-    /// `replace` (full-canvas) or `split` (beside the terminal). `hold_ms` keeps
-    /// the scene on screen at least that long; `scroll` pans the page down while
-    /// it is shown. For an interactive `--view` session, `url` is a
-    /// `viewframes:<dir>` pointer to pre-recorded frames (see
-    /// [`crate::model::view_frames_dir`]).
-    Open {
+    /// The active view switches to these panes at this moment (until the next
+    /// reveal, or the end of the demo). Both `demo focus` (predefined sources) and
+    /// `demo open` (ad-hoc URLs) produce one. One pane fills the canvas; two are
+    /// split by `orientation`. A single terminal pane means "back to the terminal".
+    /// `hold_ms` keeps the view on screen at least that long; `scroll` pans any
+    /// browser pane down. For an interactive `--view` session a pane's `url` is a
+    /// `viewframes:<dir>` pointer to pre-recorded frames.
+    Reveal {
         t_ms: u64,
-        url: String,
-        mode: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        name: Option<String>,
+        panes: Vec<RevealPane>,
+        #[serde(default, skip_serializing_if = "Orientation::is_horizontal")]
+        orientation: Orientation,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         hold_ms: Option<u64>,
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         scroll: bool,
-        /// Emulated colour scheme (`light`/`dark`), or `None` for the page default.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        theme: Option<String>,
     },
-    /// A focus change triggered via `/focus <scene>` during capture.
-    Focus { t_ms: u64, scene: String },
+}
+
+/// One pane of a [`RawEvent::Reveal`]: the terminal, or a browser page.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RevealPane {
+    /// Display id — a source id (`main`, `docs`) or a generated name for an
+    /// ad-hoc `demo open`.
+    pub id: String,
+    /// Browser URL (`http(s)://`, `file://`, or `viewframes:<dir>`). `None` marks
+    /// the terminal pane.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    /// Emulated colour scheme (`light`/`dark`) for a browser pane, or `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub theme: Option<String>,
+}
+
+impl RevealPane {
+    /// A terminal pane with id `main`.
+    pub fn terminal() -> Self {
+        RevealPane {
+            id: "main".to_string(),
+            url: None,
+            theme: None,
+        }
+    }
+    /// Is this the terminal (no URL)?
+    pub fn is_terminal(&self) -> bool {
+        self.url.is_none()
+    }
+}
+
+/// How a two-pane reveal is arranged.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum Orientation {
+    /// Side by side (first left, second right).
+    #[default]
+    Horizontal,
+    /// Stacked (first top, second bottom).
+    Vertical,
+}
+
+impl Orientation {
+    fn is_horizontal(&self) -> bool {
+        matches!(self, Orientation::Horizontal)
+    }
 }
 
 #[cfg(test)]
@@ -114,6 +160,7 @@ mod tests {
                 rows: 30,
                 idle_timeout_ms: 3000,
                 resolution: None,
+                fps: None,
                 stage: None,
                 mute_spans: vec![(150, 320)],
             },

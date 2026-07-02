@@ -56,15 +56,34 @@ salt_ms = 15     # max jitter ±, ms
 seed = 42        # omit for a random feel; set for reproducible output
 ```
 
+## `[[sources]]` (optional)
+
+The content sources a demo can show: the terminal (`main`) and any browser pages
+(repo, docs, localhost, a local PDF). The `demo capture` wizard writes them;
+during a capture, `demo focus <source>` reveals them. Authoring them by hand
+works too.
+
+```toml
+[[sources]]
+id = "main"
+type = "terminal"
+
+[[sources]]
+id = "docs"
+type = "browser"
+url = "https://docs.example.com"
+# theme = "dark"        # emulated colour scheme: "light" | "dark"
+```
+
 ## `[layout]` and `[[layout.panes]]`
 
-The canvas (pixels) and the scenes placed on it.
+The canvas (pixels) and the panes placed on it.
 
 ```toml
 [layout]
 width = 1920
 height = 1080
-fps = 15
+fps = 15               # 15, 24, or 30 — set at capture via --fps
 line_height = 1.0      # gif/mp4 line spacing × font size; 1.0 connects box-drawing
 background = "#0b0f14"
 
@@ -86,10 +105,18 @@ background = "#0b0f14"
   width = 960
   height = 1080
   url = "file:///tmp/demo-sandbox/output.pdf"   # browser requires a url
+  # theme = "dark"       # emulated colour scheme: "light" | "dark"
+  # reveal_at = 3.5      # visibility window (seconds): overlay shows from here…
+  # hide_at = 8.0        # …until here (omit either for "from the start"/"to the end")
 ```
 
 `demo record` validates the score before it runs: pane ids are unique, panes fit
 the canvas, and browser panes have a `url`.
+
+`reveal_at`/`hide_at` (browser panes) window a pane in time: the terminal is the
+always-on background and each browser pane overlays it only inside its window —
+this is what a live `demo focus` records, and how switching views (or going back
+to the terminal) renders.
 
 `line_height` (optional, default `1.2`) is the line spacing as a multiple of the
 font size. `1.0` makes box-drawing characters (`│ ─ ┌ ┘ …`) join into continuous
@@ -105,8 +132,11 @@ Steps share one timeline, each tagged by `action`:
 | `type` | `text`, `human_salt?` | Type into the focused terminal. |
 | `keypress` | `key` | Press a named key — `enter`, `tab`, `esc`, `up`, `ctrl+c`, … |
 | `wait` | `duration_ms` | Hold for a fixed time. |
+| `wait_for_stdout` | `match`, `pane?` | Block until a substring appears in the raw output. |
+| `wait_for_quiet` | `quiet_ms`, `max_ms?` | Block until the output has been silent this long. |
+| `wait_for_screen` | `match`, `timeout_ms?` | Block until a pattern is visible on the rendered screen. |
 | `caption` | `text` | Show an on-canvas step label (empty `text` clears it). Rendered on `gif`/`mp4`. |
-| `wait_for_stdout` | `match`, `pane?` | Block until a substring appears. |
+| `secret` | `prompt` | Re-supply a secret at this point on `demo record` (the value is asked for, never stored). |
 | `scroll` | `direction`, `velocity?`, `duration_ms`, `pane?` | Scroll a browser pane. |
 | `terminate` | — | End the demo. |
 

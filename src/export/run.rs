@@ -192,12 +192,8 @@ pub fn run_with_pane(score: &Score, pane: &crate::model::Pane) -> Result<Recordi
         progress_bar("recording", step_idx + 1, total_steps);
 
         match step {
-            Step::Focus { pane, scene } => {
-                let target = if let Some(p) = pane {
-                    p.clone()
-                } else if let Some(s) = scene {
-                    s.clone()
-                } else {
+            Step::Focus { pane } => {
+                let Some(target) = pane.clone() else {
                     continue;
                 };
                 focuses.push((t0.elapsed().as_secs_f64(), target));

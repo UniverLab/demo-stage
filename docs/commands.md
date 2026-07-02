@@ -1,6 +1,6 @@
 ---
 title: Commands
-description: Reference for demo capture, record, export, edit, doctor and in-capture / commands.
+description: Reference for demo capture, record, export, edit, doctor and the live capture-control commands.
 order: 5
 ---
 
@@ -13,7 +13,7 @@ played back by `demo export`) plus the editable **score** (`demo.toml`, re-run b
 `demo record`). Needs a real terminal.
 
 ```sh
-demo capture [-r demo.rec] [-O demo.toml | --no-score] [--raw macro.raw.toml] [--no-normalize] [--prompt "<PS1>" | --keep-prompt] [--debug] [--idle-timeout-ms 0] [--shell /bin/bash] [--into demo.toml] [--font <name>]
+demo capture [-r demo.rec] [-O demo.toml | --no-score] [--raw macro.raw.toml] [--no-normalize] [--prompt "<PS1>" | --keep-prompt] [--debug] [--idle-timeout-ms 0] [--shell /bin/bash] [--into demo.toml] [--font <name>] [--aspect <16:9|9:16|4:3|1:1> [--quality <fullhd|hd>]] [--fps <15|24|30>] | --resolution <preset|WxH|auto>]
 ```
 
 - `-r, --rec` — where to write the recording (default `demo.rec`). It's a faithful
@@ -47,33 +47,75 @@ demo capture [-r demo.rec] [-O demo.toml | --no-score] [--raw macro.raw.toml] [-
   `demo.toml`.
 - `--font` — font for the exported demo (`dejavu`, `jetbrains`, `ibm-plex`,
   `liberation`, `ubuntu`). Omit for a wizard prompt.
+- `--aspect` — canvas aspect ratio: `16:9`, `9:16`, `4:3`, or `1:1`. Combined
+  with `--quality` to pick the pixel resolution (e.g. `16:9` + `fullhd` →
+  1920×1080; `16:9` + `hd` → 1280×720). `--quality` defaults to `fullhd`.
+  Omit for a wizard prompt. Conflicts with `--resolution`.
+- `--quality` — quality tier: `fullhd` (short side 1080 px) or `hd` (short side
+  720 px). Needs `--aspect` (defaults to `16:9` if given alone). Conflicts with
+  `--resolution`.
+- `--fps` — frame rate of the exported gif/mp4: `15`, `24`, or `30`. Defaults
+  to `15`. Omit for a wizard prompt.
+- `--resolution` — the canvas as an explicit size, for the power user: a `WxH`
+  pair (e.g. `1600x900`), `auto` (derive from the terminal size — the default),
+  or a legacy preset (`landscape` 1920×1080, `portrait` 1080×1920, `square`
+  1080×1080, `standard` 1280×720). Conflicts with `--aspect`/`--quality`; omit
+  both for the aspect/quality wizard. On the faithful `.rec` the recorded
+  terminal is composited centered on the canvas (never cropped); a `demo record`
+  re-run sizes its terminal grid to the canvas.
 
-**Ending a capture.** Type `/stop` inside the session, or run `demo stop` from
-another shell in the same directory. (`exit` / Ctrl-D still work; a positive
+**Ending a capture.** Run `demo stop` — inside the captured shell, or from another
+terminal in the same directory. (`exit` / Ctrl-D still work; a positive
 `--idle-timeout-ms` also stops after that long with no output.)
 
-## In-capture commands
+## Live capture-control commands
 
-While a `demo capture` is running, you can type these commands directly in the
-captured terminal. They are intercepted before reaching the shell and never
-appear in the recording.
+While a `demo capture` is running, drive it with these ordinary `demo` commands.
+Run them **inside the captured shell**, or from **another terminal in the same
+directory** — the latter works even while a full-screen TUI owns the captured
+terminal. They signal the running recorder through a control file; their own echo
+and wizards are excised from the finished demo.
 
-### `/stop`
+### `demo stop`
 
-End the capture. Same as running `demo stop` from another terminal.
+End the capture. Works from inside the session or another terminal.
 
+```sh
+demo stop
 ```
-/stop
+
+### `demo focus <source> [<source2>]`
+
+Switch the view to one or two **sources** (configured in the `demo capture`
+wizard), recorded at the live moment you run it. `main` is the terminal; a browser
+source is referenced by its id. One source fills the canvas; two are shown side by
+side (`--vertical` stacks them). Run with no source on a terminal for a picker.
+
+```sh
+demo focus main                    # back to the terminal, full screen
+demo focus docs                    # a browser source, full screen
+demo focus main docs               # terminal | docs, side by side
+demo focus main docs --vertical    # terminal over docs
+demo focus docs --scroll --hold 6  # reveal docs, scroll it, hold 6s
+demo focus docs --when 'build *.pdf'   # reveal once that cue appears
 ```
 
-### `/focus <scene>`
+Flags: `--vertical`/`--horizontal` (two-source arrangement), `--hold <seconds>`,
+`--scroll`, `--when <cue>` (a substring, or a regex with a `re:` prefix),
+`--after` (when the current command finishes), `--theme light|dark`.
 
-Switch focus to a scene. The scene must be defined in the score's `[scenes]`
-table.
+### `demo open <url>`
 
-```
-/focus split
-/focus full_github
+Reveal an **ad-hoc** browser page — a URL (or local `file://…`, PDF/PNG/HTML) you
+did *not* pre-configure as a source. For pre-configured sources use `demo focus`.
+Flags cover placement (`--split` beside the terminal vs full-screen), timing
+(`--when <cue>`, `--after`, `--hold <ms>`), `--scroll`, `--theme light|dark`, and
+`--view` to drive a real browser yourself. With no URL on a terminal it runs a
+wizard. Run from a second terminal to keep the prompts out of the recording.
+
+```sh
+demo open https://github.com/you/repo --after
+demo open ./slides.pdf --hold 4000 --split
 ```
 
 ## `demo record`
@@ -169,17 +211,23 @@ demo edit [input]
 ```
 
 Interactively edit timing and wait steps in a demo score. Opens a TUI with the
-full timeline — navigate with **↑↓**, press **space** to edit a step, **enter**
-to confirm you're done, **q** to quit.
+full timeline (the list fills the terminal height) — navigate with **↑↓** or
+type to filter (e.g. `wait`), **space** marks steps, **enter** applies an
+action to everything marked, **esc** finishes.
 
-Editing actions per step type:
+Mark **several steps** to edit them in bulk — one action applies to the whole
+selection: delete a wizard's leftover interaction steps at once, or convert a
+group of `wait`s to `wait_for_quiet` in one go.
+
+Actions (applied to every marked step):
 
 - **Keep as-is** — no change
 - **wait_for_quiet** — replace with a silence-based wait
 - **wait_for_screen** — replace with a VT pattern match
 - **wait_for_stdout** — replace with a raw output match
-- **Change duration** — adjust the `duration_ms` of a `wait` step
-- **Split/Edit text** — (Type steps only) rewrite the text or split by delimiter
-- **Delete** — remove the step
+- **Change duration** — set the `duration_ms` (one value for all marked)
+- **Delete** — remove the marked steps
+- **Split/Edit text** — (one `type` step) rewrite the text or split by delimiter
+- **Find & replace in texts** — (several `type` steps) one substitution across all
 
 `[input]` defaults to `demo.toml`.

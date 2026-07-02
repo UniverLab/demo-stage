@@ -8,7 +8,7 @@ order: 6
 
 Normalizing is where a messy human recording becomes a clean score. It is **not a
 separate command** — it runs automatically at the end of `demo capture` (skip it
-with `demo capture --no-normalize`). Three algorithms run over the raw event stream.
+with `demo capture --no-normalize`). Four algorithms run over the raw event stream.
 
 ## 1. Backspace pruning
 
@@ -43,6 +43,16 @@ Timing is derived from the raw timestamps:
 
 - between commands → the gap until the next command starts typing, clamped;
 - after the last command → the time output kept arriving, capped.
+
+When a gap was really "output streaming, then silence" (a build, a download), the
+normalizer emits a **`wait_for_quiet`** instead of a fixed wait — robust against
+timing changes when the demo is re-run.
+
+## 4. Enter settle
+
+The pause between typing a command and pressing **enter** is hesitation, not
+content. Every fixed `wait` that immediately precedes an `enter` keypress is
+normalized to **200 ms**, so commands fire with one deliberate rhythm.
 
 ## Result
 

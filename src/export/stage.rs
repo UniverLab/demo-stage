@@ -8,8 +8,10 @@ use super::{browser, composite, raster};
 use crate::error::{Error, Result};
 use crate::model::{Pane, PaneKind, Score, Step};
 
-/// True when a score has more than one pane (or any browser pane) and therefore
-/// needs the compositing stage rather than the single-terminal fast path.
+/// True when a score has more than one pane, any browser pane, or a terminal
+/// pane that doesn't fill the canvas (e.g. a capture with an explicit export
+/// resolution, where the terminal sits centered on a larger canvas) — all cases
+/// that need the compositing stage rather than the single-terminal fast path.
 pub fn needs_stage(score: &Score) -> bool {
     let has_browser = score
         .layout
@@ -22,7 +24,14 @@ pub fn needs_stage(score: &Score) -> bool {
         .iter()
         .filter(|p| p.kind == PaneKind::Terminal)
         .count();
-    has_browser || terminals > 1
+    let offset_terminal = score.layout.panes.iter().any(|p| {
+        p.kind == PaneKind::Terminal
+            && (p.x != 0
+                || p.y != 0
+                || p.width != score.layout.width
+                || p.height != score.layout.height)
+    });
+    has_browser || terminals > 1 || offset_terminal
 }
 
 /// Composite a multi-pane score from an already-captured terminal `rec`,
@@ -71,7 +80,7 @@ pub fn render_stage(rec: &Recording, score: &Score, mut on_frame: impl FnMut(&[u
     // Browser panes captured up front (Chromium). Each reveals at the moment it
     // is first focused (recorded during the terminal run) — so it "opens" exactly
     // when the demo focuses it, e.g. once a server is up or a PDF has compiled.
-    let mut scenes: Vec<(&Pane, browser::Scene, f64)> = Vec::new();
+    let mut scenes: Vec<(&Pane, browser::Scene, f64, Option<f64>)> = Vec::new();
     for pane in score
         .layout
         .panes
@@ -79,13 +88,22 @@ pub fn render_stage(rec: &Recording, score: &Score, mut on_frame: impl FnMut(&[u
         .filter(|p| p.kind == PaneKind::Browser)
     {
         let scrolls = scroll_keyframes_for(score, &pane.id);
-        let reveal_at = rec
-            .focuses
-            .iter()
-            .find(|(_, id)| *id == pane.id)
-            .map(|(t, _)| *t)
-            .unwrap_or(0.0);
-        scenes.push((pane, browser::capture(pane, scrolls)?, reveal_at));
+        // A pane's window: `reveal_at` (else its first focus, else 0) until
+        // `hide_at` (else the end) — so a source can switch away or hand back to
+        // the terminal.
+        let reveal_at = pane.reveal_at.unwrap_or_else(|| {
+            rec.focuses
+                .iter()
+                .find(|(_, id)| *id == pane.id)
+                .map(|(t, _)| *t)
+                .unwrap_or(0.0)
+        });
+        scenes.push((
+            pane,
+            browser::capture(pane, scrolls)?,
+            reveal_at,
+            pane.hide_at,
+        ));
     }
 
     let total = n as f64 / fps;
@@ -100,14 +118,18 @@ pub fn render_stage(rec: &Recording, score: &Score, mut on_frame: impl FnMut(&[u
             h: th,
             rgba: &term_frame,
         }];
-        for (pane, scene, reveal_at) in &scenes {
+        for (pane, scene, reveal_at, hide_at) in &scenes {
             if t < *reveal_at {
                 continue; // not revealed yet
             }
-            // Scene-local progress: 0 at the reveal, 1 at the end — so a scene's
-            // scroll keyframes play across the window it's actually on screen,
+            if hide_at.is_some_and(|h| t >= h) {
+                continue; // switched away — the pane beneath (terminal) shows again
+            }
+            // Scene-local progress: 0 at the reveal, 1 at the end of its window —
+            // so a scene's scroll keyframes play across the time it's on screen,
             // not across the whole demo (which would mostly be before it opened).
-            let span = (total - reveal_at).max(1e-6);
+            let window_end = hide_at.unwrap_or(total);
+            let span = (window_end - reveal_at).max(1e-6);
             let progress = ((t - reveal_at) / span).clamp(0.0, 1.0);
             layers.push(composite::Layer {
                 x: pane.x as usize,
@@ -133,12 +155,8 @@ fn scroll_keyframes_for(score: &Score, pane_id: &str) -> usize {
     let mut ms = 0u64;
     for step in &score.timeline {
         match step {
-            Step::Focus { pane, scene } => {
-                focused = if let Some(p) = pane {
-                    Some(p.as_str())
-                } else {
-                    scene.as_deref()
-                };
+            Step::Focus { pane } => {
+                focused = pane.as_deref();
             }
             Step::Scroll {
                 duration_ms, pane, ..
@@ -206,6 +224,26 @@ height = 100
 "#,
         );
         assert!(needs_stage(&multi));
+
+        // A terminal centered on a larger canvas (explicit export resolution)
+        // needs compositing even without browser panes.
+        let centered = score(
+            r#"
+[demo]
+name = "t"
+[layout]
+width = 1920
+height = 1080
+  [[layout.panes]]
+  id = "main"
+  type = "terminal"
+  x = 560
+  y = 300
+  width = 800
+  height = 480
+"#,
+        );
+        assert!(needs_stage(&centered));
     }
 
     #[test]

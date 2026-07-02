@@ -14,15 +14,10 @@ pub struct Score {
     pub env: Option<Env>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub typing: Option<Typing>,
-    /// Pre-defined content sources (terminal, browser, file). Defined with
-    /// `demo source` before capture starts.
+    /// Pre-defined content sources (terminal, browser). Configured in the capture
+    /// wizard; `demo focus`/`demo open` show them live.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sources: Vec<Source>,
-    /// Pre-defined scene compositions. Each scene maps a layout string
-    /// (e.g. `"main+google"`) to concrete pane positions. Defined with
-    /// `demo scene` before capture starts.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub scenes: Vec<Scene>,
     pub layout: Layout,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub timeline: Vec<Step>,
@@ -52,16 +47,6 @@ impl Score {
     /// Find a source by id.
     pub fn source(&self, id: &str) -> Option<&Source> {
         self.sources.iter().find(|s| s.id == id)
-    }
-
-    /// Find a scene by id.
-    pub fn scene(&self, id: &str) -> Option<&Scene> {
-        self.scenes.iter().find(|s| s.id == id)
-    }
-
-    /// List all scene IDs.
-    pub fn scene_ids(&self) -> Vec<&str> {
-        self.scenes.iter().map(|s| s.id.as_str()).collect()
     }
 }
 
@@ -132,8 +117,9 @@ impl Default for Typing {
     }
 }
 
-/// A content source: a terminal, browser, or file that can be placed in scenes.
-/// Defined with `demo source` before capture starts.
+/// A content source the demo can show: the terminal, or a browser page.
+/// Configured in the `demo capture` wizard (or authored in the score) and
+/// revealed live with `demo focus <source>`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Source {
     /// Unique identifier (e.g. "main", "google", "github").
@@ -155,22 +141,6 @@ pub struct Source {
 pub enum SourceKind {
     Terminal,
     Browser,
-}
-
-/// A scene composition: maps a layout string to concrete pane positions.
-/// Defined with `demo scene` before capture starts.
-///
-/// The `layout` string uses `+` to join source IDs:
-/// - `"main"` — fullscreen single source
-/// - `"main+google"` — 50/50 split
-/// - `"main+google+github"` — thirds
-/// - `"main*2+google"` — weighted (main gets 2/3)
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Scene {
-    /// Unique identifier (e.g. "solo", "split", "full_github").
-    pub id: String,
-    /// Layout string defining the composition of sources.
-    pub layout: String,
 }
 
 /// `[layout]` — the global canvas and its panes.
@@ -231,6 +201,14 @@ pub struct Pane {
     /// theme-aware sites render the chosen theme. `None` = the page default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub theme: Option<String>,
+    /// Playback time (seconds) at which this pane becomes visible. `None` = from
+    /// the start. A capture sets it so a reveal "opens" at the moment it fired.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reveal_at: Option<f64>,
+    /// Playback time (seconds) at which this pane hides again (the next reveal
+    /// switched away). `None` = stays to the end.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hide_at: Option<f64>,
 }
 
 /// The kind of renderer backing a pane.
@@ -245,14 +223,11 @@ pub enum PaneKind {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "action", rename_all = "snake_case")]
 pub enum Step {
-    /// Make a scene or pane the active target. When `scene` is set, it
-    /// references a pre-defined scene ID; otherwise `pane` references a
-    /// layout pane directly (legacy).
+    /// Make a layout pane the active target (typing goes to it; a browser pane is
+    /// revealed/scrolled).
     Focus {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pane: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        scene: Option<String>,
     },
     /// Type text into the focused terminal pane.
     Type {
