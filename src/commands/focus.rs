@@ -25,7 +25,7 @@ pub fn run(args: FocusArgs) -> Result<()> {
     control::find()?;
     let sources = control::read_sources();
 
-    let (chosen, orientation) = if args.sources.is_empty() {
+    let (chosen, orientation, when, after) = if args.sources.is_empty() {
         if !std::io::stdin().is_terminal() {
             return Err(Error::Export(
                 "demo focus needs a source (e.g. `demo focus main`), or a terminal for the wizard"
@@ -34,7 +34,12 @@ pub fn run(args: FocusArgs) -> Result<()> {
         }
         wizard(&sources, &args)?
     } else {
-        (args.sources.clone(), orientation_flag(&args))
+        (
+            args.sources.clone(),
+            orientation_flag(&args),
+            args.when.clone(),
+            args.after,
+        )
     };
 
     if chosen.len() > 2 {
@@ -60,15 +65,21 @@ pub fn run(args: FocusArgs) -> Result<()> {
     } else {
         " | "
     });
-    println!("● focus → {label}");
+    if let Some(pat) = &when {
+        println!("● focus → {label} (when output matches {pat:?})");
+    } else if after {
+        println!("● focus → {label} (when the current command finishes)");
+    } else {
+        println!("● focus → {label}");
+    }
     control::send(serde_json::json!({
         "cmd": "reveal",
         "panes": panes,
         "orientation": orientation,
         "hold": args.hold.map(|s| (s.max(0.0) * 1000.0) as u64),
         "scroll": args.scroll,
-        "when": args.when,
-        "after": args.after,
+        "when": when,
+        "after": after,
     }))?;
     Ok(())
 }
@@ -124,8 +135,9 @@ fn source_hint(sources: &[Source]) -> String {
     }
 }
 
-/// Pick 1–2 sources (and orientation for two) from the capture's sources.
-fn wizard(sources: &[Source], args: &FocusArgs) -> Result<(Vec<String>, String)> {
+/// Pick 1–2 sources (orientation for two, and when to reveal) from the
+/// capture's sources. Returns `(sources, orientation, when, after)`.
+fn wizard(sources: &[Source], args: &FocusArgs) -> Result<(Vec<String>, String, Option<String>, bool)> {
     println!("\n  demo focus — switch the view\n");
     // "main" (the terminal) is always available, plus any browser sources.
     let mut ids: Vec<String> = vec!["main".to_string()];
@@ -162,7 +174,29 @@ fn wizard(sources: &[Source], args: &FocusArgs) -> Result<(Vec<String>, String)>
     } else {
         orientation_flag(args)
     };
-    Ok((chosen, orientation))
+
+    // When to switch — same choices as the `demo open` wizard, so a focus can be
+    // armed ahead of a long-running command instead of firing immediately.
+    let trigger = ask(Select::new(
+        "Switch:",
+        vec![
+            "now",
+            "when the current command finishes",
+            "when a line appears in the output",
+        ],
+    )
+    .prompt())?;
+    let (when, after) = if trigger.starts_with("when the current") {
+        (None, true)
+    } else if trigger.starts_with("when a line") {
+        let pat = ask(inquire::Text::new("Cue line (a substring of the output):").prompt())?;
+        let pat = pat.trim();
+        ((!pat.is_empty()).then(|| pat.to_string()), false)
+    } else {
+        (None, false)
+    };
+
+    Ok((chosen, orientation, when, after))
 }
 
 fn ask<T>(r: std::result::Result<T, inquire::InquireError>) -> Result<T> {
