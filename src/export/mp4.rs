@@ -43,6 +43,12 @@ pub fn encode(
         .args([
             "-c:v",
             "libx264",
+            // `slow` spends encode time for a noticeably smaller file at the
+            // same CRF quality target — demos are short, so it's cheap.
+            "-preset",
+            "slow",
+            "-crf",
+            "23",
             "-pix_fmt",
             "yuv420p",
             "-movflags",
