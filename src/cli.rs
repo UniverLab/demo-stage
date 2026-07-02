@@ -184,6 +184,22 @@ pub struct ExportArgs {
     /// side-effecting demos that can't be re-executed.
     #[arg(long)]
     pub force: bool,
+
+    /// Canvas aspect ratio: `16:9`, `9:16`, `4:3`, or `1:1`. Combined with
+    /// `--quality` to compute the pixel resolution (e.g. `16:9` + `fullhd` →
+    /// 1920×1080). Overrides the capture-time resolution.
+    #[arg(long, conflicts_with = "resolution")]
+    pub aspect: Option<String>,
+
+    /// Canvas quality tier: `fullhd` (1080p) or `hd` (720p). The short side of
+    /// the canvas; the long side scales by the aspect ratio.
+    #[arg(long, conflicts_with = "resolution")]
+    pub quality: Option<String>,
+
+    /// Export canvas as an explicit resolution: a `WxH` pair (e.g.
+    /// `1920x1080`). Overrides the capture-time resolution.
+    #[arg(long, conflicts_with_all = ["aspect", "quality"])]
+    pub resolution: Option<String>,
 }
 
 /// One or more export targets parsed from a comma-separated token.
