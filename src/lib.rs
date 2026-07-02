@@ -24,7 +24,8 @@ pub const STOP_COMMAND: &str = "demo stop";
 /// spaces — Rust's string-continuation escape would otherwise strip the
 /// indentation and collapse the art against the left margin.
 pub const BANNER: &str = concat!(
-    "     █████                                    █████████   █████
+"
+","     █████                                    █████████   █████
 ",
     "    ░░███                                    ███░░░░░███ ░░███
 ",
