@@ -20,6 +20,15 @@ pub const CONTROL_FILE: &str = ".demo-capture";
 /// start, so `demo focus`/`demo open` wizards can offer them live — the
 /// `demo.toml` score isn't written until the capture ends.
 pub const SOURCES_FILE: &str = ".demo-capture.sources";
+/// Sidecar with capture roots: where `demo capture` was launched and where the
+/// shell runs (may differ when using the isolated sandbox).
+pub const META_FILE: &str = ".demo-capture.meta";
+
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct CaptureMeta {
+    pub launch_dir: PathBuf,
+    pub shell_dir: PathBuf,
+}
 
 /// Locate the active capture's control file: the env var (inside the capture)
 /// first, then `./.demo-capture` (from another terminal in the same directory).
@@ -44,6 +53,30 @@ pub fn find() -> Result<PathBuf> {
 fn sources_path() -> Option<PathBuf> {
     let control = find().ok()?;
     Some(control.with_file_name(SOURCES_FILE))
+}
+
+/// Write capture roots next to the control file for live wizards.
+pub fn write_meta(
+    control: &std::path::Path,
+    launch_dir: &std::path::Path,
+    shell_dir: &std::path::Path,
+) -> Result<()> {
+    let path = control.with_file_name(META_FILE);
+    let meta = CaptureMeta {
+        launch_dir: launch_dir.to_path_buf(),
+        shell_dir: shell_dir.to_path_buf(),
+    };
+    let json = serde_json::to_string(&meta)?;
+    std::fs::write(&path, json).map_err(|e| Error::io(&path, e))
+}
+
+/// Read capture roots from the active capture (if any).
+pub fn read_meta() -> Option<CaptureMeta> {
+    let control = find().ok()?;
+    let path = control.with_file_name(META_FILE);
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
 }
 
 /// Write the sources configured at capture start next to the control file.
