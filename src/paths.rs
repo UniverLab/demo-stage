@@ -19,8 +19,14 @@ pub fn is_supported_browser_file(path: &Path) -> bool {
 }
 
 /// Build a `file://` URL relative to `launch_dir` so re-runs (`record` / `export`)
-/// resolve against wherever the demo is launched from.
-pub fn file_url_relative_to_launch(abs: &Path, launch_dir: &Path) -> Result<String> {
+/// resolve against wherever the demo is launched from. Files outside `launch_dir`
+/// but inside `shell_dir` (the isolated capture sandbox) keep their path relative
+/// to the shell cwd.
+pub fn file_url_relative_to_launch(
+    abs: &Path,
+    launch_dir: &Path,
+    shell_dir: Option<&Path>,
+) -> Result<String> {
     let abs =
         std::fs::canonicalize(abs).map_err(|e| Error::Export(format!("file not found: {e}")))?;
     if !is_supported_browser_file(&abs) {
@@ -31,17 +37,26 @@ pub fn file_url_relative_to_launch(abs: &Path, launch_dir: &Path) -> Result<Stri
     }
     let launch = std::fs::canonicalize(launch_dir)
         .map_err(|e| Error::Export(format!("launch directory not found: {e}")))?;
-    let rel = abs
-        .strip_prefix(&launch)
-        .map(|p| p.to_string_lossy().to_string())
-        .unwrap_or_else(|_| {
-            format!(
-                "./{}",
-                abs.file_name()
-                    .map(|n| n.to_string_lossy().to_string())
-                    .unwrap_or_else(|| abs.to_string_lossy().to_string())
-            )
-        });
+    let rel = match abs.strip_prefix(&launch) {
+        Ok(p) => p.to_string_lossy().to_string(),
+        Err(_) if shell_dir
+            .and_then(|s| std::fs::canonicalize(s).ok())
+            .is_some() =>
+        {
+            let shell = shell_dir.and_then(|s| std::fs::canonicalize(s).ok()).unwrap();
+            abs.strip_prefix(&shell)
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_else(|_| {
+                    abs.file_name()
+                        .map(|n| n.to_string_lossy().to_string())
+                        .unwrap_or_else(|| abs.to_string_lossy().to_string())
+                })
+        }
+        Err(_) => abs
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| abs.to_string_lossy().to_string()),
+    };
     let rel = rel.trim_start_matches("./");
     Ok(format!("file://./{rel}"))
 }
@@ -91,7 +106,7 @@ pub fn local_file_url(path: &str, launch_dir: &Path) -> Result<String> {
     } else {
         launch_dir.join(p)
     };
-    file_url_relative_to_launch(&abs, launch_dir)
+    file_url_relative_to_launch(&abs, launch_dir, None)
 }
 
 /// Ensure a remote URL has a protocol prefix. Bare domains like `google.com`
@@ -127,7 +142,7 @@ mod tests {
         let file = dir.join("out.pdf");
         fs::write(&file, b"%PDF-1").unwrap();
 
-        let url = file_url_relative_to_launch(&file, &dir).unwrap();
+        let url = file_url_relative_to_launch(&file, &dir, None).unwrap();
         assert_eq!(url, "file://./out.pdf");
 
         let prev = std::env::current_dir().unwrap();

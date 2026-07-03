@@ -244,7 +244,7 @@ fn wizard(in_session: bool) -> Result<Reveal> {
     let url = if source.starts_with("Local") {
         let roots = capture_roots();
         let path = pick_local_file(&roots, in_session)?;
-        file_url_relative_to_launch(&path, &roots.launch_dir)?
+        file_url_relative_to_launch(&path, &roots.launch_dir, Some(&roots.shell_dir))?
     } else {
         let raw = ask(Text::new("URL:")
             .with_help_message("a repo page, http://localhost…")
