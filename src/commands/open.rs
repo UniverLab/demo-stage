@@ -18,64 +18,10 @@ use inquire::{Select, Text};
 use crate::cli::{OpenArgs, OpenMode};
 use crate::commands::control;
 use crate::error::{Error, Result};
-
-/// Simple file path autocomplete for the open wizard.
-#[derive(Clone)]
-struct FilePathCompleter;
-
-impl inquire::autocompletion::Autocomplete for FilePathCompleter {
-    fn get_suggestions(
-        &mut self,
-        input: &str,
-    ) -> std::result::Result<Vec<String>, inquire::CustomUserError> {
-        let input = if input.is_empty() { "./" } else { input };
-        let (dir, prefix) = if input.ends_with('/') {
-            (input.to_string(), "")
-        } else {
-            let p = std::path::Path::new(input);
-            let dir = p.parent().unwrap_or(std::path::Path::new("."));
-            let prefix = p.file_name().and_then(|f| f.to_str()).unwrap_or("");
-            (dir.to_string_lossy().to_string(), prefix)
-        };
-        let entries = std::fs::read_dir(&dir).ok();
-        let mut results = Vec::new();
-        if let Some(entries) = entries {
-            for entry in entries.flatten() {
-                let name = entry.file_name().to_string_lossy().to_string();
-                if name.starts_with(prefix) {
-                    let full = if dir == "./" || dir == "." {
-                        name.clone()
-                    } else {
-                        format!("{}/{}", dir.trim_end_matches('/'), name)
-                    };
-                    let full = if entry.path().is_dir() {
-                        format!("{full}/")
-                    } else {
-                        full
-                    };
-                    results.push(full);
-                }
-            }
-        }
-        results.sort();
-        Ok(results)
-    }
-
-    fn get_completion(
-        &mut self,
-        input: &str,
-        suggestion: Option<String>,
-    ) -> std::result::Result<Option<String>, inquire::CustomUserError> {
-        Ok(suggestion.or_else(|| {
-            let mut suggestions = self.get_suggestions(input).ok()?;
-            if suggestions.len() == 1 {
-                Some(suggestions.remove(0))
-            } else {
-                None
-            }
-        }))
-    }
-}
+use crate::file_picker::{pick_local_file, BrowseRoots};
+use crate::paths::{
+    file_url_relative_to_launch, local_file_url, looks_like_local_path, normalize_url,
+};
 
 /// Monospace cell size assumed by the renderer (matches `export::recording`), so a
 /// `--view` recording is sized to the terminal canvas it'll be composited onto.
@@ -111,7 +57,7 @@ pub fn run(args: OpenArgs) -> Result<()> {
         let _ = control::send(serde_json::json!({ "cmd": "reveal_begin" }));
     }
 
-    let r = resolve(args)?;
+    let r = resolve(args, in_session)?;
 
     if r.view {
         return run_view(&r);
@@ -218,7 +164,7 @@ fn run_view(r: &Reveal) -> Result<()> {
 }
 
 /// Resolve a reveal from flags, or from the wizard when no URL is given.
-fn resolve(args: OpenArgs) -> Result<Reveal> {
+fn resolve(args: OpenArgs, in_session: bool) -> Result<Reveal> {
     let mode = |a: &OpenArgs| {
         if a.split || a.mode == OpenMode::Split {
             "split"
@@ -229,24 +175,32 @@ fn resolve(args: OpenArgs) -> Result<Reveal> {
     };
 
     match &args.url {
-        Some(url) if !args.wizard => Ok(Reveal {
-            url: normalize_url(url),
-            name: None,
-            mode: mode(&args),
-            when: args.when.clone(),
-            after: args.after,
-            hold_ms: args.hold,
-            scroll: args.scroll,
-            view: args.view,
-            theme: args.theme.map(|t| t.as_str().to_string()),
-        }),
+        Some(url) if !args.wizard => {
+            let launch_dir = capture_launch_dir();
+            let url = if looks_like_local_path(url) {
+                local_file_url(url, &launch_dir)?
+            } else {
+                normalize_url(url)
+            };
+            Ok(Reveal {
+                url,
+                name: None,
+                mode: mode(&args),
+                when: args.when.clone(),
+                after: args.after,
+                hold_ms: args.hold,
+                scroll: args.scroll,
+                view: args.view,
+                theme: args.theme.map(|t| t.as_str().to_string()),
+            })
+        }
         _ => {
             if !std::io::stdin().is_terminal() {
                 return Err(Error::Export(
                     "demo open needs a URL (or a terminal for the wizard)".to_string(),
                 ));
             }
-            wizard()
+            wizard(in_session)
         }
     }
 }
@@ -255,7 +209,30 @@ fn ask<T>(r: std::result::Result<T, inquire::InquireError>) -> Result<T> {
     r.map_err(|e| Error::Export(format!("wizard: {e}")))
 }
 
-fn wizard() -> Result<Reveal> {
+fn capture_launch_dir() -> std::path::PathBuf {
+    control::read_meta()
+        .map(|m| m.launch_dir)
+        .unwrap_or_else(|| {
+            std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
+        })
+}
+
+fn capture_roots() -> BrowseRoots {
+    if let Some(meta) = control::read_meta() {
+        BrowseRoots {
+            launch_dir: meta.launch_dir,
+            shell_dir: meta.shell_dir,
+        }
+    } else {
+        let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+        BrowseRoots {
+            launch_dir: cwd.clone(),
+            shell_dir: cwd,
+        }
+    }
+}
+
+fn wizard(in_session: bool) -> Result<Reveal> {
     println!("\n  demo open — reveal a browser scene\n");
 
     let source = ask(Select::new(
@@ -265,13 +242,9 @@ fn wizard() -> Result<Reveal> {
     .prompt())?;
 
     let url = if source.starts_with("Local") {
-        let path = ask(inquire::Text::new("File path:")
-            .with_help_message("relative or absolute path to a local file")
-            .with_autocomplete(FilePathCompleter)
-            .prompt())?;
-        let abs = std::fs::canonicalize(path.trim())
-            .map_err(|e| Error::Export(format!("file not found: {e}")))?;
-        format!("file://{}", abs.display())
+        let roots = capture_roots();
+        let path = pick_local_file(&roots, in_session)?;
+        file_url_relative_to_launch(&path, &roots.launch_dir)?
     } else {
         let raw = ask(Text::new("URL:")
             .with_help_message("a repo page, http://localhost…")
@@ -329,7 +302,7 @@ fn wizard() -> Result<Reveal> {
     // An interactive view always takes over the whole frame and opens immediately.
     if view {
         return Ok(Reveal {
-            url: normalize_url(url.trim()),
+            url: finalize_url(&url),
             name: Some(scene_name.clone()),
             mode: "replace".to_string(),
             when: None,
@@ -375,7 +348,7 @@ fn wizard() -> Result<Reveal> {
     };
 
     Ok(Reveal {
-        url: normalize_url(url.trim()),
+        url: finalize_url(&url),
         name: Some(scene_name),
         mode: mode.to_string(),
         when,
@@ -387,15 +360,11 @@ fn wizard() -> Result<Reveal> {
     })
 }
 
-/// Ensure a URL has a protocol prefix. Bare domains like `google.com` become
-/// `https://google.com`; `file://`, `http://`, `https://` are left as-is.
-fn normalize_url(url: &str) -> String {
+fn finalize_url(url: &str) -> String {
     let u = url.trim();
-    if u.contains("://") {
+    if u.starts_with("file://") {
         u.to_string()
-    } else if u.starts_with("localhost") || u.starts_with("127.0.0.1") {
-        format!("http://{u}")
     } else {
-        format!("https://{u}")
+        normalize_url(u)
     }
 }
