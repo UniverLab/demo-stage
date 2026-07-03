@@ -60,6 +60,8 @@ pub fn capture(pane: &Pane, scroll_keyframes: usize) -> Result<Scene> {
         return load_frames(Path::new(dir), w, h);
     }
 
+    let url = crate::paths::resolve_browser_url(url)?;
+
     if provision::find_chromium().is_none() {
         eprintln!("demo: Chromium not found — fetching a managed copy (one time)…");
     }
@@ -100,7 +102,7 @@ pub fn capture(pane: &Pane, scroll_keyframes: usize) -> Result<Scene> {
         height: Some(h as f64),
     });
     emulate_theme(&tab, pane.theme.as_deref());
-    tab.navigate_to(url)
+    tab.navigate_to(&url)
         .and_then(|t| t.wait_until_navigated())
         .map_err(|e| Error::Export(format!("navigate to {url}: {e}")))?;
     // Give the page (or PDF viewer) a moment to paint.
@@ -139,6 +141,8 @@ pub fn record_view(
     out_dir: &Path,
 ) -> Result<usize> {
     std::fs::create_dir_all(out_dir).map_err(|e| Error::io(out_dir, e))?;
+    let url = crate::paths::resolve_browser_url(url)?;
+
     if provision::find_chromium().is_none() {
         eprintln!("demo: Chromium not found — fetching a managed copy (one time)…");
     }
@@ -173,7 +177,7 @@ pub fn record_view(
         height: Some(height as f64),
     });
     emulate_theme(&tab, theme);
-    tab.navigate_to(url)
+    tab.navigate_to(&url)
         .and_then(|t| t.wait_until_navigated())
         .map_err(|e| Error::Export(format!("navigate to {url}: {e}")))?;
 
