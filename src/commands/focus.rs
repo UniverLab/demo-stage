@@ -137,7 +137,10 @@ fn source_hint(sources: &[Source]) -> String {
 
 /// Pick 1–2 sources (orientation for two, and when to reveal) from the
 /// capture's sources. Returns `(sources, orientation, when, after)`.
-fn wizard(sources: &[Source], args: &FocusArgs) -> Result<(Vec<String>, String, Option<String>, bool)> {
+fn wizard(
+    sources: &[Source],
+    args: &FocusArgs,
+) -> Result<(Vec<String>, String, Option<String>, bool)> {
     println!("\n  demo focus — switch the view\n");
     // "main" (the terminal) is always available, plus any browser sources.
     let mut ids: Vec<String> = vec!["main".to_string()];

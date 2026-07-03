@@ -133,10 +133,7 @@ height = 1080
     #[test]
     fn focusing_back_to_the_terminal_closes_the_window() {
         let mut score = score_with_browser();
-        let focuses = vec![
-            (5.0, "github-r1".to_string()),
-            (12.0, "main".to_string()),
-        ];
+        let focuses = vec![(5.0, "github-r1".to_string()), (12.0, "main".to_string())];
         anchor_browser_windows(&mut score, &focuses);
         let pane = &score.layout.panes[1];
         assert_eq!(pane.reveal_at, Some(5.0));

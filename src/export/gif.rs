@@ -145,7 +145,13 @@ fn diff_rect(prev: &[u8], cur: &[u8], w: usize) -> Option<(usize, usize, usize, 
             continue;
         }
         let first = pr.iter().zip(cr).position(|(a, b)| a != b).unwrap_or(0) / 4;
-        let last = row_len - 1 - pr.iter().rev().zip(cr.iter().rev()).position(|(a, b)| a != b).unwrap_or(0);
+        let last = row_len
+            - 1
+            - pr.iter()
+                .rev()
+                .zip(cr.iter().rev())
+                .position(|(a, b)| a != b)
+                .unwrap_or(0);
         y0 = y0.min(y);
         y1 = y + 1;
         x0 = x0.min(first);

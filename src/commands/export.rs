@@ -31,7 +31,9 @@ pub fn run(args: ExportArgs) -> Result<()> {
     scale_pane_windows(&mut score, args.speed);
 
     // Apply resolution override if specified
-    if let Some((new_w, new_h)) = resolve_export_resolution(&args, score.layout.width, score.layout.height)? {
+    if let Some((new_w, new_h)) =
+        resolve_export_resolution(&args, score.layout.width, score.layout.height)?
+    {
         rescale_layout(&mut score, new_w, new_h);
         eprintln!(
             "note: overriding resolution to {}x{} (capture was {}x{})",
@@ -142,10 +144,10 @@ fn rescale_layout(score: &mut Score, new_w: u32, new_h: u32) {
     }
     let scale_x = new_w as f64 / old_w as f64;
     let scale_y = new_h as f64 / old_h as f64;
-    
+
     score.layout.width = new_w;
     score.layout.height = new_h;
-    
+
     for pane in &mut score.layout.panes {
         pane.x = (pane.x as f64 * scale_x).round() as u32;
         pane.y = (pane.y as f64 * scale_y).round() as u32;

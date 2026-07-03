@@ -40,6 +40,7 @@ several formats. One demo, version-controlled, re-runnable, diffable.
 - **⌨️ Humanized typing** — Seeded, bounded jitter so playback reads like a fast human, not robotic paste.
 - **🔇 Idle trimming** — Dead time between commands is clamped; trailing idle is dropped.
 - **🔒 Clean prompt** — Capture forces a realistic generic prompt (`user@demo:~$`), so demos never leak your real `user@host`.
+- **🏝️ Isolated sandbox** — Commands execute in a temporary directory by default, keeping your workspace clean. Use `--here` to opt out.
 - **🎬 Multi-scene** — Composite browser scenes (repo pages, PDFs, localhost) beside the terminal.
 - **🔤 Font selection** — Choose from 5 bundled monospace fonts during capture (DejaVu Sans Mono default, IBM Plex Mono, JetBrains Mono, Liberation Mono, Ubuntu Mono).
 - **🖼️ Canvas & frame rate** — Pick the canvas at capture by **aspect ratio** (`16:9`, `9:16`, `4:3`, `1:1`) × **quality** (FullHD 1080p or HD 720p), plus a **frame rate** of 15/24/30 fps (`--aspect`, `--quality`, `--fps`, or the wizard). A custom `WxH` or `auto` is still available via `--resolution`.
