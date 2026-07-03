@@ -693,6 +693,65 @@ fn is_meta_command(line: &str) -> bool {
     t.starts_with("demo open") || t.starts_with("demo stop") || t.starts_with("demo focus")
 }
 
+enum CaptureWorkdir {
+    Current(std::path::PathBuf),
+    Temp(std::path::PathBuf),
+}
+
+impl CaptureWorkdir {
+    fn path(&self) -> &std::path::Path {
+        match self {
+            Self::Current(path) | Self::Temp(path) => path,
+        }
+    }
+}
+
+impl Drop for CaptureWorkdir {
+    fn drop(&mut self) {
+        let Self::Temp(path) = self else {
+            return;
+        };
+        if let Err(e) = std::fs::remove_dir_all(path.as_path()) {
+            eprintln!(
+                "Warning: failed to clean temporary directory {}: {e}",
+                path.display()
+            );
+        }
+    }
+}
+
+fn setup_workdir(use_here: bool) -> Result<CaptureWorkdir> {
+    if use_here {
+        let cwd = std::env::current_dir()
+            .map_err(|e| Error::Export(format!("failed to get current directory: {e}")))?;
+        return Ok(CaptureWorkdir::Current(cwd));
+    }
+
+    let temp_base = std::env::temp_dir();
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let pid = std::process::id();
+    for attempt in 0..100 {
+        let temp_dir = temp_base.join(format!("demo-{timestamp}-{pid}-{attempt}"));
+        match std::fs::create_dir(&temp_dir) {
+            Ok(()) => return Ok(CaptureWorkdir::Temp(temp_dir)),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => {
+                return Err(Error::Export(format!(
+                    "failed to create temporary directory {}: {e}",
+                    temp_dir.display()
+                )))
+            }
+        }
+    }
+
+    Err(Error::Export(
+        "failed to create a unique temporary directory".to_string(),
+    ))
+}
+
 pub fn run(args: CaptureArgs) -> Result<()> {
     if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
         return Err(Error::Export(
@@ -728,7 +787,16 @@ pub fn run(args: CaptureArgs) -> Result<()> {
     let control_path = std::path::PathBuf::from(control::CONTROL_FILE);
     std::fs::File::create(&control_path).map_err(|e| Error::io(&control_path, e))?;
     let control_abs = std::fs::canonicalize(&control_path).unwrap_or_else(|_| control_path.clone());
+    let launch_dir = std::env::current_dir()
+        .map_err(|e| Error::Export(format!("failed to get launch directory: {e}")))?;
+    let work_dir = setup_workdir(args.here)?;
+    control::write_meta(&control_abs, &launch_dir, work_dir.path())?;
+    if !args.here {
+        println!("Working directory: {}\n", work_dir.path().display());
+    }
+
     let mut command = CommandBuilder::new(&shell);
+    command.cwd(work_dir.path());
     command.env(control::CONTROL_ENV, &control_abs);
 
     let mut child = pair
@@ -1116,6 +1184,7 @@ pub fn run(args: CaptureArgs) -> Result<()> {
     let _ = disable_raw_mode();
     let _ = std::fs::remove_file(&control_abs);
     let _ = std::fs::remove_file(control_abs.with_file_name(control::SOURCES_FILE));
+    let _ = std::fs::remove_file(control_abs.with_file_name(control::META_FILE));
 
     let events = events.lock().unwrap().clone();
     let mut mute_spans = mute_spans.lock().unwrap().clone();
@@ -1510,6 +1579,26 @@ mod tests {
         assert_eq!(parse_fps("30").unwrap(), 30);
         assert!(parse_fps("60").is_err());
         assert!(parse_fps("smooth").is_err());
+    }
+
+    #[test]
+    fn workdir_here_uses_current_directory_without_cleanup() {
+        let cwd = std::env::current_dir().unwrap();
+        let workdir = setup_workdir(true).unwrap();
+
+        assert_eq!(workdir.path(), cwd.as_path());
+    }
+
+    #[test]
+    fn workdir_default_creates_and_cleans_temporary_directory() {
+        let path = {
+            let workdir = setup_workdir(false).unwrap();
+            let path = workdir.path().to_path_buf();
+            assert!(path.is_dir());
+            path
+        };
+
+        assert!(!path.exists());
     }
 
     #[test]

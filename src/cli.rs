@@ -148,6 +148,11 @@ pub struct CaptureArgs {
     /// Conflicts with `--aspect`/`--quality`. Omit for a wizard prompt.
     #[arg(long)]
     pub resolution: Option<String>,
+
+    /// Start the captured shell in the current directory instead of an isolated
+    /// temporary directory.
+    #[arg(long)]
+    pub here: bool,
 }
 
 #[derive(Debug, Args)]
