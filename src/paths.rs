@@ -39,11 +39,14 @@ pub fn file_url_relative_to_launch(
         .map_err(|e| Error::Export(format!("launch directory not found: {e}")))?;
     let rel = match abs.strip_prefix(&launch) {
         Ok(p) => p.to_string_lossy().to_string(),
-        Err(_) if shell_dir
-            .and_then(|s| std::fs::canonicalize(s).ok())
-            .is_some() =>
+        Err(_)
+            if shell_dir
+                .and_then(|s| std::fs::canonicalize(s).ok())
+                .is_some() =>
         {
-            let shell = shell_dir.and_then(|s| std::fs::canonicalize(s).ok()).unwrap();
+            let shell = shell_dir
+                .and_then(|s| std::fs::canonicalize(s).ok())
+                .unwrap();
             abs.strip_prefix(&shell)
                 .map(|p| p.to_string_lossy().to_string())
                 .unwrap_or_else(|_| {
