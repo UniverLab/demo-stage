@@ -8,6 +8,7 @@
 pub mod browser;
 pub mod composite;
 pub mod gif;
+pub mod local_server;
 pub mod mp4;
 pub mod provision;
 pub mod raster;
@@ -32,7 +33,31 @@ pub fn render(rec: &Recording, score: &Score, target: Target) -> Result<PathBuf>
     if !problems.is_empty() {
         return Err(Error::Validation(problems.join("\n")));
     }
-    let staged = stage::needs_stage(score);
+
+    // Check if any pane uses a local file:// URL. If so, start a temporary HTTP server.
+    let has_local_files = score
+        .layout
+        .panes
+        .iter()
+        .any(|p| p.url.as_ref().is_some_and(|u| u.starts_with("file://")));
+
+    let mut score = score.clone();
+    let _server = if has_local_files {
+        let server = local_server::LocalServer::start(std::path::Path::new("/"))?;
+        eprintln!("● serving local files on http://127.0.0.1:{}", server.port());
+        for pane in &mut score.layout.panes {
+            if let Some(url) = &pane.url {
+                if url.starts_with("file://") {
+                    pane.url = Some(server.rewrite_url(url));
+                }
+            }
+        }
+        Some(server)
+    } else {
+        None
+    };
+
+    let staged = stage::needs_stage(&score);
     let fps = score.layout.fps.max(1);
     // Two distinct frame geometries:
     //  - staged: compositing on the canvas → layout.width/height
@@ -40,19 +65,19 @@ pub fn render(rec: &Recording, score: &Score, target: Target) -> Result<PathBuf>
     let (cw, ch) = if staged {
         (score.layout.width as usize, score.layout.height as usize)
     } else {
-        let plan = raster::plan(rec, score);
+        let plan = raster::plan(rec, &score);
         (plan.width, plan.height)
     };
     let total_frames = (rec.duration * fps as f64).ceil() as usize + 1;
 
     match target {
         Target::Gif => {
-            let path = resolve_output(score, "gif");
+            let path = resolve_output(&score, "gif");
             ensure_parent(&path)?;
             if staged {
                 let mut n = 0usize;
                 gif::encode(&path, cw, ch, fps, |emit| {
-                    stage::render_stage(rec, score, |f| {
+                    stage::render_stage(rec, &score, |f| {
                         n += 1;
                         progress_bar("exporting gif", n, total_frames);
                         emit(f);
@@ -62,7 +87,7 @@ pub fn render(rec: &Recording, score: &Score, target: Target) -> Result<PathBuf>
             } else {
                 let mut n = 0usize;
                 gif::encode(&path, cw, ch, fps, |emit| {
-                    raster::render_frames(rec, score, |f| {
+                    raster::render_frames(rec, &score, |f| {
                         n += 1;
                         progress_bar("exporting gif", n, total_frames);
                         emit(f);
@@ -74,12 +99,12 @@ pub fn render(rec: &Recording, score: &Score, target: Target) -> Result<PathBuf>
             Ok(path)
         }
         Target::Mp4 => {
-            let path = resolve_output(score, "mp4");
+            let path = resolve_output(&score, "mp4");
             ensure_parent(&path)?;
             if staged {
                 let mut n = 0usize;
                 mp4::encode(&path, cw, ch, fps, |emit| {
-                    stage::render_stage(rec, score, |f| {
+                    stage::render_stage(rec, &score, |f| {
                         n += 1;
                         progress_bar("exporting mp4", n, total_frames);
                         emit(f);
@@ -89,7 +114,7 @@ pub fn render(rec: &Recording, score: &Score, target: Target) -> Result<PathBuf>
             } else {
                 let mut n = 0usize;
                 mp4::encode(&path, cw, ch, fps, |emit| {
-                    raster::render_frames(rec, score, |f| {
+                    raster::render_frames(rec, &score, |f| {
                         n += 1;
                         progress_bar("exporting mp4", n, total_frames);
                         emit(f);
