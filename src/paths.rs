@@ -64,6 +64,36 @@ pub fn file_url_relative_to_launch(
     Ok(format!("file://./{rel}"))
 }
 
+/// Build an absolute `file://` URL for a local file (e.g., from file picker).
+/// Unlike `file_url_relative_to_launch`, this always uses the full absolute path,
+/// so the demo works correctly from any launch directory.
+pub fn file_url_absolute(path: &Path) -> Result<String> {
+    let abs =
+        std::fs::canonicalize(path).map_err(|e| Error::Export(format!("file not found: {e}")))?;
+    if !is_supported_browser_file(&abs) {
+        return Err(Error::Export(format!(
+            "unsupported file type — supported: {}",
+            SUPPORTED_BROWSER_EXTENSIONS.join(", ")
+        )));
+    }
+    // Convert to file:// URL. On Unix, use the path directly; on Windows, the path
+    // will have backslashes that need to be forward slashes.
+    let path_str = abs
+        .to_str()
+        .ok_or_else(|| Error::Export("path contains invalid UTF-8".to_string()))?
+        .replace('\\', "/");
+    
+    // On Windows, canonicalize returns `C:\...`, so we need to add the drive letter
+    // prefix after `file:///`. On Unix, it's `/path/...`, so `file:///path/...`.
+    if cfg!(windows) && path_str.len() > 1 && path_str.chars().nth(1) == Some(':') {
+        // Windows: C:\... → file:///C:/...
+        Ok(format!("file:///{path_str}"))
+    } else {
+        // Unix: /path/... → file:///path/...
+        Ok(format!("file://{path_str}"))
+    }
+}
+
 /// Rewrite Windows `file:///X:/…` URLs to native paths when Chromium runs on Unix
 /// (WSL). Windows Chrome often copies WSL files as `file:///Z:/home/…`; Chromium
 /// in WSL needs `/home/…` or `/mnt/c/…`.

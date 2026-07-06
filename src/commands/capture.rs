@@ -23,7 +23,7 @@ use crate::export::run::{is_zsh, sh_single_quote};
 use crate::file_picker::{pick_local_file, BrowseRoots};
 use crate::model::{DemoMeta, Orientation, RawEvent, RawMacro, RawMeta, RevealPane, Score};
 use crate::normalize::{merge_into_stage, normalize, Options};
-use crate::paths::{file_url_relative_to_launch, repair_browser_url};
+use crate::paths::{file_url_absolute, repair_browser_url};
 
 /// Marker the captured shell echoes once it's at our forced prompt — recording
 /// starts after it, so the prompt-setup chatter is discarded. Assembled by the
@@ -519,7 +519,7 @@ fn choose_sources(
         .map_err(|e| Error::Export(format!("source wizard: {e}")))?;
         let url = if source_kind.starts_with("Local") {
             let path = pick_local_file(&roots, false)?;
-            file_url_relative_to_launch(&path, launch_dir, Some(shell_dir))?
+            file_url_absolute(&path)?
         } else {
             let raw = inquire::Text::new("URL:")
                 .with_help_message("https://github.com/..., http://localhost:3000")

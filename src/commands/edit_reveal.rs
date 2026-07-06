@@ -6,7 +6,7 @@ use inquire::{Select, Text};
 use crate::error::{Error, Result};
 use crate::file_picker::{pick_local_file, BrowseRoots};
 use crate::model::{PaneKind, Score, ScrollDirection, Step, Velocity};
-use crate::paths::{file_url_relative_to_launch, repair_browser_url};
+use crate::paths::{file_url_absolute, repair_browser_url};
 
 const DEFAULT_HOLD_MS: u64 = 6000;
 const SCROLL_HOLD_MS: u64 = 8000;
@@ -97,13 +97,11 @@ pub fn edit_browser_reveal(score: &mut Score, focus_idx: usize) -> Result<()> {
 
     let new_url = match url_choice {
         1 => {
-            let cwd = std::env::current_dir().unwrap_or_else(|_| ".".into());
-            let roots = BrowseRoots {
-                launch_dir: cwd.clone(),
-                shell_dir: cwd,
-            };
-            let path = pick_local_file(&roots, false)?;
-            Some(file_url_relative_to_launch(&path, &roots.launch_dir, Some(&roots.shell_dir))?)
+            let path = pick_local_file(&BrowseRoots {
+                launch_dir: std::env::current_dir().unwrap_or_else(|_| ".".into()),
+                shell_dir: std::env::current_dir().unwrap_or_else(|_| ".".into()),
+            }, false)?;
+            Some(file_url_absolute(&path)?)
         }
         2 => {
             let current = pane.url.as_deref().unwrap_or("");
