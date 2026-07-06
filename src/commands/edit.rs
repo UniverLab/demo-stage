@@ -8,6 +8,7 @@
 //! into a `wait_for_quiet`.
 
 use crate::cli::EditArgs;
+use crate::commands::edit_reveal;
 use crate::error::{Error, Result};
 use crate::model::{Score, Step};
 
@@ -53,7 +54,7 @@ pub fn run(args: EditArgs) -> Result<()> {
 
         cursor = indices[0];
         println!();
-        apply_action(&mut score.timeline, &indices)?;
+        apply_action(&mut score, &indices)?;
         if cursor >= score.timeline.len() && cursor > 0 {
             cursor = score.timeline.len() - 1;
         }
@@ -91,17 +92,22 @@ fn selection_indices(selected: &[String], len: usize) -> Vec<usize> {
 }
 
 /// Ask for one action and apply it to every selected step.
-fn apply_action(timeline: &mut Vec<Step>, indices: &[usize]) -> Result<()> {
+fn apply_action(score: &mut Score, indices: &[usize]) -> Result<()> {
     let all_type = indices
         .iter()
-        .all(|&i| matches!(timeline[i], Step::Type { .. }));
+        .all(|&i| matches!(score.timeline[i], Step::Type { .. }));
 
-    match ask_action(indices.len(), all_type)? {
+    let single_browser_focus = indices.len() == 1 && edit_reveal::is_browser_focus(score, indices[0]);
+
+    match ask_action(indices.len(), all_type, single_browser_focus)? {
         None | Some(EditAction::Keep) => {} // Esc = cancel
+        Some(EditAction::EditReveal) => {
+            edit_reveal::edit_browser_reveal(score, indices[0])?;
+        }
         Some(EditAction::WaitForQuiet) => {
-            let quiet = ask_u64("quiet_ms", current_ms(&timeline[indices[0]]))?;
+            let quiet = ask_u64("quiet_ms", current_ms(&score.timeline[indices[0]]))?;
             for &i in indices {
-                timeline[i] = Step::WaitForQuiet {
+                score.timeline[i] = Step::WaitForQuiet {
                     quiet_ms: quiet,
                     max_ms: None,
                 };
@@ -111,7 +117,7 @@ fn apply_action(timeline: &mut Vec<Step>, indices: &[usize]) -> Result<()> {
         Some(EditAction::WaitForScreen) => {
             let pattern = ask_string("match pattern")?;
             for &i in indices {
-                timeline[i] = Step::WaitForScreen {
+                score.timeline[i] = Step::WaitForScreen {
                     pattern: pattern.clone(),
                     timeout_ms: None,
                 };
@@ -121,7 +127,7 @@ fn apply_action(timeline: &mut Vec<Step>, indices: &[usize]) -> Result<()> {
         Some(EditAction::WaitForStdout) => {
             let pattern = ask_string("match pattern")?;
             for &i in indices {
-                timeline[i] = Step::WaitForStdout {
+                score.timeline[i] = Step::WaitForStdout {
                     pattern: pattern.clone(),
                     pane: None,
                 };
@@ -129,22 +135,22 @@ fn apply_action(timeline: &mut Vec<Step>, indices: &[usize]) -> Result<()> {
             println!("  ✓ updated {}\n", plural(indices.len()));
         }
         Some(EditAction::ChangeDuration) => {
-            let ms = ask_u64("duration_ms", current_ms(&timeline[indices[0]]))?;
+            let ms = ask_u64("duration_ms", current_ms(&score.timeline[indices[0]]))?;
             for &i in indices {
-                timeline[i] = Step::Wait { duration_ms: ms };
+                score.timeline[i] = Step::Wait { duration_ms: ms };
             }
             println!("  ✓ updated {}\n", plural(indices.len()));
         }
         Some(EditAction::SplitType) => {
-            split_type_step(timeline, indices[0])?;
+            split_type_step(&mut score.timeline, indices[0])?;
         }
         Some(EditAction::ReplaceInTypes) => {
-            replace_in_types(timeline, indices)?;
+            replace_in_types(&mut score.timeline, indices)?;
         }
         Some(EditAction::Delete) => {
             // Back to front so earlier indices stay valid while removing.
             for &i in indices.iter().rev() {
-                timeline.remove(i);
+                score.timeline.remove(i);
             }
             println!("  ✓ deleted {}\n", plural(indices.len()));
         }
@@ -203,7 +209,10 @@ fn step_summary(step: &Step) -> String {
         Step::WaitForQuiet { quiet_ms, .. } => format!("wait_for_quiet {quiet_ms}ms"),
         Step::WaitForScreen { pattern, .. } => format!("wait_for_screen {:?}", pattern),
         Step::WaitForStdout { pattern, .. } => format!("wait_for_stdout {:?}", pattern),
-        Step::Focus { pane } => format!("focus → {}", pane.as_deref().unwrap_or("?")),
+        Step::Focus { pane } => {
+            let id = pane.as_deref().unwrap_or("?");
+            format!("focus → {id} (reveal)")
+        }
         Step::Caption { text } => format!("caption {:?}", text),
         Step::Secret { prompt } => format!("secret {:?}", prompt),
         Step::Scroll {
@@ -219,6 +228,7 @@ fn step_summary(step: &Step) -> String {
 
 enum EditAction {
     Keep,
+    EditReveal,
     WaitForQuiet,
     WaitForScreen,
     WaitForStdout,
@@ -231,7 +241,11 @@ enum EditAction {
 /// The action menu for `n` marked steps. Every action applies to all of them;
 /// text editing appears when the whole selection is `type` steps (in-place
 /// split/edit for one, find & replace across several).
-fn ask_action(n: usize, all_type: bool) -> Result<Option<EditAction>> {
+fn ask_action(
+    n: usize,
+    all_type: bool,
+    single_browser_focus: bool,
+) -> Result<Option<EditAction>> {
     let mut opts = vec![
         "Keep as-is",
         "→ wait_for_quiet (silence-based)",
@@ -240,6 +254,10 @@ fn ask_action(n: usize, all_type: bool) -> Result<Option<EditAction>> {
         "Change duration",
         "Delete",
     ];
+
+    if single_browser_focus {
+        opts.insert(1, "Edit reveal (placement, scroll, file/URL)");
+    }
 
     if all_type {
         opts.push(if n == 1 {
@@ -264,6 +282,7 @@ fn ask_action(n: usize, all_type: bool) -> Result<Option<EditAction>> {
 
     Ok(Some(match choice {
         "Keep as-is" => EditAction::Keep,
+        "Edit reveal (placement, scroll, file/URL)" => EditAction::EditReveal,
         "→ wait_for_quiet (silence-based)" => EditAction::WaitForQuiet,
         "→ wait_for_screen (VT pattern)" => EditAction::WaitForScreen,
         "→ wait_for_stdout (raw output pattern)" => EditAction::WaitForStdout,

@@ -7,6 +7,7 @@ pub mod capture;
 pub mod control;
 pub mod doctor;
 pub mod edit;
+pub mod edit_reveal;
 pub mod export;
 pub mod focus;
 pub mod open;

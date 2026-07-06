@@ -20,8 +20,10 @@ use crate::commands::control;
 use crate::error::{Error, Result};
 use crate::export::recording;
 use crate::export::run::{is_zsh, sh_single_quote};
+use crate::file_picker::{pick_local_file, BrowseRoots};
 use crate::model::{DemoMeta, Orientation, RawEvent, RawMacro, RawMeta, RevealPane, Score};
 use crate::normalize::{merge_into_stage, normalize, Options};
+use crate::paths::{file_url_relative_to_launch, repair_browser_url};
 
 /// Marker the captured shell echoes once it's at our forced prompt — recording
 /// starts after it, so the prompt-setup chatter is discarded. Assembled by the
@@ -476,7 +478,10 @@ fn choose_fps(args: &CaptureArgs) -> Result<u32> {
 }
 
 /// Ask if the user wants to add browser sources, loop through adding them.
-fn choose_sources() -> Result<Vec<crate::model::Source>> {
+fn choose_sources(
+    launch_dir: &std::path::Path,
+    shell_dir: &std::path::Path,
+) -> Result<Vec<crate::model::Source>> {
     if !std::io::stdin().is_terminal() {
         return Ok(vec![]);
     }
@@ -493,6 +498,10 @@ fn choose_sources() -> Result<Vec<crate::model::Source>> {
         url: None,
         theme: None,
     }];
+    let roots = BrowseRoots {
+        launch_dir: launch_dir.to_path_buf(),
+        shell_dir: shell_dir.to_path_buf(),
+    };
     loop {
         let id = inquire::Text::new("Source ID:")
             .with_help_message("unique name (e.g. 'github', 'docs', 'preview')")
@@ -502,11 +511,22 @@ fn choose_sources() -> Result<Vec<crate::model::Source>> {
         if id.is_empty() {
             break;
         }
-        let url = inquire::Text::new("URL:")
-            .with_help_message("https://github.com/..., http://localhost:3000, file://...")
-            .prompt()
-            .map_err(|e| Error::Export(format!("source wizard: {e}")))?;
-        let url = normalize_url(url.trim());
+        let source_kind = inquire::Select::new(
+            "Source:",
+            vec!["URL (web page, localhost)", "Local file (PDF, PNG, HTML)"],
+        )
+        .prompt()
+        .map_err(|e| Error::Export(format!("source wizard: {e}")))?;
+        let url = if source_kind.starts_with("Local") {
+            let path = pick_local_file(&roots, false)?;
+            file_url_relative_to_launch(&path, launch_dir, Some(shell_dir))?
+        } else {
+            let raw = inquire::Text::new("URL:")
+                .with_help_message("https://github.com/..., http://localhost:3000")
+                .prompt()
+                .map_err(|e| Error::Export(format!("source wizard: {e}")))?;
+            repair_browser_url(raw.trim(), launch_dir)?
+        };
         let theme = inquire::Select::new(
             "Browser theme:",
             vec!["default (page preference)", "light", "dark"],
@@ -533,17 +553,6 @@ fn choose_sources() -> Result<Vec<crate::model::Source>> {
         }
     }
     Ok(sources)
-}
-
-fn normalize_url(url: &str) -> String {
-    let u = url.trim();
-    if u.contains("://") {
-        u.to_string()
-    } else if u.starts_with("localhost") || u.starts_with("127.0.0.1") {
-        format!("http://{u}")
-    } else {
-        format!("https://{u}")
-    }
 }
 
 /// Decode PTY bytes to text across read boundaries. `pending` holds bytes left
@@ -853,7 +862,7 @@ pub fn run(args: CaptureArgs) -> Result<()> {
     let resolution = choose_canvas(&args)?;
     let fps = choose_fps(&args)?;
     let font_family = choose_font(&args)?;
-    let sources = choose_sources()?;
+    let sources = choose_sources(&launch_dir, work_dir.path())?;
     // Publish the sources beside the control file so `demo focus`/`demo open` can
     // list them live (the score isn't written until the capture ends).
     let _ = control::write_sources(&control_abs, &sources);

@@ -21,6 +21,7 @@ use crate::error::{Error, Result};
 use crate::file_picker::{pick_local_file, BrowseRoots};
 use crate::paths::{
     file_url_relative_to_launch, local_file_url, looks_like_local_path, normalize_url,
+    repair_browser_url,
 };
 
 /// Monospace cell size assumed by the renderer (matches `export::recording`), so a
@@ -241,15 +242,15 @@ fn wizard(in_session: bool) -> Result<Reveal> {
     )
     .prompt())?;
 
+    let roots = capture_roots();
     let url = if source.starts_with("Local") {
-        let roots = capture_roots();
         let path = pick_local_file(&roots, in_session)?;
         file_url_relative_to_launch(&path, &roots.launch_dir, Some(&roots.shell_dir))?
     } else {
         let raw = ask(Text::new("URL:")
             .with_help_message("a repo page, http://localhost…")
             .prompt())?;
-        normalize_url(&raw)
+        repair_browser_url(&raw, &roots.launch_dir)?
     };
 
     let scene_name = ask(inquire::Text::new("Scene name:")

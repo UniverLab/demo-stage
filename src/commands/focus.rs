@@ -12,12 +12,24 @@
 
 use std::io::IsTerminal;
 
-use inquire::{MultiSelect, Select};
+use inquire::{MultiSelect, Select, Text};
 
 use crate::cli::FocusArgs;
 use crate::commands::control;
 use crate::error::{Error, Result};
 use crate::model::{Source, SourceKind};
+
+/// Outcome of the no-arg `demo focus` wizard.
+struct WizardOutcome {
+    sources: Vec<String>,
+    orientation: String,
+    when: Option<String>,
+    after: bool,
+    hold_ms: Option<u64>,
+    scroll: bool,
+    /// When a single browser source is chosen, show it beside the terminal.
+    split_with_main: bool,
+}
 
 pub fn run(args: FocusArgs) -> Result<()> {
     // Live command: it only makes sense while a capture is running. `find` gives
@@ -25,22 +37,37 @@ pub fn run(args: FocusArgs) -> Result<()> {
     control::find()?;
     let sources = control::read_sources();
 
-    let (chosen, orientation, when, after) = if args.sources.is_empty() {
+    let wizard_out = if args.sources.is_empty() {
         if !std::io::stdin().is_terminal() {
             return Err(Error::Export(
                 "demo focus needs a source (e.g. `demo focus main`), or a terminal for the wizard"
                     .to_string(),
             ));
         }
-        wizard(&sources, &args)?
+        Some(wizard(&sources, &args)?)
     } else {
-        (
-            args.sources.clone(),
-            orientation_flag(&args),
-            args.when.clone(),
-            args.after,
-        )
+        None
     };
+
+    let chosen = wizard_out
+        .as_ref()
+        .map(|w| w.sources.clone())
+        .unwrap_or_else(|| args.sources.clone());
+    let orientation = wizard_out
+        .as_ref()
+        .map(|w| w.orientation.clone())
+        .unwrap_or_else(|| orientation_flag(&args));
+    let when = wizard_out
+        .as_ref()
+        .and_then(|w| w.when.clone())
+        .or_else(|| args.when.clone());
+    let after = wizard_out.as_ref().map(|w| w.after).unwrap_or(args.after);
+    let hold_ms = wizard_out
+        .as_ref()
+        .and_then(|w| w.hold_ms)
+        .or_else(|| args.hold.map(|s| (s.max(0.0) * 1000.0) as u64));
+    let scroll = wizard_out.as_ref().map(|w| w.scroll).unwrap_or(args.scroll);
+    let split_with_main = wizard_out.as_ref().is_some_and(|w| w.split_with_main);
 
     if chosen.len() > 2 {
         return Err(Error::Export(
@@ -49,10 +76,12 @@ pub fn run(args: FocusArgs) -> Result<()> {
     }
 
     // Resolve each id to a reveal pane (terminal, or a browser source's URL).
-    let panes: Vec<serde_json::Value> = chosen
-        .iter()
-        .map(|id| resolve_pane(id, &sources, args.theme.as_deref()))
-        .collect::<Result<_>>()?;
+    let panes = build_panes(
+        &chosen,
+        split_with_main,
+        &sources,
+        args.theme.as_deref(),
+    )?;
 
     // In-session, mute this command's echo/wizard from now (from another terminal
     // there's nothing in the captured shell to mute).
@@ -76,12 +105,36 @@ pub fn run(args: FocusArgs) -> Result<()> {
         "cmd": "reveal",
         "panes": panes,
         "orientation": orientation,
-        "hold": args.hold.map(|s| (s.max(0.0) * 1000.0) as u64),
-        "scroll": args.scroll,
+        "hold": hold_ms,
+        "scroll": scroll,
         "when": when,
         "after": after,
     }))?;
     Ok(())
+}
+
+/// Build reveal panes from the chosen source ids. A single browser source can be
+/// shown full-screen or beside the terminal (`split_with_main`).
+fn build_panes(
+    chosen: &[String],
+    split_with_main: bool,
+    sources: &[Source],
+    theme_override: Option<&str>,
+) -> Result<Vec<serde_json::Value>> {
+    if chosen.len() == 1 && split_with_main && !is_terminal_id(&chosen[0]) {
+        return Ok(vec![
+            resolve_pane("main", sources, theme_override)?,
+            resolve_pane(&chosen[0], sources, theme_override)?,
+        ]);
+    }
+    chosen
+        .iter()
+        .map(|id| resolve_pane(id, sources, theme_override))
+        .collect()
+}
+
+fn is_terminal_id(id: &str) -> bool {
+    id == "main" || id == "terminal"
 }
 
 /// Resolve a source id to a reveal-pane JSON object. `main`/`terminal` is the
@@ -135,12 +188,9 @@ fn source_hint(sources: &[Source]) -> String {
     }
 }
 
-/// Pick 1–2 sources (orientation for two, and when to reveal) from the
-/// capture's sources. Returns `(sources, orientation, when, after)`.
-fn wizard(
-    sources: &[Source],
-    args: &FocusArgs,
-) -> Result<(Vec<String>, String, Option<String>, bool)> {
+/// Pick 1–2 sources (orientation for two, presentation, and when to reveal) from
+/// the capture's sources.
+fn wizard(sources: &[Source], args: &FocusArgs) -> Result<WizardOutcome> {
     println!("\n  demo focus — switch the view\n");
     // "main" (the terminal) is always available, plus any browser sources.
     let mut ids: Vec<String> = vec!["main".to_string()];
@@ -178,6 +228,54 @@ fn wizard(
         orientation_flag(args)
     };
 
+    let has_browser = chosen.iter().any(|id| !is_terminal_id(id));
+    let split_with_main = if chosen.len() == 1 && has_browser {
+        let mode = ask(Select::new(
+            "Place it:",
+            vec![
+                "replace — full screen (scene swap)",
+                "split — beside the terminal",
+            ],
+        )
+        .prompt())?;
+        mode.starts_with("split")
+    } else {
+        false
+    };
+
+    let (hold_ms, scroll) = if has_browser {
+        let behavior = ask(Select::new(
+            "Show it as:",
+            vec![
+                "Static — hold for a few seconds",
+                "Scroll the page down (pan)",
+            ],
+        )
+        .prompt())?;
+        let scroll = behavior.starts_with("Scroll");
+        let hold_ms = if behavior.starts_with("Static") {
+            let secs = ask(Text::new("Hold for how many seconds?")
+                .with_default("6")
+                .with_validator(|s: &str| {
+                    let s = s.trim();
+                    match s.parse::<f64>() {
+                        Ok(n) if n > 0.0 => Ok(inquire::validator::Validation::Valid),
+                        _ => Ok(inquire::validator::Validation::Invalid(
+                            "enter a positive number of seconds (e.g. 6)".into(),
+                        )),
+                    }
+                })
+                .prompt())?;
+            let secs: f64 = secs.trim().parse().unwrap_or(6.0);
+            Some((secs.max(0.5) * 1000.0) as u64)
+        } else {
+            None
+        };
+        (hold_ms, scroll)
+    } else {
+        (None, false)
+    };
+
     // When to switch — same choices as the `demo open` wizard, so a focus can be
     // armed ahead of a long-running command instead of firing immediately.
     let trigger = ask(Select::new(
@@ -192,14 +290,22 @@ fn wizard(
     let (when, after) = if trigger.starts_with("when the current") {
         (None, true)
     } else if trigger.starts_with("when a line") {
-        let pat = ask(inquire::Text::new("Cue line (a substring of the output):").prompt())?;
+        let pat = ask(Text::new("Cue line (a substring of the output):").prompt())?;
         let pat = pat.trim();
         ((!pat.is_empty()).then(|| pat.to_string()), false)
     } else {
         (None, false)
     };
 
-    Ok((chosen, orientation, when, after))
+    Ok(WizardOutcome {
+        sources: chosen,
+        orientation,
+        when,
+        after,
+        hold_ms,
+        scroll,
+        split_with_main,
+    })
 }
 
 fn ask<T>(r: std::result::Result<T, inquire::InquireError>) -> Result<T> {

@@ -64,6 +64,66 @@ pub fn file_url_relative_to_launch(
     Ok(format!("file://./{rel}"))
 }
 
+/// Rewrite Windows `file:///X:/…` URLs to native paths when Chromium runs on Unix
+/// (WSL). Windows Chrome often copies WSL files as `file:///Z:/home/…`; Chromium
+/// in WSL needs `/home/…` or `/mnt/c/…`.
+pub fn normalize_windows_file_url(url: &str) -> String {
+    let u = url.trim();
+    let Some(rest) = u.strip_prefix("file:///") else {
+        return u.to_string();
+    };
+    #[cfg(not(unix))]
+    {
+        return u.to_string();
+    }
+    #[cfg(unix)]
+    {
+        let Some((drive, path)) = rest.split_once(':') else {
+            return u.to_string();
+        };
+        let drive = drive.trim_start_matches('/');
+        if drive.len() != 1 || !drive.chars().all(|c| c.is_ascii_alphabetic()) {
+            return u.to_string();
+        }
+        let path = path.trim_start_matches('/');
+        if looks_like_unix_root_path(path) {
+            let linux = format!("/{path}");
+            if Path::new(&linux).exists() {
+                return format!("file://{linux}");
+            }
+        }
+        let linux = format!("/mnt/{}/{}", drive.to_ascii_lowercase(), path);
+        if Path::new(&linux).exists() {
+            return format!("file://{linux}");
+        }
+        u.to_string()
+    }
+}
+
+fn looks_like_unix_root_path(path: &str) -> bool {
+    matches!(
+        path.split('/').next(),
+        Some("home" | "tmp" | "var" | "usr" | "opt" | "mnt")
+    )
+}
+
+/// Normalize a browser-pane URL from wizard/CLI input: repair Windows `file://`
+/// paths, canonicalize local files relative to `launch_dir`, or add a protocol.
+pub fn repair_browser_url(url: &str, launch_dir: &Path) -> Result<String> {
+    let u = url.trim();
+    if u.starts_with("file://") {
+        let fixed = normalize_windows_file_url(u);
+        if looks_like_local_path(&fixed) {
+            return local_file_url(&fixed, launch_dir);
+        }
+        return Ok(fixed);
+    }
+    if looks_like_local_path(u) {
+        return local_file_url(u, launch_dir);
+    }
+    Ok(normalize_url(u))
+}
+
 /// Resolve a browser pane URL. Relative `file://./…` paths are resolved from the
 /// process cwd (the demo project directory when re-running).
 pub fn resolve_browser_url(url: &str) -> Result<String> {
@@ -72,6 +132,10 @@ pub fn resolve_browser_url(url: &str) -> Result<String> {
         return Ok(u.to_string());
     };
     if path_part.starts_with('/') {
+        let fixed = normalize_windows_file_url(u);
+        if fixed != u {
+            return Ok(fixed);
+        }
         return Ok(u.to_string());
     }
     let rel = path_part.trim_start_matches("./");
@@ -102,7 +166,18 @@ pub fn looks_like_local_path(s: &str) -> bool {
 
 /// Canonicalize a local path flag/argument into a launch-relative `file://` URL.
 pub fn local_file_url(path: &str, launch_dir: &Path) -> Result<String> {
-    let raw = path.trim().strip_prefix("file://").unwrap_or(path.trim());
+    let trimmed = path.trim();
+    if trimmed.starts_with("file://") {
+        let fixed = normalize_windows_file_url(trimmed);
+        if fixed != trimmed && fixed.starts_with("file://") {
+            let linux = fixed
+                .strip_prefix("file://")
+                .unwrap_or(&fixed)
+                .to_string();
+            return file_url_relative_to_launch(Path::new(&linux), launch_dir, None);
+        }
+    }
+    let raw = trimmed.strip_prefix("file://").unwrap_or(trimmed);
     let p = PathBuf::from(raw);
     let abs = if p.is_absolute() {
         p
@@ -161,5 +236,17 @@ mod tests {
         assert!(looks_like_local_path("./dist/main.pdf"));
         assert!(looks_like_local_path("file://./out.pdf"));
         assert!(!looks_like_local_path("https://example.com"));
+    }
+
+    #[test]
+    fn normalize_windows_file_url_maps_wsl_home_paths() {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
+        if !Path::new(&home).exists() {
+            return;
+        }
+        let tail = home.trim_start_matches('/');
+        let win = format!("file:///Z:/{tail}");
+        let fixed = normalize_windows_file_url(&win);
+        assert_eq!(fixed, format!("file://{home}"));
     }
 }
