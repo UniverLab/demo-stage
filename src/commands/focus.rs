@@ -76,12 +76,7 @@ pub fn run(args: FocusArgs) -> Result<()> {
     }
 
     // Resolve each id to a reveal pane (terminal, or a browser source's URL).
-    let panes = build_panes(
-        &chosen,
-        split_with_main,
-        &sources,
-        args.theme.as_deref(),
-    )?;
+    let panes = build_panes(&chosen, split_with_main, &sources, args.theme.as_deref())?;
 
     // In-session, mute this command's echo/wizard from now (from another terminal
     // there's nothing in the captured shell to mute).

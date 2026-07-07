@@ -4,7 +4,9 @@
 
 use crate::cli::{all_targets, ExportArgs};
 use crate::error::{Error, Result};
-use crate::export::{recording, render, scale_pane_windows, scale_recording};
+use crate::export::{
+    ensure_local_server, recording, render, rewrite_local_urls, scale_pane_windows, scale_recording,
+};
 use crate::model::Score;
 
 pub fn run(args: ExportArgs) -> Result<()> {
@@ -47,6 +49,14 @@ pub fn run(args: ExportArgs) -> Result<()> {
              as recorded; `demo record` would re-humanize them."
         );
     }
+
+    // Start the local file server once (if needed) and keep it alive for all targets.
+    let _server = ensure_local_server(&score)?;
+    let score = if let Some(server) = _server.as_ref() {
+        rewrite_local_urls(&score, server.port())
+    } else {
+        score
+    };
 
     // No target given → build every supported format.
     let targets = args.targets.map(|t| t.0).unwrap_or_else(all_targets);

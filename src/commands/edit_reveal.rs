@@ -23,9 +23,7 @@ pub fn is_browser_focus(score: &Score, idx: usize) -> bool {
     let Some(Step::Focus { pane: Some(id) }) = score.timeline.get(idx) else {
         return false;
     };
-    score
-        .pane(id)
-        .is_some_and(|p| p.kind == PaneKind::Browser)
+    score.pane(id).is_some_and(|p| p.kind == PaneKind::Browser)
 }
 
 /// Interactive editor for a browser `focus` step — opening mode and optional URL.
@@ -52,18 +50,9 @@ pub fn edit_browser_reveal(score: &mut Score, focus_idx: usize) -> Result<()> {
     let placement_pick = ask_select(
         "Place it:",
         &[
-            (
-                "replace — full screen (scene swap)",
-                Placement::Replace,
-            ),
-            (
-                "split — beside the terminal",
-                Placement::SplitHorizontal,
-            ),
-            (
-                "split — stacked (top/bottom)",
-                Placement::SplitVertical,
-            ),
+            ("replace — full screen (scene swap)", Placement::Replace),
+            ("split — beside the terminal", Placement::SplitHorizontal),
+            ("split — stacked (top/bottom)", Placement::SplitVertical),
         ],
         placement,
     )?;
@@ -97,10 +86,13 @@ pub fn edit_browser_reveal(score: &mut Score, focus_idx: usize) -> Result<()> {
 
     let new_url = match url_choice {
         1 => {
-            let path = pick_local_file(&BrowseRoots {
-                launch_dir: std::env::current_dir().unwrap_or_else(|_| ".".into()),
-                shell_dir: std::env::current_dir().unwrap_or_else(|_| ".".into()),
-            }, false)?;
+            let path = pick_local_file(
+                &BrowseRoots {
+                    launch_dir: std::env::current_dir().unwrap_or_else(|_| ".".into()),
+                    shell_dir: std::env::current_dir().unwrap_or_else(|_| ".".into()),
+                },
+                false,
+            )?;
             Some(file_url_absolute(&path)?)
         }
         2 => {
@@ -116,13 +108,7 @@ pub fn edit_browser_reveal(score: &mut Score, focus_idx: usize) -> Result<()> {
     };
 
     apply_placement(&mut score.layout, &pane_id, placement_pick);
-    update_reveal_tail(
-        &mut score.timeline,
-        focus_idx,
-        &pane_id,
-        behavior,
-        hold_ms,
-    );
+    update_reveal_tail(&mut score.timeline, focus_idx, &pane_id, behavior, hold_ms);
 
     if let Some(url) = new_url {
         sync_browser_url(score, &pane_id, &url);
@@ -147,9 +133,10 @@ fn detect_placement(pane: &crate::model::Pane, layout: &crate::model::Layout) ->
 }
 
 fn has_scroll_after(score: &Score, focus_idx: usize, pane_id: &str) -> bool {
-    score.timeline.get(focus_idx + 1).is_some_and(|s| {
-        matches!(s, Step::Scroll { pane, .. } if pane.as_deref() == Some(pane_id))
-    })
+    score
+        .timeline
+        .get(focus_idx + 1)
+        .is_some_and(|s| matches!(s, Step::Scroll { pane, .. } if pane.as_deref() == Some(pane_id)))
 }
 
 fn hold_after(score: &Score, focus_idx: usize, scroll: bool) -> u64 {
@@ -253,7 +240,12 @@ fn update_reveal_tail(
         );
         at += 1;
     }
-    timeline.insert(at, Step::Wait { duration_ms: hold_ms });
+    timeline.insert(
+        at,
+        Step::Wait {
+            duration_ms: hold_ms,
+        },
+    );
 }
 
 /// Keep `layout.panes`, `sources`, and any sibling browser panes in sync.
@@ -270,11 +262,7 @@ fn sync_browser_url(score: &mut Score, pane_id: &str, url: &str) {
     }
 }
 
-fn ask_select<T: Copy + PartialEq>(
-    prompt: &str,
-    options: &[(&str, T)],
-    current: T,
-) -> Result<T> {
+fn ask_select<T: Copy + PartialEq>(prompt: &str, options: &[(&str, T)], current: T) -> Result<T> {
     let labels: Vec<&str> = options.iter().map(|(l, _)| *l).collect();
     let default = options
         .iter()
@@ -298,13 +286,11 @@ fn ask_select<T: Copy + PartialEq>(
 fn ask_secs(default: f64) -> Result<f64> {
     let secs = Text::new("Hold for how many seconds?")
         .with_default(&format!("{default:.1}"))
-        .with_validator(|s: &str| {
-            match s.trim().parse::<f64>() {
-                Ok(n) if n > 0.0 => Ok(inquire::validator::Validation::Valid),
-                _ => Ok(inquire::validator::Validation::Invalid(
-                    "enter a positive number of seconds (e.g. 6)".into(),
-                )),
-            }
+        .with_validator(|s: &str| match s.trim().parse::<f64>() {
+            Ok(n) if n > 0.0 => Ok(inquire::validator::Validation::Valid),
+            _ => Ok(inquire::validator::Validation::Invalid(
+                "enter a positive number of seconds (e.g. 6)".into(),
+            )),
         })
         .prompt()
         .map_err(|e| Error::Export(format!("edit: {e}")))?;
@@ -325,14 +311,12 @@ mod tests {
             },
             env: None,
             typing: None,
-            sources: vec![
-                Source {
-                    id: "pdf".into(),
-                    kind: SourceKind::Browser,
-                    url: Some("file://./old.pdf".into()),
-                    theme: None,
-                },
-            ],
+            sources: vec![Source {
+                id: "pdf".into(),
+                kind: SourceKind::Browser,
+                url: Some("file://./old.pdf".into()),
+                theme: None,
+            }],
             layout: Layout {
                 width: 100,
                 height: 100,
@@ -376,9 +360,7 @@ mod tests {
                 Step::Focus {
                     pane: Some("pdf-r1".into()),
                 },
-                Step::Wait {
-                    duration_ms: 6000,
-                },
+                Step::Wait { duration_ms: 6000 },
             ],
         }
     }
@@ -406,12 +388,16 @@ mod tests {
             Step::Focus {
                 pane: Some("pdf-r1".into()),
             },
-            Step::Wait {
-                duration_ms: 1000,
-            },
+            Step::Wait { duration_ms: 1000 },
         ];
         update_reveal_tail(&mut timeline, 0, "pdf-r1", true, 8000);
-        assert!(matches!(timeline[1], Step::Scroll { duration_ms: 8000, .. }));
+        assert!(matches!(
+            timeline[1],
+            Step::Scroll {
+                duration_ms: 8000,
+                ..
+            }
+        ));
         assert!(matches!(timeline[2], Step::Wait { duration_ms: 8000 }));
     }
 
@@ -419,7 +405,13 @@ mod tests {
     fn sync_url_updates_source_stem() {
         let mut s = sample_score();
         sync_browser_url(&mut s, "pdf-r1", "file://./new.pdf");
-        assert_eq!(s.pane("pdf-r1").unwrap().url.as_deref(), Some("file://./new.pdf"));
-        assert_eq!(s.source("pdf").unwrap().url.as_deref(), Some("file://./new.pdf"));
+        assert_eq!(
+            s.pane("pdf-r1").unwrap().url.as_deref(),
+            Some("file://./new.pdf")
+        );
+        assert_eq!(
+            s.source("pdf").unwrap().url.as_deref(),
+            Some("file://./new.pdf")
+        );
     }
 }

@@ -12,8 +12,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use headless_chrome::protocol::cdp::Emulation::{MediaFeature, SetEmulatedMedia};
-use headless_chrome::protocol::cdp::Page;
-use headless_chrome::protocol::cdp::Page::CaptureScreenshotFormatOption;
+use headless_chrome::protocol::cdp::Page::{CaptureScreenshotFormatOption, Navigate};
 use headless_chrome::{Browser, LaunchOptions, Tab};
 
 use super::provision;
@@ -32,6 +31,19 @@ pub struct Scene {
 }
 
 impl Scene {
+    /// Build a scene from pre-computed keyframes (used by the native PDF path).
+    pub(crate) fn from_keyframes(
+        width: usize,
+        height: usize,
+        keyframes: Vec<(f64, Vec<u8>)>,
+    ) -> Self {
+        Self {
+            width,
+            height,
+            keyframes,
+        }
+    }
+
     /// The frame to show at `progress` (the latest keyframe at or before it).
     pub fn frame_at(&self, progress: f64) -> &[u8] {
         let mut chosen = &self.keyframes[0].1;
@@ -61,6 +73,19 @@ pub fn capture(pane: &Pane, scroll_keyframes: usize) -> Result<Scene> {
     }
 
     let url = crate::paths::resolve_browser_url(url)?;
+
+    // PDFs render natively (hayro) — no Chromium launch, no blank-viewer risk,
+    // and the scene starts instantly. Chrome's viewer is only a fallback.
+    if url.to_lowercase().ends_with(".pdf") {
+        match local_file_path(&url)
+            .and_then(|p| super::pdf::capture_scene(&p, w, h, scroll_keyframes))
+        {
+            Ok(scene) => return Ok(scene),
+            Err(e) => {
+                eprintln!("demo: native PDF render failed ({e}), falling back to Chrome viewer");
+            }
+        }
+    }
 
     if provision::find_chromium().is_none() {
         eprintln!("demo: Chromium not found — fetching a managed copy (one time)…");
@@ -102,11 +127,27 @@ pub fn capture(pane: &Pane, scroll_keyframes: usize) -> Result<Scene> {
         height: Some(h as f64),
     });
     emulate_theme(&tab, pane.theme.as_deref());
-    tab.navigate_to(&url)
-        .and_then(|t| t.wait_until_navigated())
-        .map_err(|e| Error::Export(format!("navigate to {url}: {e}")))?;
-    // Give the page (or PDF viewer) a moment to paint.
-    std::thread::sleep(Duration::from_millis(900));
+
+    let is_pdf = url.to_lowercase().ends_with(".pdf");
+
+    if is_pdf {
+        // Fallback: Chrome's PDF viewer (native hayro render failed above; the
+        // viewer may still paint blank in headless mode on some systems).
+        let _ = tab.call_method(Navigate {
+            url: url.to_string(),
+            referrer: None,
+            transition_Type: None,
+            frame_id: None,
+            referrer_policy: None,
+        });
+        std::thread::sleep(Duration::from_millis(3000));
+    } else {
+        tab.navigate_to(&url)
+            .and_then(|t| t.wait_until_navigated())
+            .map_err(|e| Error::Export(format!("navigate to {url}: {e}")))?;
+        // Give the page a moment to paint.
+        std::thread::sleep(Duration::from_millis(900));
+    }
 
     let mut keyframes = vec![(0.0, shot(&tab, w, h)?)];
 
@@ -177,9 +218,34 @@ pub fn record_view(
         height: Some(height as f64),
     });
     emulate_theme(&tab, theme);
-    tab.navigate_to(&url)
-        .and_then(|t| t.wait_until_navigated())
-        .map_err(|e| Error::Export(format!("navigate to {url}: {e}")))?;
+
+    let is_pdf = url.to_lowercase().ends_with(".pdf");
+
+    if is_pdf {
+        let _ = tab.call_method(Navigate {
+            url: url.to_string(),
+            referrer: None,
+            transition_Type: None,
+            frame_id: None,
+            referrer_policy: None,
+        });
+        let deadline = std::time::Instant::now() + Duration::from_secs(15);
+        while std::time::Instant::now() < deadline {
+            if let Ok(val) =
+                tab.evaluate("!!document.querySelector('embed, object, iframe')", false)
+            {
+                if val.value.as_ref().and_then(|v| v.as_bool()) == Some(true) {
+                    break;
+                }
+            }
+            std::thread::sleep(Duration::from_millis(250));
+        }
+        std::thread::sleep(Duration::from_millis(1500));
+    } else {
+        tab.navigate_to(&url)
+            .and_then(|t| t.wait_until_navigated())
+            .map_err(|e| Error::Export(format!("navigate to {url}: {e}")))?;
+    }
 
     eprintln!(
         "● recording the browser — navigate freely, then CLOSE THE WINDOW to finish the scene"
@@ -189,16 +255,9 @@ pub fn record_view(
     let mut n = 0usize;
     loop {
         // A failed screenshot means the tab/window was closed — that's the cue to
-        // stop recording.
-        let clip = Page::Viewport {
-            x: 0.0,
-            y: 0.0,
-            width: width as f64,
-            height: height as f64,
-            scale: 1.0,
-        };
-        let Ok(png) =
-            tab.capture_screenshot(CaptureScreenshotFormatOption::Png, None, Some(clip), true)
+        // stop recording. No clip: clip x/y are document coordinates, so once the
+        // user scrolls, a (0,0) clip would capture unrasterized background.
+        let Ok(png) = tab.capture_screenshot(CaptureScreenshotFormatOption::Png, None, None, true)
         else {
             break;
         };
@@ -264,22 +323,35 @@ fn emulate_theme(tab: &Arc<Tab>, theme: Option<&str>) {
     }
 }
 
-fn shot(tab: &Arc<Tab>, w: usize, h: usize) -> Result<Vec<u8>> {
-    // clip with scale=1.0 produces exactly w×h pixels regardless of device DPI.
-    let viewport = Page::Viewport {
-        x: 0.0,
-        y: 0.0,
-        width: w as f64,
-        height: h as f64,
-        scale: 1.0,
+/// Extract the local filesystem path from a `file:///path` or
+/// `http://127.0.0.1:PORT/path` URL (the local server's root is `/`, so its
+/// request path *is* the filesystem path).
+fn local_file_path(url: &str) -> Result<std::path::PathBuf> {
+    let local_path = if let Some(rest) = url.strip_prefix("file://") {
+        rest.to_string()
+    } else if let Some(rest) = url.strip_prefix("http://127.0.0.1:") {
+        match rest.find('/') {
+            Some(slash) => rest[slash..].to_string(),
+            None => {
+                return Err(Error::Export(format!("can't extract path from URL: {url}")));
+            }
+        }
+    } else {
+        return Err(Error::Export(format!("can't extract path from URL: {url}")));
     };
+    let path = std::path::PathBuf::from(&local_path);
+    if !path.exists() {
+        return Err(Error::Export(format!("file not found: {local_path}")));
+    }
+    Ok(path)
+}
+
+fn shot(tab: &Arc<Tab>, w: usize, h: usize) -> Result<Vec<u8>> {
+    // No clip: a clip's x/y are DOCUMENT coordinates, so after a scroll the
+    // clipped region is off-screen and Chrome returns unrasterized background.
+    // The viewport is already forced to w×h; png_to_rgba crops/pads any excess.
     let png = tab
-        .capture_screenshot(
-            CaptureScreenshotFormatOption::Png,
-            None,
-            Some(viewport),
-            true,
-        )
+        .capture_screenshot(CaptureScreenshotFormatOption::Png, None, None, true)
         .map_err(|e| Error::Export(format!("screenshot: {e}")))?;
     png_to_rgba(&png, w, h)
 }

@@ -18,6 +18,7 @@ use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use crate::cli::CaptureArgs;
 use crate::commands::control;
 use crate::error::{Error, Result};
+use crate::export::local_server::{self, LocalServer};
 use crate::export::recording;
 use crate::export::run::{is_zsh, sh_single_quote};
 use crate::file_picker::{pick_local_file, BrowseRoots};
@@ -102,12 +103,25 @@ fn track_and_detect(
                 line.clear();
             }
             c if c.is_control() => {}
-            c => line.push(c),
+            c => {
+                // Full-screen TUIs paint without newlines, so the "line" can grow
+                // without bound. A real secret prompt is short — past the cap this
+                // is screen paint, not a prompt; stop growing (is_secret_prompt
+                // rejects anything this long anyway).
+                if line.len() < MAX_PROMPT_LINE {
+                    line.push(c);
+                }
+            }
         }
     }
     // The prompt may sit at the chunk end with no trailing newline yet.
     check(line);
 }
+
+/// Longest a terminal line can be and still count as a secret prompt. Real
+/// prompts ("Vault passphrase:") are far shorter; anything bigger is a TUI
+/// repainting the screen without newlines.
+const MAX_PROMPT_LINE: usize = 256;
 
 /// Tidy a captured prompt line into a label for `demo record` to show: drop ANSI
 /// CSI residue left after the ESC was stripped (`[..m` colours, `[?25h` cursor
@@ -151,8 +165,12 @@ fn clean_prompt(s: &str) -> String {
 
 /// Heuristic: does this line look like a program prompting for a secret? Matches
 /// a secret keyword on a line that ends like a prompt (`:` or `?`), so a typed
-/// command that merely mentions "password" is not mistaken for a prompt.
+/// command that merely mentions "password" is not mistaken for a prompt. Long
+/// lines are rejected outright — they're TUI screen paint, not prompts.
 fn is_secret_prompt(line: &str) -> bool {
+    if line.len() > 200 {
+        return false;
+    }
     let lower = line.to_ascii_lowercase();
     let trimmed = lower.trim_end();
     if !(trimmed.ends_with(':') || trimmed.ends_with('?')) {
@@ -481,16 +499,16 @@ fn choose_fps(args: &CaptureArgs) -> Result<u32> {
 fn choose_sources(
     launch_dir: &std::path::Path,
     shell_dir: &std::path::Path,
-) -> Result<Vec<crate::model::Source>> {
+) -> Result<(Vec<crate::model::Source>, Vec<LocalServer>)> {
     if !std::io::stdin().is_terminal() {
-        return Ok(vec![]);
+        return Ok((vec![], vec![]));
     }
     let add = inquire::Confirm::new("Add browser sources? (repo pages, docs, localhost)")
         .with_default(false)
         .prompt()
         .map_err(|e| Error::Export(format!("source wizard: {e}")))?;
     if !add {
-        return Ok(vec![]);
+        return Ok((vec![], vec![]));
     }
     let mut sources = vec![crate::model::Source {
         id: "main".to_string(),
@@ -498,6 +516,7 @@ fn choose_sources(
         url: None,
         theme: None,
     }];
+    let mut servers = Vec::new();
     let roots = BrowseRoots {
         launch_dir: launch_dir.to_path_buf(),
         shell_dir: shell_dir.to_path_buf(),
@@ -518,7 +537,18 @@ fn choose_sources(
         .prompt()
         .map_err(|e| Error::Export(format!("source wizard: {e}")))?;
         let url = if source_kind.starts_with("Local") {
+            // Store the durable file:// URL — the score outlives this session, and
+            // a wizard server's port dies with it (export serves/renders on its
+            // own). The live server below only backs `demo focus`/`open` previews
+            // during the capture itself.
             let path = pick_local_file(&roots, false)?;
+            match local_server::serve_local_file(&path) {
+                Ok((live_url, server)) => {
+                    servers.push(server);
+                    eprintln!("● live preview served on {live_url}");
+                }
+                Err(e) => eprintln!("demo: live preview server failed ({e}) — continuing"),
+            }
             file_url_absolute(&path)?
         } else {
             let raw = inquire::Text::new("URL:")
@@ -552,7 +582,7 @@ fn choose_sources(
             break;
         }
     }
-    Ok(sources)
+    Ok((sources, servers))
 }
 
 /// Decode PTY bytes to text across read boundaries. `pending` holds bytes left
@@ -862,9 +892,11 @@ pub fn run(args: CaptureArgs) -> Result<()> {
     let resolution = choose_canvas(&args)?;
     let fps = choose_fps(&args)?;
     let font_family = choose_font(&args)?;
-    let sources = choose_sources(&launch_dir, work_dir.path())?;
+    let (sources, _local_servers) = choose_sources(&launch_dir, work_dir.path())?;
     // Publish the sources beside the control file so `demo focus`/`demo open` can
     // list them live (the score isn't written until the capture ends).
+    // `_local_servers` must stay alive for the capture duration — they serve
+    // local files (PDF, PNG, HTML) via HTTP so Chromium can access them.
     let _ = control::write_sources(&control_abs, &sources);
     let ready = Arc::new(AtomicBool::new(!force_prompt));
     let t0 = Instant::now();
@@ -1656,6 +1688,25 @@ mod tests {
         assert!(!is_secret_prompt("Cloning into 'repo'..."));
         assert!(!is_secret_prompt("Refreshing access token cache"));
         assert!(!is_secret_prompt("Vault passphrase: ***"));
+    }
+
+    #[test]
+    fn tui_screen_paint_never_matches_as_a_secret_prompt() {
+        // A full-screen TUI (opencode, vim, …) repaints without newlines, so the
+        // tracked "line" is huge even if it happens to contain "token …:". That
+        // must never latch the secret redactor (it used to capture ~450KB of
+        // screen paint as the prompt label).
+        let huge = format!("{} tokens used - Context:", "x".repeat(5000));
+        assert!(!is_secret_prompt(&huge));
+
+        let sensitive = AtomicBool::new(false);
+        let secret_prompt = Mutex::new(None);
+        let mut line = String::new();
+        track_and_detect(&mut line, &huge, &sensitive, &secret_prompt);
+        assert!(!sensitive.load(Ordering::SeqCst));
+        assert!(secret_prompt.lock().unwrap().is_none());
+        // And the tracker's memory stays bounded while the paint streams on.
+        assert!(line.len() <= MAX_PROMPT_LINE);
     }
 
     #[test]

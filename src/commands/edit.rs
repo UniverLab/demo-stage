@@ -97,7 +97,8 @@ fn apply_action(score: &mut Score, indices: &[usize]) -> Result<()> {
         .iter()
         .all(|&i| matches!(score.timeline[i], Step::Type { .. }));
 
-    let single_browser_focus = indices.len() == 1 && edit_reveal::is_browser_focus(score, indices[0]);
+    let single_browser_focus =
+        indices.len() == 1 && edit_reveal::is_browser_focus(score, indices[0]);
 
     match ask_action(indices.len(), all_type, single_browser_focus)? {
         None | Some(EditAction::Keep) => {} // Esc = cancel
@@ -197,24 +198,37 @@ fn current_ms(step: &Step) -> u64 {
     }
 }
 
+/// One-line preview of free text: first `n` chars, newlines flattened, with an
+/// ellipsis when cut. Keeps the list readable even if a step carries a huge
+/// blob (e.g. a mis-captured prompt).
+fn preview(text: &str, n: usize) -> String {
+    let cut: String = text.chars().take(n).collect();
+    let cut = cut.replace('\n', "↵");
+    if text.chars().count() > n {
+        format!("{cut}…")
+    } else {
+        cut
+    }
+}
+
 fn step_summary(step: &Step) -> String {
     match step {
-        Step::Type { text, .. } => {
-            let preview: String = text.chars().take(60).collect();
-            let preview = preview.replace('\n', "↵");
-            format!("type {:?}", preview)
-        }
+        Step::Type { text, .. } => format!("type {:?}", preview(text, 60)),
         Step::Keypress { key } => format!("keypress {key}"),
         Step::Wait { duration_ms } => format!("wait {duration_ms}ms"),
         Step::WaitForQuiet { quiet_ms, .. } => format!("wait_for_quiet {quiet_ms}ms"),
-        Step::WaitForScreen { pattern, .. } => format!("wait_for_screen {:?}", pattern),
-        Step::WaitForStdout { pattern, .. } => format!("wait_for_stdout {:?}", pattern),
+        Step::WaitForScreen { pattern, .. } => {
+            format!("wait_for_screen {:?}", preview(pattern, 40))
+        }
+        Step::WaitForStdout { pattern, .. } => {
+            format!("wait_for_stdout {:?}", preview(pattern, 40))
+        }
         Step::Focus { pane } => {
             let id = pane.as_deref().unwrap_or("?");
             format!("focus → {id} (reveal)")
         }
-        Step::Caption { text } => format!("caption {:?}", text),
-        Step::Secret { prompt } => format!("secret {:?}", prompt),
+        Step::Caption { text } => format!("caption {:?}", preview(text, 60)),
+        Step::Secret { prompt } => format!("secret {:?}", preview(prompt, 60)),
         Step::Scroll {
             direction,
             duration_ms,
@@ -241,11 +255,7 @@ enum EditAction {
 /// The action menu for `n` marked steps. Every action applies to all of them;
 /// text editing appears when the whole selection is `type` steps (in-place
 /// split/edit for one, find & replace across several).
-fn ask_action(
-    n: usize,
-    all_type: bool,
-    single_browser_focus: bool,
-) -> Result<Option<EditAction>> {
+fn ask_action(n: usize, all_type: bool, single_browser_focus: bool) -> Result<Option<EditAction>> {
     let mut opts = vec![
         "Keep as-is",
         "→ wait_for_quiet (silence-based)",

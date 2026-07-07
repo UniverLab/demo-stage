@@ -82,7 +82,7 @@ pub fn file_url_absolute(path: &Path) -> Result<String> {
         .to_str()
         .ok_or_else(|| Error::Export("path contains invalid UTF-8".to_string()))?
         .replace('\\', "/");
-    
+
     // On Windows, canonicalize returns `C:\...`, so we need to add the drive letter
     // prefix after `file:///`. On Unix, it's `/path/...`, so `file:///path/...`.
     if cfg!(windows) && path_str.len() > 1 && path_str.chars().nth(1) == Some(':') {
@@ -200,10 +200,7 @@ pub fn local_file_url(path: &str, launch_dir: &Path) -> Result<String> {
     if trimmed.starts_with("file://") {
         let fixed = normalize_windows_file_url(trimmed);
         if fixed != trimmed && fixed.starts_with("file://") {
-            let linux = fixed
-                .strip_prefix("file://")
-                .unwrap_or(&fixed)
-                .to_string();
+            let linux = fixed.strip_prefix("file://").unwrap_or(&fixed).to_string();
             return file_url_relative_to_launch(Path::new(&linux), launch_dir, None);
         }
     }

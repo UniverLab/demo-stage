@@ -18,11 +18,9 @@ use inquire::{Select, Text};
 use crate::cli::{OpenArgs, OpenMode};
 use crate::commands::control;
 use crate::error::{Error, Result};
+use crate::export::local_server::{self, LocalServer};
 use crate::file_picker::{pick_local_file, BrowseRoots};
-use crate::paths::{
-    file_url_relative_to_launch, local_file_url, looks_like_local_path, normalize_url,
-    repair_browser_url,
-};
+use crate::paths::{local_file_url, looks_like_local_path, normalize_url, repair_browser_url};
 
 /// Monospace cell size assumed by the renderer (matches `export::recording`), so a
 /// `--view` recording is sized to the terminal canvas it'll be composited onto.
@@ -44,6 +42,8 @@ struct Reveal {
     view: bool,
     /// Emulated colour scheme (`light`/`dark`), or `None` for the page default.
     theme: Option<String>,
+    /// Temporary HTTP server for local files — kept alive for `--view` sessions.
+    _server: Option<LocalServer>,
 }
 
 pub fn run(args: OpenArgs) -> Result<()> {
@@ -193,6 +193,7 @@ fn resolve(args: OpenArgs, in_session: bool) -> Result<Reveal> {
                 scroll: args.scroll,
                 view: args.view,
                 theme: args.theme.map(|t| t.as_str().to_string()),
+                _server: None,
             })
         }
         _ => {
@@ -243,9 +244,13 @@ fn wizard(in_session: bool) -> Result<Reveal> {
     .prompt())?;
 
     let roots = capture_roots();
+    let mut local_server = None;
     let url = if source.starts_with("Local") {
         let path = pick_local_file(&roots, in_session)?;
-        file_url_relative_to_launch(&path, &roots.launch_dir, Some(&roots.shell_dir))?
+        let (url, server) = local_server::serve_local_file(&path)?;
+        eprintln!("● serving local file on http://127.0.0.1:{}", server.port());
+        local_server = Some(server);
+        url
     } else {
         let raw = ask(Text::new("URL:")
             .with_help_message("a repo page, http://localhost…")
@@ -312,6 +317,7 @@ fn wizard(in_session: bool) -> Result<Reveal> {
             scroll: false,
             view: true,
             theme,
+            _server: local_server,
         });
     }
 
@@ -358,6 +364,7 @@ fn wizard(in_session: bool) -> Result<Reveal> {
         scroll,
         view: false,
         theme,
+        _server: local_server,
     })
 }
 

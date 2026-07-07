@@ -62,6 +62,25 @@ impl Drop for LocalServer {
     }
 }
 
+/// Start a temporary HTTP server for a local file and return the `http://` URL.
+///
+/// The server serves from the file's parent directory so that the file (and any
+/// sibling assets like CSS/images for HTML) are accessible. The returned
+/// [`LocalServer`] **must** be kept alive for as long as the URL is used — the
+/// background thread exits when the process does.
+pub fn serve_local_file(path: &Path) -> Result<(String, LocalServer)> {
+    let abs =
+        std::fs::canonicalize(path).map_err(|e| Error::Export(format!("file not found: {e}")))?;
+    let parent = abs.parent().unwrap_or(Path::new("/"));
+    let filename = abs
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| Error::Export("invalid file name".to_string()))?;
+    let server = LocalServer::start(parent)?;
+    let url = format!("http://127.0.0.1:{}/{}", server.port(), filename);
+    Ok((url, server))
+}
+
 /// Find an available TCP port.
 fn find_available_port() -> Result<u16> {
     let listener = TcpListener::bind(("127.0.0.1", 0))
@@ -74,20 +93,32 @@ fn find_available_port() -> Result<u16> {
 
 /// Simple HTTP server loop: accept requests, serve files.
 fn serve_http(listener: &TcpListener, root: &Path) {
-    use std::io::{BufRead, BufReader, Write};
     use std::fs;
+    use std::io::{BufRead, BufReader, Write};
 
     for stream in listener.incoming().flatten() {
         let stream_clone = match stream.try_clone() {
             Ok(s) => s,
             Err(_) => continue,
         };
-        
+
         let mut reader = BufReader::new(stream_clone);
         let mut request_line = String::new();
 
         if reader.read_line(&mut request_line).is_err() {
             continue;
+        }
+
+        // Drain all headers so the client doesn't see ERR_ABORTED from an
+        // unread request body / headers when we close the connection.
+        loop {
+            let mut header = String::new();
+            if reader.read_line(&mut header).is_err() {
+                break;
+            }
+            if header.trim().is_empty() {
+                break;
+            }
         }
 
         let parts: Vec<&str> = request_line.split_whitespace().collect();
@@ -99,13 +130,17 @@ fn serve_http(listener: &TcpListener, root: &Path) {
         let file_path = root.join(path_str);
 
         // Security: prevent directory traversal
-        if !file_path.canonicalize()
+        if !file_path
+            .canonicalize()
             .ok()
             .and_then(|p| root.canonicalize().ok().map(|r| p.starts_with(r)))
             .unwrap_or(false)
         {
+            eprintln!("demo: server: 403 forbidden (traversal attempt)");
             if let Ok(mut s) = stream.try_clone() {
-                let _ = s.write_all(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n");
+                let _ = s.write_all(
+                    b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                );
             }
             continue;
         }
@@ -115,16 +150,21 @@ fn serve_http(listener: &TcpListener, root: &Path) {
                 let mime = guess_mime(&file_path);
                 if let Ok(mut s) = stream.try_clone() {
                     let header = format!(
-                        "HTTP/1.1 200 OK\r\nContent-Type: {}\r\nContent-Length: {}\r\n\r\n",
+                        "HTTP/1.1 200 OK\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
                         mime,
                         content.len()
                     );
-                    let _ = s.write_all(header.as_bytes()).and_then(|_| s.write_all(&content));
+                    let _ = s
+                        .write_all(header.as_bytes())
+                        .and_then(|_| s.write_all(&content));
                 }
             }
-            Err(_) => {
+            Err(e) => {
+                eprintln!("demo: server: 404 {path_str}: {e}");
                 if let Ok(mut s) = stream.try_clone() {
-                    let _ = s.write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n");
+                    let _ = s.write_all(
+                        b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                    );
                 }
             }
         }
@@ -160,10 +200,7 @@ mod tests {
             _thread_handle: None,
         };
         let rewritten = server.rewrite_url("file:///home/user/doc.pdf");
-        assert_eq!(
-            rewritten,
-            "http://127.0.0.1:9999/home/user/doc.pdf"
-        );
+        assert_eq!(rewritten, "http://127.0.0.1:9999/home/user/doc.pdf");
     }
 
     #[test]
@@ -181,5 +218,22 @@ mod tests {
         assert_eq!(guess_mime(Path::new("doc.pdf")), "application/pdf");
         assert_eq!(guess_mime(Path::new("image.png")), "image/png");
         assert_eq!(guess_mime(Path::new("page.html")), "text/html");
+    }
+
+    #[test]
+    fn serve_local_file_starts_server_and_returns_http_url() {
+        let dir = std::env::temp_dir().join(format!("srv-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("test.pdf");
+        std::fs::write(&file, b"%PDF-1").unwrap();
+
+        let (url, server) = super::serve_local_file(&file).unwrap();
+        assert!(url.starts_with("http://127.0.0.1:"));
+        assert!(url.ends_with("/test.pdf"));
+        assert!(server.port() > 0);
+
+        // Clean up
+        std::fs::remove_file(&file).ok();
+        std::fs::remove_dir(&dir).ok();
     }
 }
