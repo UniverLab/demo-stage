@@ -54,7 +54,9 @@ pub fn run(args: EditArgs) -> Result<()> {
 
         cursor = indices[0];
         println!();
-        apply_action(&mut score, &indices)?;
+        if let Some(new_cursor) = apply_action(&mut score, &indices)? {
+            cursor = new_cursor;
+        }
         if cursor >= score.timeline.len() && cursor > 0 {
             cursor = score.timeline.len() - 1;
         }
@@ -92,18 +94,73 @@ fn selection_indices(selected: &[String], len: usize) -> Vec<usize> {
 }
 
 /// Ask for one action and apply it to every selected step.
-fn apply_action(score: &mut Score, indices: &[usize]) -> Result<()> {
+/// Returns the new cursor position if the timeline changed.
+fn apply_action(score: &mut Score, indices: &[usize]) -> Result<Option<usize>> {
     let all_type = indices
         .iter()
         .all(|&i| matches!(score.timeline[i], Step::Type { .. }));
 
+    let all_keypress = indices
+        .iter()
+        .all(|&i| matches!(score.timeline[i], Step::Keypress { .. }));
+
     let single_browser_focus =
         indices.len() == 1 && edit_reveal::is_browser_focus(score, indices[0]);
 
-    match ask_action(indices.len(), all_type, single_browser_focus)? {
+    let has_event_wait = indices.iter().any(|&i| {
+        matches!(
+            score.timeline[i],
+            Step::WaitForQuiet { .. } | Step::WaitForScreen { .. } | Step::WaitForStdout { .. }
+        )
+    });
+
+    match ask_action(
+        indices.len(),
+        all_type,
+        all_keypress,
+        single_browser_focus,
+        has_event_wait,
+    )? {
         None | Some(EditAction::Keep) => {} // Esc = cancel
         Some(EditAction::EditReveal) => {
             edit_reveal::edit_browser_reveal(score, indices[0])?;
+        }
+        Some(EditAction::EditKey) => {
+            let current = match &score.timeline[indices[0]] {
+                Step::Keypress { key } => key.clone(),
+                _ => String::new(),
+            };
+            let new_key = inquire::Text::new("key name:")
+                .with_help_message(
+                    "enter, tab, esc, up, down, left, right, f1-f12, ctrl+c, shift-up, alt-f5, ...",
+                )
+                .with_default(&current)
+                .prompt()
+                .map_err(|e| Error::Export(format!("edit: {e}")))?;
+            let new_key = new_key.trim().to_string();
+            if new_key.is_empty() {
+                return Err(Error::Export("key name cannot be empty".to_string()));
+            }
+            for &i in indices {
+                if let Step::Keypress { key } = &mut score.timeline[i] {
+                    *key = new_key.clone();
+                }
+            }
+            println!("  ✓ updated {}\n", plural(indices.len()));
+        }
+        Some(EditAction::Insert) => {
+            let new_step = ask_insert_step()?;
+            let insert_at = indices[0] + 1;
+            score.timeline.insert(insert_at, new_step);
+            println!("  ✓ inserted after step {}\n", indices[0] + 1);
+            return Ok(Some(insert_at));
+        }
+        Some(EditAction::ToWait) => {
+            let ms = ask_u64("duration_ms", current_ms(&score.timeline[indices[0]]))?;
+            for &i in indices {
+                score.timeline[i] = Step::Wait { duration_ms: ms };
+            }
+            println!("  ✓ converted to wait {}\n", plural(indices.len()));
         }
         Some(EditAction::WaitForQuiet) => {
             let quiet = ask_u64("quiet_ms", current_ms(&score.timeline[indices[0]]))?;
@@ -156,7 +213,7 @@ fn apply_action(score: &mut Score, indices: &[usize]) -> Result<()> {
             println!("  ✓ deleted {}\n", plural(indices.len()));
         }
     }
-    Ok(())
+    Ok(None)
 }
 
 fn plural(n: usize) -> String {
@@ -243,6 +300,9 @@ fn step_summary(step: &Step) -> String {
 enum EditAction {
     Keep,
     EditReveal,
+    EditKey,
+    Insert,
+    ToWait,
     WaitForQuiet,
     WaitForScreen,
     WaitForStdout,
@@ -254,8 +314,15 @@ enum EditAction {
 
 /// The action menu for `n` marked steps. Every action applies to all of them;
 /// text editing appears when the whole selection is `type` steps (in-place
-/// split/edit for one, find & replace across several).
-fn ask_action(n: usize, all_type: bool, single_browser_focus: bool) -> Result<Option<EditAction>> {
+/// split/edit for one, find & replace across several); key editing appears when
+/// all are `keypress` steps.
+fn ask_action(
+    n: usize,
+    all_type: bool,
+    all_keypress: bool,
+    single_browser_focus: bool,
+    has_event_wait: bool,
+) -> Result<Option<EditAction>> {
     let mut opts = vec![
         "Keep as-is",
         "→ wait_for_quiet (silence-based)",
@@ -265,8 +332,13 @@ fn ask_action(n: usize, all_type: bool, single_browser_focus: bool) -> Result<Op
         "Delete",
     ];
 
+    if has_event_wait {
+        opts.insert(1, "→ wait (fixed duration)");
+    }
+
     if single_browser_focus {
-        opts.insert(1, "Edit reveal (placement, scroll, file/URL)");
+        let pos = if has_event_wait { 2 } else { 1 };
+        opts.insert(pos, "Edit reveal (placement, scroll, file/URL)");
     }
 
     if all_type {
@@ -275,6 +347,14 @@ fn ask_action(n: usize, all_type: bool, single_browser_focus: bool) -> Result<Op
         } else {
             "Find & replace in texts"
         });
+    }
+
+    if all_keypress {
+        opts.push("Edit key");
+    }
+
+    if n == 1 {
+        opts.push("Insert step after");
     }
 
     let prompt = if n == 1 {
@@ -293,12 +373,15 @@ fn ask_action(n: usize, all_type: bool, single_browser_focus: bool) -> Result<Op
     Ok(Some(match choice {
         "Keep as-is" => EditAction::Keep,
         "Edit reveal (placement, scroll, file/URL)" => EditAction::EditReveal,
+        "→ wait (fixed duration)" => EditAction::ToWait,
         "→ wait_for_quiet (silence-based)" => EditAction::WaitForQuiet,
         "→ wait_for_screen (VT pattern)" => EditAction::WaitForScreen,
         "→ wait_for_stdout (raw output pattern)" => EditAction::WaitForStdout,
         "Change duration" => EditAction::ChangeDuration,
         "Split/Edit text" => EditAction::SplitType,
         "Find & replace in texts" => EditAction::ReplaceInTypes,
+        "Edit key" => EditAction::EditKey,
+        "Insert step after" => EditAction::Insert,
         "Delete" => EditAction::Delete,
         _ => EditAction::Keep,
     }))
@@ -385,6 +468,70 @@ fn ask_u64(label: &str, default: u64) -> Result<u64> {
     v.trim()
         .parse()
         .map_err(|_| Error::Export(format!("invalid number: {v}")))
+}
+
+/// Ask the user what kind of step to insert and build it.
+fn ask_insert_step() -> Result<Step> {
+    let kind = inquire::Select::new(
+        "Insert:",
+        vec![
+            "wait (fixed duration)",
+            "keypress",
+            "type (text)",
+            "wait_for_quiet",
+            "wait_for_stdout",
+            "wait_for_screen",
+            "caption",
+        ],
+    )
+    .prompt()
+    .map_err(|e| Error::Export(format!("edit: {e}")))?;
+
+    match kind {
+        "wait (fixed duration)" => {
+            let ms = ask_u64("duration_ms", 200)?;
+            Ok(Step::Wait { duration_ms: ms })
+        }
+        "keypress" => {
+            let key = ask_string("key name (enter, tab, esc, f1, ctrl+c, ...)")?;
+            Ok(Step::Keypress { key })
+        }
+        "type (text)" => {
+            let text = inquire::Text::new("text:")
+                .prompt()
+                .map_err(|e| Error::Export(format!("edit: {e}")))?;
+            Ok(Step::Type {
+                text,
+                human_salt: true,
+            })
+        }
+        "wait_for_quiet" => {
+            let ms = ask_u64("quiet_ms", 500)?;
+            Ok(Step::WaitForQuiet {
+                quiet_ms: ms,
+                max_ms: None,
+            })
+        }
+        "wait_for_stdout" => {
+            let pattern = ask_string("match pattern")?;
+            Ok(Step::WaitForStdout {
+                pattern,
+                pane: None,
+            })
+        }
+        "wait_for_screen" => {
+            let pattern = ask_string("match pattern")?;
+            Ok(Step::WaitForScreen {
+                pattern,
+                timeout_ms: None,
+            })
+        }
+        "caption" => {
+            let text = ask_string("caption text")?;
+            Ok(Step::Caption { text })
+        }
+        _ => Ok(Step::Wait { duration_ms: 200 }),
+    }
 }
 
 fn ask_string(label: &str) -> Result<String> {

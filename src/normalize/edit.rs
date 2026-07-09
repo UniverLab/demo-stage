@@ -55,28 +55,86 @@ enum Esc {
     PasteCsi(String),
 }
 
+/// Modifier bitmask values in CSI sequences (xterm-style).
+const MOD_SHIFT: u8 = 2;
+const MOD_ALT: u8 = 3;
+const MOD_CTRL: u8 = 5;
+const MOD_CTRL_SHIFT: u8 = 6;
+
+/// Decode a CSI modifier number into a prefix string like "shift-", "alt-", "ctrl+", etc.
+fn modifier_prefix(modifier: u8) -> &'static str {
+    match modifier {
+        MOD_SHIFT => "shift-",
+        MOD_ALT => "alt-",
+        4 => "alt+shift-", // alt(2) + shift but bitmask 4 in some terminals
+        MOD_CTRL => "ctrl+",
+        MOD_CTRL_SHIFT => "ctrl+shift-",
+        7 => "ctrl+alt-",
+        8 => "ctrl+alt+shift-",
+        _ => "",
+    }
+}
+
+/// Parse CSI params for a modified key: returns `(keycode, modifier)`. The
+/// modifier defaults to 0 (unmodified) when absent.
+fn parse_csi_params(params: &str) -> (u8, u8) {
+    if let Some((code_str, mod_str)) = params.split_once(';') {
+        let code = code_str.parse::<u8>().unwrap_or(0);
+        let modifier = mod_str.parse::<u8>().unwrap_or(0);
+        (code, modifier)
+    } else {
+        let code = params.parse::<u8>().unwrap_or(0);
+        (code, 0)
+    }
+}
+
 /// Map a CSI sequence (its parameters and final byte) to a key name, if known.
-fn csi_key(params: &str, final_byte: char) -> Option<&'static str> {
-    match final_byte {
+/// Handles both unmodified keys (`\x1b[A`) and modifier combinations
+/// (`\x1b[1;2A` = Shift+Up, `\x1b[1;5A` = Ctrl+Up, etc.).
+fn csi_key(params: &str, final_byte: char) -> Option<String> {
+    let (code, modifier) = parse_csi_params(params);
+    let prefix = modifier_prefix(modifier);
+
+    let base = match final_byte {
         'A' => Some("up"),
         'B' => Some("down"),
         'C' => Some("right"),
         'D' => Some("left"),
         'H' => Some("home"),
         'F' => Some("end"),
-        '~' => match params {
-            "1" | "7" => Some("home"),
-            "4" | "8" => Some("end"),
-            "3" => Some("delete"),
-            "5" => Some("pageup"),
-            "6" => Some("pagedown"),
+        'P' if modifier == 0 => Some("f1"),
+        'Q' if modifier == 0 => Some("f2"),
+        'R' if modifier == 0 => Some("f3"),
+        'S' if modifier == 0 => Some("f4"),
+        '~' => match code {
+            1 | 7 => Some("home"),
+            4 | 8 => Some("end"),
+            3 => Some("delete"),
+            5 => Some("pageup"),
+            6 => Some("pagedown"),
+            // VT220 function keys F1-F12
+            11 => Some("f1"),
+            12 => Some("f2"),
+            13 => Some("f3"),
+            14 => Some("f4"),
+            15 => Some("f5"),
+            17 => Some("f6"),
+            18 => Some("f7"),
+            19 => Some("f8"),
+            20 => Some("f9"),
+            21 => Some("f10"),
+            23 => Some("f11"),
+            24 => Some("f12"),
+            // Insert / Delete with modifiers
+            2 => Some("insert"),
             _ => None,
         },
         _ => None,
-    }
+    };
+    base.map(|b| format!("{prefix}{b}"))
 }
 
-/// Map an SS3 sequence's final byte to a key name (application-mode arrows), if known.
+/// Map an SS3 sequence's final byte to a key name (application-mode arrows and function keys), if known.
 fn ss3_key(final_byte: char) -> Option<&'static str> {
     match final_byte {
         'A' => Some("up"),
@@ -85,6 +143,11 @@ fn ss3_key(final_byte: char) -> Option<&'static str> {
         'D' => Some("left"),
         'H' => Some("home"),
         'F' => Some("end"),
+        // Application-mode function keys F1-F4 (ESC O P/Q/R/S)
+        'P' => Some("f1"),
+        'Q' => Some("f2"),
+        'R' => Some("f3"),
+        'S' => Some("f4"),
         _ => None,
     }
 }
@@ -205,10 +268,7 @@ pub fn reconstruct(inputs: &[(u64, &str)]) -> Vec<Action> {
                             esc = Esc::Paste;
                         } else if let Some(key) = csi_key(params, ch) {
                             flush(&mut actions, &mut buf, start_ms, end_ms);
-                            actions.push(Action::Key {
-                                key: key.to_string(),
-                                t_ms: t,
-                            });
+                            actions.push(Action::Key { key, t_ms: t });
                             esc = Esc::None;
                         } else {
                             esc = Esc::None;
@@ -284,16 +344,39 @@ pub fn reconstruct(inputs: &[(u64, &str)]) -> Vec<Action> {
                     continue;
                 }
                 Esc::Saw => {
-                    esc = match ch {
-                        '[' => Esc::Csi(String::new()),
-                        'O' => Esc::Ss3,
-                        ']' => Esc::Osc,
-                        'P' => Esc::Str,
-                        '_' | '^' | 'X' => Esc::Str,
-                        // ESC + char (Alt-key) — uncommon in demos; drop it.
-                        _ => Esc::None,
-                    };
-                    continue;
+                    match ch {
+                        '[' => {
+                            esc = Esc::Csi(String::new());
+                            continue;
+                        }
+                        'O' => {
+                            esc = Esc::Ss3;
+                            continue;
+                        }
+                        ']' => {
+                            esc = Esc::Osc;
+                            continue;
+                        }
+                        'P' => {
+                            esc = Esc::Str;
+                            continue;
+                        }
+                        '_' | '^' | 'X' => {
+                            esc = Esc::Str;
+                            continue;
+                        }
+                        _ => {
+                            // ESC + unrecognized char: emit "esc" as a keypress
+                            // and process the following character normally.
+                            flush(&mut actions, &mut buf, start_ms, end_ms);
+                            actions.push(Action::Key {
+                                key: "esc".to_string(),
+                                t_ms: t,
+                            });
+                            esc = Esc::None;
+                            // Fall through to the main match ch below.
+                        }
+                    }
                 }
                 Esc::None => {}
             }
@@ -323,6 +406,14 @@ pub fn reconstruct(inputs: &[(u64, &str)]) -> Vec<Action> {
                         t_ms: t,
                     });
                 }
+                // Ctrl-S: XOFF / save — kept as a key so replay matches.
+                '\u{13}' => {
+                    flush(&mut actions, &mut buf, start_ms, end_ms);
+                    actions.push(Action::Key {
+                        key: "ctrl+s".to_string(),
+                        t_ms: t,
+                    });
+                }
                 // Tab: completion / field navigation — kept as a key.
                 '\t' => {
                     flush(&mut actions, &mut buf, start_ms, end_ms);
@@ -344,6 +435,14 @@ pub fn reconstruct(inputs: &[(u64, &str)]) -> Vec<Action> {
         }
     }
     flush(&mut actions, &mut buf, start_ms, end_ms);
+    // A bare ESC at the end of input (no following character) — emit it as a
+    // keypress so it doesn't get silently dropped.
+    if let Esc::Saw = esc {
+        actions.push(Action::Key {
+            key: "esc".to_string(),
+            t_ms: end_ms,
+        });
+    }
     actions
 }
 
@@ -465,5 +564,70 @@ mod tests {
         let paste = "\u{1b}[200~hello from paste\u{1b}[201~";
         let a = reconstruct(&[(0, &format!("{paste}\r"))]);
         assert_eq!(typed(&a), vec!["hello from paste"]);
+    }
+
+    #[test]
+    fn maps_function_keys_csi() {
+        // F2 = ESC [ 1 2 ~, F5 = ESC [ 1 5 ~, F12 = ESC [ 2 4 ~
+        let a = reconstruct(&[(0, "\u{1b}[12~\u{1b}[15~\u{1b}[24~\r")]);
+        assert_eq!(keys(&a), vec!["f2", "f5", "f12", "enter"]);
+    }
+
+    #[test]
+    fn maps_function_keys_ss3() {
+        // F1-F4 in application mode: ESC O P/Q/R/S
+        let a = reconstruct(&[(0, "\u{1b}OP\u{1b}OQ\u{1b}OR\u{1b}OS\r")]);
+        assert_eq!(keys(&a), vec!["f1", "f2", "f3", "f4", "enter"]);
+    }
+
+    #[test]
+    fn captures_bare_esc() {
+        // A standalone ESC keypress (no following character).
+        let a = reconstruct(&[(0, "\u{1b}")]);
+        assert_eq!(keys(&a), vec!["esc"]);
+    }
+
+    #[test]
+    fn captures_esc_followed_by_text() {
+        // ESC followed by a normal character: emit "esc" then type the char.
+        let a = reconstruct(&[(0, "\u{1b}x")]);
+        assert_eq!(keys(&a), vec!["esc"]);
+        assert_eq!(typed(&a), vec!["x"]);
+    }
+
+    #[test]
+    fn captures_ctrl_s() {
+        // Ctrl-S (0x13) should be captured as a keypress, not dropped.
+        let a = reconstruct(&[(0, "hello\u{13}world\r")]);
+        assert_eq!(typed(&a), vec!["hello", "world"]);
+        assert_eq!(keys(&a), vec!["ctrl+s", "enter"]);
+    }
+
+    #[test]
+    fn maps_shift_arrows() {
+        // Shift+Up = ESC [ 1 ; 2 A, Shift+Left = ESC [ 1 ; 2 D
+        let a = reconstruct(&[(0, "\u{1b}[1;2A\u{1b}[1;2D\r")]);
+        assert_eq!(keys(&a), vec!["shift-up", "shift-left", "enter"]);
+    }
+
+    #[test]
+    fn maps_ctrl_arrows() {
+        // Ctrl+Right = ESC [ 1 ; 5 C
+        let a = reconstruct(&[(0, "\u{1b}[1;5C\r")]);
+        assert_eq!(keys(&a), vec!["ctrl+right", "enter"]);
+    }
+
+    #[test]
+    fn maps_alt_arrows() {
+        // Alt+Down = ESC [ 1 ; 3 B
+        let a = reconstruct(&[(0, "\u{1b}[1;3B\r")]);
+        assert_eq!(keys(&a), vec!["alt-down", "enter"]);
+    }
+
+    #[test]
+    fn maps_modified_function_keys() {
+        // Shift+F5 = ESC [ 1 5 ; 2 ~
+        let a = reconstruct(&[(0, "\u{1b}[15;2~\r")]);
+        assert_eq!(keys(&a), vec!["shift-f5", "enter"]);
     }
 }

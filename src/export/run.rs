@@ -220,7 +220,13 @@ pub fn run_with_pane(score: &Score, pane: &crate::model::Pane) -> Result<Recordi
             Step::Keypress { key } => {
                 let _ = writer.write_all(&key_to_bytes(key));
                 let _ = writer.flush();
-                sleep_collecting(60, &mut events, &rx, t0);
+                // ESC needs extra time for TUIs to process and close dialogs.
+                let delay = if key == "esc" || key == "escape" {
+                    200
+                } else {
+                    60
+                };
+                sleep_collecting(delay, &mut events, &rx, t0);
             }
             Step::Wait { duration_ms } => sleep_collecting(*duration_ms, &mut events, &rx, t0),
             Step::WaitForStdout { pattern, .. } => wait_for(pattern, &mut events, &rx, t0),
@@ -617,11 +623,34 @@ fn key_to_bytes(key: &str) -> Vec<u8> {
         "down" => vec![0x1b, b'[', b'B'],
         "right" => vec![0x1b, b'[', b'C'],
         "left" => vec![0x1b, b'[', b'D'],
+        "home" => vec![0x1b, b'[', b'H'],
+        "end" => vec![0x1b, b'[', b'F'],
+        "insert" => vec![0x1b, b'[', b'2', b'~'],
+        "delete" => vec![0x1b, b'[', b'3', b'~'],
+        "pageup" => vec![0x1b, b'[', b'5', b'~'],
+        "pagedown" => vec![0x1b, b'[', b'6', b'~'],
+        // Function keys F1-F12 as CSI sequences (xterm/vt220 standard).
+        "f1" => vec![0x1b, b'[', b'1', b'1', b'~'],
+        "f2" => vec![0x1b, b'[', b'1', b'2', b'~'],
+        "f3" => vec![0x1b, b'[', b'1', b'3', b'~'],
+        "f4" => vec![0x1b, b'[', b'1', b'4', b'~'],
+        "f5" => vec![0x1b, b'[', b'1', b'5', b'~'],
+        "f6" => vec![0x1b, b'[', b'1', b'7', b'~'],
+        "f7" => vec![0x1b, b'[', b'1', b'8', b'~'],
+        "f8" => vec![0x1b, b'[', b'1', b'9', b'~'],
+        "f9" => vec![0x1b, b'[', b'2', b'0', b'~'],
+        "f10" => vec![0x1b, b'[', b'2', b'1', b'~'],
+        "f11" => vec![0x1b, b'[', b'2', b'3', b'~'],
+        "f12" => vec![0x1b, b'[', b'2', b'4', b'~'],
         "ctrl+c" => vec![0x03],
         "ctrl+d" => vec![0x04],
         "ctrl+u" => vec![0x15],
         "ctrl+l" => vec![0x0c],
         other => {
+            // modifier + arrow/function key: "shift-up", "ctrl+up", "alt-f5", etc.
+            if let Some(rest) = parse_modifier_key(other) {
+                return rest;
+            }
             // ctrl+<letter>
             if let Some(letter) = other.strip_prefix("ctrl+") {
                 if let Some(c) = letter.chars().next() {
@@ -640,6 +669,80 @@ fn key_to_bytes(key: &str) -> Vec<u8> {
     }
 }
 
+/// CSI modifier number for xterm-style encoding.
+fn modifier_code(name: &str) -> Option<u8> {
+    match name {
+        "shift" => Some(2),
+        "alt" => Some(3),
+        "ctrl" => Some(5),
+        "ctrl+shift" | "shift+ctrl" => Some(6),
+        "ctrl+alt" | "alt+ctrl" => Some(7),
+        _ => None,
+    }
+}
+
+/// Arrow/function key code for CSI sequences.
+fn arrow_code(key: &str) -> Option<(u8, char)> {
+    match key {
+        "up" => Some((1, 'A')),
+        "down" => Some((1, 'B')),
+        "right" => Some((1, 'C')),
+        "left" => Some((1, 'D')),
+        "home" => Some((1, 'H')),
+        "end" => Some((1, 'F')),
+        "insert" => Some((2, '~')),
+        "delete" => Some((3, '~')),
+        "pageup" => Some((5, '~')),
+        "pagedown" => Some((6, '~')),
+        "f1" => Some((11, '~')),
+        "f2" => Some((12, '~')),
+        "f3" => Some((13, '~')),
+        "f4" => Some((14, '~')),
+        "f5" => Some((15, '~')),
+        "f6" => Some((17, '~')),
+        "f7" => Some((18, '~')),
+        "f8" => Some((19, '~')),
+        "f9" => Some((20, '~')),
+        "f10" => Some((21, '~')),
+        "f11" => Some((23, '~')),
+        "f12" => Some((24, '~')),
+        _ => None,
+    }
+}
+
+/// Try to parse a modified key like "shift-up", "ctrl+f5", "alt-home" into
+/// the corresponding CSI byte sequence.
+fn parse_modifier_key(key: &str) -> Option<Vec<u8>> {
+    // Try "modifier-key" or "modifier+key" separators.
+    let (mod_name, base_key) = if let Some(pos) = key.find('-') {
+        (&key[..pos], &key[pos + 1..])
+    } else if let Some(pos) = key.find('+') {
+        (&key[..pos], &key[pos + 1..])
+    } else {
+        return None;
+    };
+    let mod_code = modifier_code(mod_name)?;
+    let (code, final_byte) = arrow_code(base_key)?;
+    // Unmodified: emit plain CSI sequence without modifier param.
+    if mod_code == 0 {
+        return None;
+    }
+    let mut seq = vec![0x1b, b'['];
+    if final_byte == '~' {
+        // e.g. \x1b[15;2~ (Shift+F5)
+        seq.extend_from_slice(code.to_string().as_bytes());
+        seq.push(b';');
+        seq.push(b'0' + mod_code);
+        seq.push(b'~');
+    } else {
+        // e.g. \x1b[1;2A (Shift+Up)
+        seq.extend_from_slice(b"1;");
+        seq.push(b'0' + mod_code);
+        seq.push(final_byte as u8);
+    }
+    Some(seq)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -648,10 +751,54 @@ mod tests {
     fn maps_named_keys() {
         assert_eq!(key_to_bytes("enter"), vec![b'\r']);
         assert_eq!(key_to_bytes("ctrl+c"), vec![0x03]);
+        assert_eq!(key_to_bytes("ctrl+s"), vec![0x13]);
         assert_eq!(key_to_bytes("ctrl+a"), vec![0x01]);
         assert_eq!(key_to_bytes("tab"), vec![b'\t']);
         assert_eq!(key_to_bytes("a"), b"a".to_vec());
         assert_eq!(key_to_bytes("up"), vec![0x1b, b'[', b'A']);
+    }
+
+    #[test]
+    fn maps_function_keys_to_csi() {
+        // F1 = ESC [ 1 1 ~
+        assert_eq!(key_to_bytes("f1"), vec![0x1b, b'[', b'1', b'1', b'~']);
+        // F2 = ESC [ 1 2 ~
+        assert_eq!(key_to_bytes("f2"), vec![0x1b, b'[', b'1', b'2', b'~']);
+        // F12 = ESC [ 2 4 ~
+        assert_eq!(key_to_bytes("f12"), vec![0x1b, b'[', b'2', b'4', b'~']);
+    }
+
+    #[test]
+    fn maps_modified_arrow_keys() {
+        // Shift+Up = ESC [ 1 ; 2 A
+        assert_eq!(
+            key_to_bytes("shift-up"),
+            vec![0x1b, b'[', b'1', b';', b'2', b'A']
+        );
+        // Ctrl+Down = ESC [ 1 ; 5 B
+        assert_eq!(
+            key_to_bytes("ctrl-down"),
+            vec![0x1b, b'[', b'1', b';', b'5', b'B']
+        );
+        // Alt+Right = ESC [ 1 ; 3 C
+        assert_eq!(
+            key_to_bytes("alt-right"),
+            vec![0x1b, b'[', b'1', b';', b'3', b'C']
+        );
+    }
+
+    #[test]
+    fn maps_modified_function_keys() {
+        // Shift+F5 = ESC [ 1 5 ; 2 ~
+        assert_eq!(
+            key_to_bytes("shift-f5"),
+            vec![0x1b, b'[', b'1', b'5', b';', b'2', b'~']
+        );
+        // Ctrl+F12 = ESC [ 2 4 ; 5 ~
+        assert_eq!(
+            key_to_bytes("ctrl-f12"),
+            vec![0x1b, b'[', b'2', b'4', b';', b'5', b'~']
+        );
     }
 
     #[test]
