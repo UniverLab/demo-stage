@@ -39,6 +39,7 @@ demo/dist/*
 .zencoder/
 .qwen/
 .agents/
+.mimocode/
 skills-lock.json
 # Created by https://www.toptal.com/developers/gitignore/api/rust
 # Edit at https://www.toptal.com/developers/gitignore?templates=rust
@@ -58,4 +59,4 @@ Cargo.lock
 # MSVC Windows builds of rustc generate these, which store debugging information
 
 # End of https://www.toptal.com/developers/gitignore/api/rust
-*.mp4noCommitDir/
+*.mp4
