@@ -68,6 +68,7 @@ pub fn render_stage(rec: &Recording, score: &Score, mut on_frame: impl FnMut(&[u
             rec.captions.clone(),
             20.0,
             font_name,
+            crate::fonts::load_emoji(),
         )?)
     };
     let mut term_rec = rec.clone();

@@ -74,3 +74,10 @@ pub fn load(name: &str) -> Font {
 pub fn load_from_display(display: &str) -> Font {
     load(parse_font_name(display))
 }
+
+/// Load the monochrome emoji fallback font.
+pub fn load_emoji() -> Font {
+    const EMOJI_BYTES: &[u8] = include_bytes!("../assets/NotoEmoji-Regular.ttf");
+    Font::from_bytes(EMOJI_BYTES, FontSettings::default())
+        .expect("bundled emoji font failed to parse")
+}

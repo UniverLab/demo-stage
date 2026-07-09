@@ -100,6 +100,7 @@ pub fn plan(rec: &Recording, score: &Score) -> Plan {
 pub struct FrameSource<'a> {
     rec: &'a Recording,
     font: Font,
+    emoji_font: Font,
     px: f32,
     glyphs: HashMap<char, (Metrics, Vec<u8>)>,
     cols: usize,
@@ -124,6 +125,7 @@ impl<'a> FrameSource<'a> {
             .as_deref()
             .unwrap_or(fonts::DEFAULT_FONT);
         let font = fonts::load(font_name);
+        let emoji_font = fonts::load_emoji();
         let px = score
             .layout
             .panes
@@ -154,7 +156,9 @@ impl<'a> FrameSource<'a> {
         for (_, chunk) in &rec.events {
             for ch in chunk.chars() {
                 if !ch.is_control() && !ch.is_whitespace() {
-                    glyphs.entry(ch).or_insert_with(|| font.rasterize(ch, px));
+                    glyphs
+                        .entry(ch)
+                        .or_insert_with(|| rasterize_with_fallback(&font, &emoji_font, ch, px));
                 }
             }
         }
@@ -167,12 +171,18 @@ impl<'a> FrameSource<'a> {
         let caption = if rec.captions.is_empty() {
             None
         } else {
-            Some(CaptionOverlay::new(rec.captions.clone(), 18.0, font_name)?)
+            Some(CaptionOverlay::new(
+                rec.captions.clone(),
+                18.0,
+                font_name,
+                emoji_font.clone(),
+            )?)
         };
 
         Ok(FrameSource {
             rec,
             font,
+            emoji_font,
             px,
             glyphs,
             cols: rec.cols as usize,
@@ -214,6 +224,7 @@ impl<'a> FrameSource<'a> {
             &self.parser,
             &mut self.glyphs,
             &self.font,
+            &self.emoji_font,
             self.px,
             self.cols,
             self.rows,
@@ -257,6 +268,17 @@ fn solid_cell(ch: char, w: usize, h: usize) -> Option<Vec<u8>> {
     block_cell(ch, w, h)
         .or_else(|| box_cell(ch, w, h))
         .or_else(|| braille_cell(ch, w, h))
+}
+
+/// Rasterize `ch` using `primary`, falling back to `emoji` when the primary
+/// font returns a zero-width (`.notdef`) glyph.
+fn rasterize_with_fallback(primary: &Font, emoji: &Font, ch: char, px: f32) -> (Metrics, Vec<u8>) {
+    let (m, cov) = primary.rasterize(ch, px);
+    if m.width == 0 || m.height == 0 {
+        emoji.rasterize(ch, px)
+    } else {
+        (m, cov)
+    }
 }
 
 /// Braille patterns (U+2800–U+28FF): a 2-column × 4-row dot matrix encoded in the
@@ -436,6 +458,7 @@ fn render_cells(
     parser: &Parser,
     glyphs: &mut HashMap<char, (Metrics, Vec<u8>)>,
     font: &Font,
+    emoji_font: &Font,
     px: f32,
     cols: usize,
     rows: usize,
@@ -495,7 +518,9 @@ fn render_cells(
             }
             // On-demand rasterization: if the glyph isn't cached yet, rasterize
             // it now so any Unicode character the font supports renders correctly.
-            let (m, cov) = glyphs.entry(chr).or_insert_with(|| font.rasterize(chr, px));
+            let (m, cov) = glyphs
+                .entry(chr)
+                .or_insert_with(|| rasterize_with_fallback(font, emoji_font, chr, px));
             if m.width == 0 || m.height == 0 {
                 continue;
             }
@@ -603,13 +628,19 @@ fn blit_glyph(
 pub struct CaptionOverlay {
     captions: Vec<(f64, String)>,
     font: Font,
+    emoji_font: Font,
     glyphs: HashMap<char, (Metrics, Vec<u8>)>,
     px: f32,
     cell_w: usize,
 }
 
 impl CaptionOverlay {
-    pub fn new(captions: Vec<(f64, String)>, px: f32, font_name: &str) -> Result<Self> {
+    pub fn new(
+        captions: Vec<(f64, String)>,
+        px: f32,
+        font_name: &str,
+        emoji_font: Font,
+    ) -> Result<Self> {
         let font = fonts::load(font_name);
         let mut glyphs = HashMap::new();
         for code in 0x20u8..=0x7e {
@@ -622,6 +653,7 @@ impl CaptionOverlay {
         Ok(CaptionOverlay {
             captions,
             font,
+            emoji_font,
             glyphs,
             px,
             cell_w: (px * 0.6).round().max(1.0) as usize,
@@ -667,10 +699,9 @@ impl CaptionOverlay {
         let mut cx = start_x;
         for ch in text.chars() {
             // On-demand rasterization for caption characters.
-            let (m, cov) = self
-                .glyphs
-                .entry(ch)
-                .or_insert_with(|| self.font.rasterize(ch, self.px));
+            let (m, cov) = self.glyphs.entry(ch).or_insert_with(|| {
+                rasterize_with_fallback(&self.font, &self.emoji_font, ch, self.px)
+            });
             let ox = cx as i32 + ((self.cell_w as i32 - m.width as i32) / 2).max(0);
             let top = baseline as i32 - (m.height as i32 + m.ymin);
             blit_glyph(img, w, h, ox, top, m, cov, fg);
@@ -733,6 +764,7 @@ mod tests {
             ],
             18.0,
             fonts::DEFAULT_FONT,
+            fonts::load_emoji(),
         )
         .unwrap();
         assert_eq!(c.active(0.0), Some("step 1"));
