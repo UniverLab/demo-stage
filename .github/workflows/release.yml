@@ -15,5 +15,5 @@ jobs:
     if: github.event.pull_request.merged == true || github.event_name == 'workflow_dispatch'
     uses: UniverLab/workflows/.github/workflows/rust-release.yml@main
     with:
-      binary-name: "demo-stage"
+      binary-name: "demo"
     secrets: inherit
