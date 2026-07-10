@@ -16,5 +16,4 @@ jobs:
     uses: UniverLab/workflows/.github/workflows/rust-release.yml@main
     with:
       binary-name: "demo-stage"
-    secrets:
-      CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+    secrets: inherit
