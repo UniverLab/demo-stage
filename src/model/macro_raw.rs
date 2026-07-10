@@ -1,0 +1,186 @@
+//! The `macro.raw.toml` capture: the low-level output of `demo record`.
+//!
+//! Intentionally dumb — raw input bytes and PTY output chunks with millisecond
+//! offsets. All the intelligence (backspace pruning, timing) lives in
+//! `demo normalize`, which interprets these events.
+
+use std::path::Path;
+
+use serde::{Deserialize, Serialize};
+
+use crate::error::Result;
+
+/// A raw recording.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RawMacro {
+    pub meta: RawMeta,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub events: Vec<RawEvent>,
+}
+
+impl RawMacro {
+    pub fn load(path: &Path) -> Result<Self> {
+        super::load_toml(path)
+    }
+
+    pub fn to_toml(&self) -> Result<String> {
+        super::to_toml_string(self)
+    }
+
+    pub fn save(&self, path: &Path) -> Result<()> {
+        super::write_toml(path, self)
+    }
+}
+
+/// `[meta]` — the terminal geometry and recording parameters.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RawMeta {
+    pub shell: String,
+    pub cols: u16,
+    pub rows: u16,
+    #[serde(default)]
+    pub idle_timeout_ms: u64,
+    /// Target resolution chosen at capture start (width, height). When set, the
+    /// normalizer sizes the layout to this instead of deriving from cols×rows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolution: Option<(u32, u32)>,
+    /// Frame rate chosen at capture start (15/24/30). When set, the normalizer
+    /// writes it into the score's `[layout]` instead of the 15 fps default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fps: Option<u32>,
+    /// Stage this macro was recorded into (`record --into`); `normalize` splices
+    /// the captured flow into that stage unless `--stage` overrides it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stage: Option<String>,
+    /// `(start_ms, end_ms)` spans of meta-command activity (`demo open` and its
+    /// in-session wizard) that must be excised from the finished demo — both the
+    /// typed command/echo and the wizard output. Recorded live by `demo capture`;
+    /// `from_raw` drops output inside them and `normalize` drops input inside them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mute_spans: Vec<(u64, u64)>,
+}
+
+impl RawMeta {
+    /// Is `t_ms` inside any meta-command span (so it must not reach the demo)?
+    pub fn is_muted(&self, t_ms: u64) -> bool {
+        self.mute_spans
+            .iter()
+            .any(|(start, end)| t_ms >= *start && t_ms < *end)
+    }
+}
+
+/// One captured event, tagged by `kind`, timestamped from recording start.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum RawEvent {
+    /// Bytes the user typed (may contain control codes like `\u{7f}`).
+    Input { t_ms: u64, bytes: String },
+    /// A chunk written to the PTY by the running program.
+    Output { t_ms: u64, data: String },
+    /// A secret was entered at a detected secret prompt — only the prompt text is
+    /// kept (e.g. `Vault passphrase:`), NEVER the value, so `demo record` can ask
+    /// for it again (in memory) when it re-executes. See [`crate::model::Step`].
+    Secret { t_ms: u64, prompt: String },
+    /// The active view switches to these panes at this moment (until the next
+    /// reveal, or the end of the demo). Both `demo focus` (predefined sources) and
+    /// `demo open` (ad-hoc URLs) produce one. One pane fills the canvas; two are
+    /// split by `orientation`. A single terminal pane means "back to the terminal".
+    /// `hold_ms` keeps the view on screen at least that long; `scroll` pans any
+    /// browser pane down. For an interactive `--view` session a pane's `url` is a
+    /// `viewframes:<dir>` pointer to pre-recorded frames.
+    Reveal {
+        t_ms: u64,
+        panes: Vec<RevealPane>,
+        #[serde(default, skip_serializing_if = "Orientation::is_horizontal")]
+        orientation: Orientation,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        hold_ms: Option<u64>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        scroll: bool,
+    },
+}
+
+/// One pane of a [`RawEvent::Reveal`]: the terminal, or a browser page.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RevealPane {
+    /// Display id — a source id (`main`, `docs`) or a generated name for an
+    /// ad-hoc `demo open`.
+    pub id: String,
+    /// Browser URL (`http(s)://`, `file://`, or `viewframes:<dir>`). `None` marks
+    /// the terminal pane.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    /// Emulated colour scheme (`light`/`dark`) for a browser pane, or `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub theme: Option<String>,
+}
+
+impl RevealPane {
+    /// A terminal pane with id `main`.
+    pub fn terminal() -> Self {
+        RevealPane {
+            id: "main".to_string(),
+            url: None,
+            theme: None,
+        }
+    }
+    /// Is this the terminal (no URL)?
+    pub fn is_terminal(&self) -> bool {
+        self.url.is_none()
+    }
+}
+
+/// How a two-pane reveal is arranged.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum Orientation {
+    /// Side by side (first left, second right).
+    #[default]
+    Horizontal,
+    /// Stacked (first top, second bottom).
+    Vertical,
+}
+
+impl Orientation {
+    fn is_horizontal(&self) -> bool {
+        matches!(self, Orientation::Horizontal)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn round_trips_through_toml() {
+        let original = RawMacro {
+            meta: RawMeta {
+                shell: "/bin/bash".into(),
+                cols: 100,
+                rows: 30,
+                idle_timeout_ms: 3000,
+                resolution: None,
+                fps: None,
+                stage: None,
+                mute_spans: vec![(150, 320)],
+            },
+            events: vec![
+                RawEvent::Input {
+                    t_ms: 120,
+                    bytes: "git".into(),
+                },
+                RawEvent::Output {
+                    t_ms: 130,
+                    data: "git".into(),
+                },
+                RawEvent::Input {
+                    t_ms: 400,
+                    bytes: "\r".into(),
+                },
+            ],
+        };
+        let rendered = original.to_toml().unwrap();
+        let reparsed: RawMacro = toml::from_str(&rendered).unwrap();
+        assert_eq!(original, reparsed);
+    }
+}
