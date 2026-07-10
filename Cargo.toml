@@ -3,6 +3,6 @@ name = "demo-stage"
 version = "0.2.0"
 edition = "2021"
 description = ""
-publish = false
+publish = true
 
 [dependencies]
