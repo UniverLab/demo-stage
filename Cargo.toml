@@ -1,8 +1,35 @@
 [package]
 name = "demo-stage"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
-description = ""
-publish = false
+description = "Demos as Code — declarative terminal capture and multi-scene orchestration"
+license = "MIT"
+homepage = "https://univerlab.org"
+repository = "https://github.com/UniverLab/demostage"
+publish = true
+
+[[bin]]
+name = "demo"
+path = "src/main.rs"
+
+[lib]
+name = "demo_stage"
+path = "src/lib.rs"
 
 [dependencies]
+clap = { version = "4.5", features = ["derive"] }
+inquire = "0.7"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+thiserror = "2"
+portable-pty = "0.8"
+crossterm = "0.28"
+vt100 = "0.15"
+fontdue = "0.9"
+gif = "0.13"
+ffmpeg-sidecar = "2"
+headless_chrome = { version = "1", features = ["fetch"] }
+png = "0.17"
+regex = "1"
+hayro = "0.7.1"
