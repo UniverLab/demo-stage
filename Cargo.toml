@@ -3,7 +3,10 @@ name = "demo-stage"
 version = "0.1.0"
 edition = "2021"
 description = "Demos as Code — declarative terminal capture and multi-scene orchestration"
-publish = false
+license = "MIT"
+homepage = "https://univerlab.org"
+repository = "https://github.com/UniverLab/demostage"
+publish = true
 
 [[bin]]
 name = "demo"

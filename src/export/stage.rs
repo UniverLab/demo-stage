@@ -170,10 +170,8 @@ fn scroll_keyframes_for(score: &Score, pane_id: &str) -> usize {
             }
             Step::Scroll {
                 duration_ms, pane, ..
-            } => {
-                if pane.as_deref().or(focused) == Some(pane_id) {
-                    ms += duration_ms;
-                }
+            } if pane.as_deref().or(focused) == Some(pane_id) => {
+                ms += duration_ms;
             }
             _ => {}
         }

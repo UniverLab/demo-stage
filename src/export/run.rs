@@ -579,11 +579,10 @@ fn settle(
 /// Print a progress bar to stderr: `  label… [████████░░░░░░░░] 42%`
 pub fn progress_bar(label: &str, current: usize, total: usize) {
     const WIDTH: usize = 24;
-    let pct = if total == 0 {
-        100
-    } else {
-        (current * 100 / total).min(100)
-    };
+    let pct = (current * 100)
+        .checked_div(total)
+        .map(|v| v.min(100))
+        .unwrap_or(100);
     let filled = (pct * WIDTH) / 100;
     let bar: String = "█".repeat(filled) + &"░".repeat(WIDTH - filled);
     eprint!("\r  {label} [{bar}] {pct:>3}%");
@@ -716,10 +715,9 @@ fn parse_modifier_key(key: &str) -> Option<Vec<u8>> {
     // Try "modifier-key" or "modifier+key" separators.
     let (mod_name, base_key) = if let Some(pos) = key.find('-') {
         (&key[..pos], &key[pos + 1..])
-    } else if let Some(pos) = key.find('+') {
-        (&key[..pos], &key[pos + 1..])
     } else {
-        return None;
+        let pos = key.find('+')?;
+        (&key[..pos], &key[pos + 1..])
     };
     let mod_code = modifier_code(mod_name)?;
     let (code, final_byte) = arrow_code(base_key)?;
