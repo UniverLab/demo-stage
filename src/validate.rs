@@ -587,8 +587,12 @@ height = 100
 "#,
         );
         let problems = validate(&s);
-        assert!(problems.iter().any(|p| p.contains("b1") && p.contains("url")));
-        assert!(problems.iter().any(|p| p.contains("b2") && p.contains("url")));
+        assert!(problems
+            .iter()
+            .any(|p| p.contains("b1") && p.contains("url")));
+        assert!(problems
+            .iter()
+            .any(|p| p.contains("b2") && p.contains("url")));
     }
 
     // ── Input pane without focus ──────────────────────────────────────────
@@ -666,7 +670,9 @@ action = "type"
 text = "hello"
 "#,
         );
-        assert!(validate(&s).iter().any(|p| p.contains("requires a focused terminal")));
+        assert!(validate(&s)
+            .iter()
+            .any(|p| p.contains("requires a focused terminal")));
     }
 
     #[test]
@@ -694,7 +700,9 @@ action = "keypress"
 key = "enter"
 "#,
         );
-        assert!(validate(&s).iter().any(|p| p.contains("requires a focused terminal")));
+        assert!(validate(&s)
+            .iter()
+            .any(|p| p.contains("requires a focused terminal")));
     }
 
     #[test]
@@ -722,7 +730,9 @@ action = "secret"
 prompt = "Pass:"
 "#,
         );
-        assert!(validate(&s).iter().any(|p| p.contains("requires a focused terminal")));
+        assert!(validate(&s)
+            .iter()
+            .any(|p| p.contains("requires a focused terminal")));
     }
 
     // ── Focus edge cases ──────────────────────────────────────────────────
@@ -796,7 +806,9 @@ height = 100
   height = 100
 "#,
         );
-        assert!(validate(&s).iter().any(|p| p.contains("width and height must be > 0")));
+        assert!(validate(&s)
+            .iter()
+            .any(|p| p.contains("width and height must be > 0")));
     }
 
     #[test]
@@ -817,7 +829,9 @@ height = 0
   height = 0
 "#,
         );
-        assert!(validate(&s).iter().any(|p| p.contains("width and height must be > 0")));
+        assert!(validate(&s)
+            .iter()
+            .any(|p| p.contains("width and height must be > 0")));
     }
 
     #[test]
@@ -853,9 +867,7 @@ width = 100
 height = 100
 "#,
         );
-        assert!(validate(&s)
-            .iter()
-            .any(|p| p.contains("at least one pane")));
+        assert!(validate(&s).iter().any(|p| p.contains("at least one pane")));
     }
 
     #[test]
@@ -876,7 +888,9 @@ height = 100
   height = 100
 "#,
         );
-        assert!(validate(&s).iter().any(|p| p.contains("width and height must be > 0")));
+        assert!(validate(&s)
+            .iter()
+            .any(|p| p.contains("width and height must be > 0")));
     }
 
     #[test]
@@ -897,7 +911,9 @@ height = 100
   height = 0
 "#,
         );
-        assert!(validate(&s).iter().any(|p| p.contains("width and height must be > 0")));
+        assert!(validate(&s)
+            .iter()
+            .any(|p| p.contains("width and height must be > 0")));
     }
 
     #[test]
@@ -996,7 +1012,9 @@ match = "ready"
 pane = "b1"
 "#,
         );
-        assert!(validate(&s).iter().any(|p| p.contains("must be a Terminal")));
+        assert!(validate(&s)
+            .iter()
+            .any(|p| p.contains("must be a Terminal")));
     }
 
     #[test]

@@ -297,14 +297,8 @@ mod tests {
 
     #[test]
     fn normalize_url_preserves_existing_protocol() {
-        assert_eq!(
-            normalize_url("https://example.com"),
-            "https://example.com"
-        );
-        assert_eq!(
-            normalize_url("http://example.com"),
-            "http://example.com"
-        );
+        assert_eq!(normalize_url("https://example.com"), "https://example.com");
+        assert_eq!(normalize_url("http://example.com"), "http://example.com");
         assert_eq!(
             normalize_url("file:///tmp/test.html"),
             "file:///tmp/test.html"
@@ -314,10 +308,7 @@ mod tests {
     #[test]
     fn normalize_url_trims_whitespace() {
         assert_eq!(normalize_url("  example.com  "), "https://example.com");
-        assert_eq!(
-            normalize_url("  https://x.com  "),
-            "https://x.com"
-        );
+        assert_eq!(normalize_url("  https://x.com  "), "https://x.com");
     }
 
     // --- normalize_windows_file_url ---
@@ -495,8 +486,7 @@ mod tests {
         let launch_dir = base.join("launch");
         fs::create_dir_all(&launch_dir).unwrap();
 
-        let result =
-            file_url_relative_to_launch(&file, &launch_dir, Some(&shell_dir)).unwrap();
+        let result = file_url_relative_to_launch(&file, &launch_dir, Some(&shell_dir)).unwrap();
         assert!(result.starts_with("file://"));
         assert!(result.ends_with("output.pdf"));
     }
@@ -515,8 +505,7 @@ mod tests {
         fs::write(&file, b"<html></html>").unwrap();
 
         // Falls back to just the file name
-        let result =
-            file_url_relative_to_launch(&file, &launch_dir, Some(&shell_dir)).unwrap();
+        let result = file_url_relative_to_launch(&file, &launch_dir, Some(&shell_dir)).unwrap();
         assert!(result.starts_with("file://"));
         assert!(result.ends_with("outside.html"));
     }
