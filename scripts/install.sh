@@ -1,10 +1,10 @@
 #!/bin/sh
-# install.sh — download and install demo-stage from GitHub Releases
-# Usage: curl -fsSL https://raw.githubusercontent.com/UniverLab/demo-stage/main/scripts/install.sh | sh
+# install.sh — download and install demostage from GitHub Releases
+# Usage: curl -fsSL https://raw.githubusercontent.com/UniverLab/demostage/main/scripts/install.sh | sh
 set -eu
 
-REPO="UniverLab/demo-stage"
-BINARY="demo-stage"
+REPO="UniverLab/demostage"
+BINARY="demo"
 INSTALL_DIR="${INSTALL_DIR:-$HOME/.local/bin}"
 
 info() { printf '  \033[1;34m%s\033[0m %s\n' "$1" "$2"; }

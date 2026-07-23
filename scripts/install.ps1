@@ -1,5 +1,5 @@
-# install.ps1 — download and install demo-stage on Windows
-# Usage: irm https://raw.githubusercontent.com/UniverLab/demo-stage/main/scripts/install.ps1 | iex
+# install.ps1 — download and install demostage on Windows
+# Usage: irm https://raw.githubusercontent.com/UniverLab/demostage/main/scripts/install.ps1 | iex
 #
 # Options (set as env vars before running):
 #   $env:VERSION    = "0.1.0"           # pin a specific version
@@ -7,8 +7,8 @@
 
 $ErrorActionPreference = "Stop"
 
-$Repo       = "UniverLab/demo-stage"
-$Binary     = "demo-stage.exe"
+$Repo       = "UniverLab/demostage"
+$Binary     = "demo.exe"
 $Target     = "x86_64-pc-windows-msvc"
 $InstallDir = if ($env:INSTALL_DIR) { $env:INSTALL_DIR } else { "$env:USERPROFILE\.local\bin" }
 
@@ -43,9 +43,9 @@ if ($env:VERSION) {
 }
 
 # --- download ---
-$Archive = "demo-stage-$Tag-$Target.zip"
+$Archive = "demo-$Tag-$Target.zip"
 $Url     = "https://github.com/$Repo/releases/download/$Tag/$Archive"
-$Tmp     = Join-Path $env:TEMP "demo-stage-install"
+$Tmp     = Join-Path $env:TEMP "demostage-install"
 New-Item -ItemType Directory -Force -Path $Tmp | Out-Null
 
 Info "download" $Url
