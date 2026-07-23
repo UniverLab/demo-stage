@@ -183,4 +183,103 @@ mod tests {
         let reparsed: RawMacro = toml::from_str(&rendered).unwrap();
         assert_eq!(original, reparsed);
     }
+
+    #[test]
+    fn is_muted_inside_span() {
+        let meta = RawMeta {
+            mute_spans: vec![(100, 200), (500, 600)],
+            ..default_meta()
+        };
+        assert!(meta.is_muted(150));
+        assert!(meta.is_muted(100));
+        assert!(!meta.is_muted(200));
+        assert!(meta.is_muted(550));
+        assert!(!meta.is_muted(300));
+    }
+
+    #[test]
+    fn is_muted_empty_spans() {
+        let meta = RawMeta {
+            mute_spans: vec![],
+            ..default_meta()
+        };
+        assert!(!meta.is_muted(0));
+        assert!(!meta.is_muted(99999));
+    }
+
+    #[test]
+    fn reveal_pane_terminal_factory() {
+        let p = RevealPane::terminal();
+        assert_eq!(p.id, "main");
+        assert!(p.url.is_none());
+        assert!(p.theme.is_none());
+    }
+
+    #[test]
+    fn reveal_pane_is_terminal_true_when_no_url() {
+        let p = RevealPane {
+            id: "x".into(),
+            url: None,
+            theme: None,
+        };
+        assert!(p.is_terminal());
+    }
+
+    #[test]
+    fn reveal_pane_is_terminal_false_when_url() {
+        let p = RevealPane {
+            id: "x".into(),
+            url: Some("http://x.com".into()),
+            theme: None,
+        };
+        assert!(!p.is_terminal());
+    }
+
+    #[test]
+    fn orientation_default_is_horizontal() {
+        let o = Orientation::default();
+        assert_eq!(o, Orientation::Horizontal);
+    }
+
+    #[test]
+    fn orientation_is_horizontal_method() {
+        assert!(Orientation::Horizontal.is_horizontal());
+        assert!(!Orientation::Vertical.is_horizontal());
+    }
+
+    #[test]
+    fn raw_macro_round_trip_with_resolution_and_fps() {
+        let original = RawMacro {
+            meta: RawMeta {
+                shell: "/bin/zsh".into(),
+                cols: 120,
+                rows: 40,
+                idle_timeout_ms: 5000,
+                resolution: Some((1920, 1080)),
+                fps: Some(24),
+                stage: Some("intro".into()),
+                mute_spans: vec![],
+            },
+            events: vec![RawEvent::Secret {
+                t_ms: 100,
+                prompt: "Vault passphrase:".into(),
+            }],
+        };
+        let rendered = original.to_toml().unwrap();
+        let reparsed: RawMacro = toml::from_str(&rendered).unwrap();
+        assert_eq!(original, reparsed);
+    }
+
+    fn default_meta() -> RawMeta {
+        RawMeta {
+            shell: "/bin/bash".into(),
+            cols: 80,
+            rows: 24,
+            idle_timeout_ms: 0,
+            resolution: None,
+            fps: None,
+            stage: None,
+            mute_spans: vec![],
+        }
+    }
 }

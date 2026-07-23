@@ -544,3 +544,399 @@ fn ask_string(label: &str) -> Result<String> {
     }
     Ok(v)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{ScrollDirection, Velocity};
+
+    #[test]
+    fn selection_indices_extracts_and_sorts() {
+        let selected = vec!["  3. wait 500ms".into(), "1. type \"hi\"".into()];
+        let idx = selection_indices(&selected, 10);
+        assert_eq!(idx, vec![0, 2]);
+    }
+
+    #[test]
+    fn selection_indices_filters_out_of_range() {
+        let selected = vec!["999. foo".into(), "1. bar".into()];
+        let idx = selection_indices(&selected, 3);
+        assert_eq!(idx, vec![0]);
+    }
+
+    #[test]
+    fn selection_indices_deduplicates() {
+        let selected = vec!["1. a".into(), "1. b".into()];
+        let idx = selection_indices(&selected, 5);
+        assert_eq!(idx, vec![0]);
+    }
+
+    #[test]
+    fn selection_indices_empty() {
+        let idx = selection_indices(&[], 5);
+        assert!(idx.is_empty());
+    }
+
+    #[test]
+    fn plural_singular() {
+        assert_eq!(plural(1), "1 step");
+        assert_eq!(plural(2), "2 steps");
+        assert_eq!(plural(0), "0 steps");
+    }
+
+    #[test]
+    fn preview_truncates_and_replaces_newlines() {
+        assert_eq!(preview("hello world", 5), "hello…");
+        assert_eq!(preview("ab\ncd", 10), "ab↵cd");
+        assert_eq!(preview("short", 10), "short");
+        assert_eq!(preview("", 5), "");
+    }
+
+    #[test]
+    fn current_ms_extracts_wait_duration() {
+        let s = Step::Wait { duration_ms: 1234 };
+        assert_eq!(current_ms(&s), 1234);
+    }
+
+    #[test]
+    fn current_ms_extracts_quiet_ms() {
+        let s = Step::WaitForQuiet {
+            quiet_ms: 500,
+            max_ms: None,
+        };
+        assert_eq!(current_ms(&s), 500);
+    }
+
+    #[test]
+    fn current_ms_default_for_other_steps() {
+        let s = Step::Type {
+            text: "hi".into(),
+            human_salt: false,
+        };
+        assert_eq!(current_ms(&s), 500);
+    }
+
+    #[test]
+    fn step_summary_covers_all_variants() {
+        assert!(step_summary(&Step::Type {
+            text: "hello".into(),
+            human_salt: false
+        })
+        .contains("type"));
+        assert!(step_summary(&Step::Keypress {
+            key: "enter".into()
+        })
+        .contains("enter"));
+        assert!(step_summary(&Step::Wait { duration_ms: 500 }).contains("500ms"));
+        assert!(step_summary(&Step::WaitForQuiet {
+            quiet_ms: 300,
+            max_ms: None
+        })
+        .contains("300ms"));
+        assert!(step_summary(&Step::WaitForScreen {
+            pattern: "pat".into(),
+            timeout_ms: None
+        })
+        .contains("pat"));
+        assert!(step_summary(&Step::WaitForStdout {
+            pattern: "pat".into(),
+            pane: None
+        })
+        .contains("pat"));
+        assert!(step_summary(&Step::Focus {
+            pane: Some("main".into())
+        })
+        .contains("main"));
+        assert!(step_summary(&Step::Focus { pane: None }).contains("?"));
+        assert!(step_summary(&Step::Caption { text: "hi".into() }).contains("hi"));
+        assert!(step_summary(&Step::Secret {
+            prompt: "pass:".into()
+        })
+        .contains("pass:"));
+        assert!(step_summary(&Step::Scroll {
+            direction: ScrollDirection::Down,
+            velocity: Velocity::Constant,
+            duration_ms: 1000,
+            pane: None
+        })
+        .contains("scroll"));
+        assert_eq!(step_summary(&Step::Terminate), "terminate");
+    }
+
+    #[test]
+    fn do_split_splits_on_newline() {
+        let mut timeline = vec![
+            Step::Type {
+                text: "line1\nline2\nline3".into(),
+                human_salt: true,
+            },
+            Step::Wait { duration_ms: 100 },
+        ];
+        do_split(&mut timeline, 0, "\n", true, "line1\nline2\nline3").unwrap();
+        // Original replaced + 3 new parts inserted
+        assert!(timeline.len() > 2);
+        // Verify all parts are Type steps
+        for step in timeline.iter().take(timeline.len() - 1) {
+            assert!(matches!(step, Step::Type { .. }));
+        }
+    }
+
+    #[test]
+    fn do_split_splits_on_space() {
+        let mut timeline = vec![Step::Type {
+            text: "a b c".into(),
+            human_salt: false,
+        }];
+        do_split(&mut timeline, 0, " ", false, "a b c").unwrap();
+        // "a b c" split by " " gives ["a ", "b ", "c"] → 3 parts
+        assert!(timeline.len() >= 3);
+    }
+
+    #[test]
+    fn do_split_delimiter_not_found() {
+        let mut timeline = vec![Step::Type {
+            text: "hello".into(),
+            human_salt: true,
+        }];
+        do_split(&mut timeline, 0, "XYZ", true, "hello").unwrap();
+        // No split happens, original stays
+        assert_eq!(timeline.len(), 1);
+        if let Step::Type { text, .. } = &timeline[0] {
+            assert_eq!(text, "hello");
+        }
+    }
+
+    #[test]
+    fn do_split_empty_parts_ignored() {
+        let mut timeline = vec![Step::Type {
+            text: "a,,b".into(),
+            human_salt: true,
+        }];
+        do_split(&mut timeline, 0, ",", true, "a,,b").unwrap();
+        // "a,,b" split by "," gives ["a", "", "b"] → empty part filtered → 2 steps
+        assert!(timeline.len() >= 2);
+    }
+
+    #[test]
+    fn do_split_single_char_delim() {
+        let mut timeline = vec![Step::Type {
+            text: "one|two|three".into(),
+            human_salt: true,
+        }];
+        do_split(&mut timeline, 0, "|", true, "one|two|three").unwrap();
+        assert!(timeline.len() >= 3);
+    }
+
+    #[test]
+    fn do_split_preserves_human_salt() {
+        let mut timeline = vec![Step::Type {
+            text: "x y".into(),
+            human_salt: true,
+        }];
+        do_split(&mut timeline, 0, " ", true, "x y").unwrap();
+        for step in &timeline {
+            if let Step::Type { human_salt, .. } = step {
+                assert!(*human_salt);
+            }
+        }
+    }
+
+    #[test]
+    fn preview_exact_length_no_ellipsis() {
+        assert_eq!(preview("abcde", 5), "abcde");
+    }
+
+    #[test]
+    fn preview_one_char() {
+        assert_eq!(preview("a", 1), "a");
+    }
+
+    #[test]
+    fn preview_multiple_newlines() {
+        assert_eq!(preview("a\nb\nc", 10), "a↵b↵c");
+    }
+
+    #[test]
+    fn preview_empty_with_zero_n() {
+        assert_eq!(preview("", 0), "");
+    }
+
+    #[test]
+    fn preview_unicode_chars() {
+        assert_eq!(preview("café", 4), "café");
+    }
+
+    #[test]
+    fn preview_unicode_truncated() {
+        assert_eq!(preview("café", 3), "caf…");
+    }
+
+    #[test]
+    fn step_summary_type_long_text() {
+        let long = "a".repeat(100);
+        let s = Step::Type {
+            text: long,
+            human_salt: false,
+        };
+        let summary = step_summary(&s);
+        assert!(summary.contains("…"));
+        assert!(summary.len() < 100);
+    }
+
+    #[test]
+    fn step_summary_wait_for_screen_long_pattern() {
+        let long = "x".repeat(80);
+        let s = Step::WaitForScreen {
+            pattern: long,
+            timeout_ms: None,
+        };
+        let summary = step_summary(&s);
+        assert!(summary.contains("…"));
+    }
+
+    #[test]
+    fn step_summary_wait_for_stdout_long_pattern() {
+        let long = "y".repeat(80);
+        let s = Step::WaitForStdout {
+            pattern: long,
+            pane: None,
+        };
+        let summary = step_summary(&s);
+        assert!(summary.contains("…"));
+    }
+
+    #[test]
+    fn step_summary_caption_long_text() {
+        let long = "z".repeat(100);
+        let s = Step::Caption { text: long };
+        let summary = step_summary(&s);
+        assert!(summary.contains("…"));
+    }
+
+    #[test]
+    fn step_summary_secret_long_prompt() {
+        let long = "w".repeat(100);
+        let s = Step::Secret { prompt: long };
+        let summary = step_summary(&s);
+        assert!(summary.contains("…"));
+    }
+
+    #[test]
+    fn step_summary_scroll_up() {
+        let s = Step::Scroll {
+            direction: ScrollDirection::Up,
+            velocity: Velocity::Constant,
+            duration_ms: 2000,
+            pane: None,
+        };
+        let summary = step_summary(&s);
+        assert!(summary.contains("scroll"));
+        assert!(summary.contains("2000ms"));
+    }
+
+    #[test]
+    fn step_summary_scroll_down() {
+        let s = Step::Scroll {
+            direction: ScrollDirection::Down,
+            velocity: Velocity::Constant,
+            duration_ms: 500,
+            pane: Some("main".into()),
+        };
+        let summary = step_summary(&s);
+        assert!(summary.contains("scroll"));
+    }
+
+    #[test]
+    fn step_summary_focus_no_pane() {
+        let s = Step::Focus { pane: None };
+        assert!(step_summary(&s).contains("?"));
+    }
+
+    #[test]
+    fn step_summary_focus_with_pane() {
+        let s = Step::Focus {
+            pane: Some("docs".into()),
+        };
+        assert!(step_summary(&s).contains("docs"));
+    }
+
+    #[test]
+    fn selection_indices_out_of_range_filtered() {
+        let selected = vec!["5. foo".into()];
+        let idx = selection_indices(&selected, 3);
+        assert!(idx.is_empty());
+    }
+
+    #[test]
+    fn selection_indices_multiple_in_range() {
+        let selected = vec!["1. a".into(), "3. b".into(), "5. c".into()];
+        let idx = selection_indices(&selected, 10);
+        assert_eq!(idx, vec![0, 2, 4]);
+    }
+
+    #[test]
+    fn current_ms_wait_for_screen() {
+        let s = Step::WaitForScreen {
+            pattern: "pat".into(),
+            timeout_ms: None,
+        };
+        assert_eq!(current_ms(&s), 500);
+    }
+
+    #[test]
+    fn current_ms_wait_for_stdout() {
+        let s = Step::WaitForStdout {
+            pattern: "pat".into(),
+            pane: None,
+        };
+        assert_eq!(current_ms(&s), 500);
+    }
+
+    #[test]
+    fn current_ms_focus() {
+        let s = Step::Focus {
+            pane: Some("main".into()),
+        };
+        assert_eq!(current_ms(&s), 500);
+    }
+
+    #[test]
+    fn current_ms_caption() {
+        let s = Step::Caption { text: "hi".into() };
+        assert_eq!(current_ms(&s), 500);
+    }
+
+    #[test]
+    fn current_ms_secret() {
+        let s = Step::Secret {
+            prompt: "pass:".into(),
+        };
+        assert_eq!(current_ms(&s), 500);
+    }
+
+    #[test]
+    fn current_ms_terminate() {
+        assert_eq!(current_ms(&Step::Terminate), 500);
+    }
+
+    #[test]
+    fn do_split_single_part_no_split() {
+        let mut timeline = vec![Step::Type {
+            text: "nodelimiter".into(),
+            human_salt: true,
+        }];
+        do_split(&mut timeline, 0, "|||", true, "nodelimiter").unwrap();
+        assert_eq!(timeline.len(), 1);
+    }
+
+    #[test]
+    fn do_split_preserves_delimiter_in_parts() {
+        let mut timeline = vec![Step::Type {
+            text: "a,b,c".into(),
+            human_salt: false,
+        }];
+        do_split(&mut timeline, 0, ",", false, "a,b,c").unwrap();
+        // "a,b,c" split by "," → ["a,", "b,", "c"] → 3 steps
+        assert!(timeline.len() >= 3);
+    }
+}

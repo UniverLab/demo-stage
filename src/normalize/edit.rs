@@ -630,4 +630,542 @@ mod tests {
         let a = reconstruct(&[(0, "\u{1b}[15;2~\r")]);
         assert_eq!(keys(&a), vec!["shift-f5", "enter"]);
     }
+
+    // ── helper function coverage ──────────────────────────────────────
+
+    #[test]
+    fn modifier_prefix_values() {
+        assert_eq!(modifier_prefix(MOD_SHIFT), "shift-");
+        assert_eq!(modifier_prefix(MOD_ALT), "alt-");
+        assert_eq!(modifier_prefix(4), "alt+shift-");
+        assert_eq!(modifier_prefix(MOD_CTRL), "ctrl+");
+        assert_eq!(modifier_prefix(MOD_CTRL_SHIFT), "ctrl+shift-");
+        assert_eq!(modifier_prefix(7), "ctrl+alt-");
+        assert_eq!(modifier_prefix(8), "ctrl+alt+shift-");
+        assert_eq!(modifier_prefix(0), "");
+    }
+
+    #[test]
+    fn parse_csi_params_simple() {
+        assert_eq!(parse_csi_params("1"), (1, 0));
+        assert_eq!(parse_csi_params("5"), (5, 0));
+    }
+
+    #[test]
+    fn parse_csi_params_with_modifier() {
+        assert_eq!(parse_csi_params("1;2"), (1, 2));
+        assert_eq!(parse_csi_params("1;5"), (1, 5));
+    }
+
+    #[test]
+    fn csi_key_arrows() {
+        assert_eq!(csi_key("A", 'A'), Some("up".into()));
+        assert_eq!(csi_key("B", 'B'), Some("down".into()));
+        assert_eq!(csi_key("C", 'C'), Some("right".into()));
+        assert_eq!(csi_key("D", 'D'), Some("left".into()));
+    }
+
+    #[test]
+    fn csi_key_with_modifier() {
+        assert_eq!(csi_key("1;2", 'A'), Some("shift-up".into()));
+        assert_eq!(csi_key("1;5", 'C'), Some("ctrl+right".into()));
+    }
+
+    #[test]
+    fn csi_key_function_keys() {
+        assert_eq!(csi_key("12", '~'), Some("f2".into()));
+        assert_eq!(csi_key("15", '~'), Some("f5".into()));
+        assert_eq!(csi_key("24", '~'), Some("f12".into()));
+    }
+
+    #[test]
+    fn csi_key_unknown() {
+        assert_eq!(csi_key("99", 'X'), None);
+    }
+
+    #[test]
+    fn ss3_key_basic() {
+        assert_eq!(ss3_key('P'), Some("f1"));
+        assert_eq!(ss3_key('Q'), Some("f2"));
+        assert_eq!(ss3_key('R'), Some("f3"));
+        assert_eq!(ss3_key('S'), Some("f4"));
+    }
+
+    #[test]
+    fn ss3_key_unknown() {
+        assert_eq!(ss3_key('Z'), None);
+    }
+
+    #[test]
+    fn orphan_osc_unit_len_simple() {
+        let chars: Vec<char> = "abc".chars().collect();
+        assert_eq!(orphan_osc_unit_len(&chars), None);
+    }
+
+    #[test]
+    fn orphan_osc_cluster_len_empty() {
+        let chars: Vec<char> = vec![];
+        assert_eq!(orphan_osc_cluster_len(&chars), None);
+    }
+
+    #[test]
+    fn reconstruct_empty_input() {
+        let a = reconstruct(&[]);
+        assert!(a.is_empty());
+    }
+
+    #[test]
+    fn reconstruct_tab_key() {
+        let a = reconstruct(&[(0, "\t")]);
+        assert_eq!(keys(&a), vec!["tab"]);
+    }
+
+    #[test]
+    fn reconstruct_ctrl_c() {
+        // Ctrl+C should be captured as a key
+        let a = reconstruct(&[(0, "\u{3}")]);
+        assert_eq!(keys(&a), vec!["ctrl+c"]);
+    }
+
+    #[test]
+    fn reconstruct_ctrl_s() {
+        // Ctrl+S (0x13) should be captured as a key
+        let a = reconstruct(&[(0, "\u{13}")]);
+        assert_eq!(keys(&a), vec!["ctrl+s"]);
+    }
+
+    #[test]
+    fn reconstruct_unknown_ctrl_char_dropped() {
+        // Ctrl+D (0x04) is silently dropped by the parser
+        let a = reconstruct(&[(0, "\u{4}")]);
+        assert!(a.is_empty());
+    }
+
+    #[test]
+    fn reconstruct_paste_mode() {
+        // Bracketed paste: ESC[200~text ESC[201~
+        let input = "\x1b[200~pasted\x1b[201~";
+        let a = reconstruct(&[(0, input)]);
+        let t = typed(&a);
+        assert_eq!(t, vec!["pasted"]);
+    }
+
+    #[test]
+    fn reconstruct_paste_enter_emits_key() {
+        let input = "\x1b[200~line1\rline2\x1b[201~";
+        let a = reconstruct(&[(0, input)]);
+        let t = typed(&a);
+        assert_eq!(t, vec!["line1", "line2"]);
+        // There should be an enter key between them
+        let k = keys(&a);
+        assert!(k.contains(&"enter"), "expected enter key in {:?}", k);
+    }
+
+    #[test]
+    fn reconstruct_paste_backspace() {
+        let input = "\x1b[200~ab\x7fcd\x1b[201~";
+        let a = reconstruct(&[(0, input)]);
+        let t = typed(&a);
+        assert_eq!(t, vec!["acd"]);
+    }
+
+    #[test]
+    fn reconstruct_paste_ctrl_u() {
+        let input = "\x1b[200~hello\x15world\x1b[201~";
+        let a = reconstruct(&[(0, input)]);
+        let t = typed(&a);
+        assert_eq!(t, vec!["world"]);
+    }
+
+    #[test]
+    fn reconstruct_bare_esc_at_end() {
+        let a = reconstruct(&[(0, "hello\x1b")]);
+        let t = typed(&a);
+        assert_eq!(t, vec!["hello"]);
+        let k = keys(&a);
+        assert!(k.contains(&"esc"), "expected esc key at end");
+    }
+
+    #[test]
+    fn reconstruct_esc_with_unrecognized_char() {
+        // ESC followed by an unrecognized char should emit "esc" as a key
+        let a = reconstruct(&[(0, "\x1bZ")]);
+        let k = keys(&a);
+        assert!(k.contains(&"esc"), "expected esc key");
+    }
+
+    #[test]
+    fn reconstruct_osc_body_stripped() {
+        // OSC sequence (ESC ]) with a body — should be stripped
+        let input = "\x1b]0;title\x07";
+        let a = reconstruct(&[(0, input)]);
+        // No actions should be produced from the OSC
+        assert!(a.is_empty());
+    }
+
+    #[test]
+    fn reconstruct_osc_st_terminated() {
+        // OSC terminated by ST (ESC \)
+        let input = "\x1b]0;title\x1b\\";
+        let a = reconstruct(&[(0, input)]);
+        assert!(a.is_empty());
+    }
+
+    #[test]
+    fn reconstruct_str_body_stripped() {
+        // STR sequence (ESC P ... ST)
+        let input = "\x1bPsome string\x1b\\";
+        let a = reconstruct(&[(0, input)]);
+        assert!(a.is_empty());
+    }
+
+    #[test]
+    fn reconstruct_sci_underscore_stripped() {
+        // ESC _ (APC) and ESC ^ (PM) and ESC X (STS) are treated as STR
+        let input = "\x1b_\x1b\\";
+        let a = reconstruct(&[(0, input)]);
+        assert!(a.is_empty());
+    }
+
+    #[test]
+    fn reconstruct_ctrl_s_in_text_flushes_before() {
+        let a = reconstruct(&[(0, "ab")]);
+        let t = typed(&a);
+        assert_eq!(t, vec!["ab"]);
+    }
+
+    #[test]
+    fn reconstruct_tab_flushes_before() {
+        let a = reconstruct(&[(0, "ab\t")]);
+        let t = typed(&a);
+        assert_eq!(t, vec!["ab"]);
+        let k = keys(&a);
+        assert!(k.contains(&"tab"));
+    }
+
+    #[test]
+    fn reconstruct_ctrl_c_clears_buffer() {
+        let a = reconstruct(&[(0, "abc\u{3}")]);
+        let t = typed(&a);
+        // ctrl+c clears the buffer
+        assert!(t.is_empty() || !t.iter().any(|s| s.contains("abc")));
+        let k = keys(&a);
+        assert!(k.contains(&"ctrl+c"));
+    }
+
+    #[test]
+    fn reconstruct_ctrl_s_flushes() {
+        let a = reconstruct(&[(0, "ab\u{13}")]);
+        let t = typed(&a);
+        assert_eq!(t, vec!["ab"]);
+        let k = keys(&a);
+        assert!(k.contains(&"ctrl+s"));
+    }
+
+    #[test]
+    fn reconstruct_ctrl_u_clears_line() {
+        let a = reconstruct(&[(0, "abc\u{15}def")]);
+        let t = typed(&a);
+        assert_eq!(t, vec!["def"]);
+    }
+
+    #[test]
+    fn reconstruct_bare_enter() {
+        let a = reconstruct(&[(0, "\r")]);
+        let k = keys(&a);
+        assert_eq!(k, vec!["enter"]);
+    }
+
+    #[test]
+    fn reconstruct_bare_newline() {
+        let a = reconstruct(&[(0, "\n")]);
+        let k = keys(&a);
+        assert_eq!(k, vec!["enter"]);
+    }
+
+    #[test]
+    fn reconstruct_shift_arrows() {
+        let a = reconstruct(&[(0, "\x1b[1;2A")]);
+        let k = keys(&a);
+        assert_eq!(k, vec!["shift-up"]);
+    }
+
+    #[test]
+    fn reconstruct_ctrl_arrows() {
+        let a = reconstruct(&[(0, "\x1b[1;5C")]);
+        let k = keys(&a);
+        assert_eq!(k, vec!["ctrl+right"]);
+    }
+
+    #[test]
+    fn reconstruct_alt_arrows() {
+        let a = reconstruct(&[(0, "\x1b[1;3B")]);
+        let k = keys(&a);
+        assert_eq!(k, vec!["alt-down"]);
+    }
+
+    #[test]
+    fn reconstruct_ss3_keys() {
+        // SS3 mode: ESC O followed by P/Q/R/S
+        let a = reconstruct(&[(0, "\x1bOP")]);
+        let k = keys(&a);
+        assert_eq!(k, vec!["f1"]);
+    }
+
+    #[test]
+    fn reconstruct_csi_home_end() {
+        let a = reconstruct(&[(0, "\x1b[H")]);
+        let k = keys(&a);
+        assert_eq!(k, vec!["home"]);
+        let a = reconstruct(&[(0, "\x1b[F")]);
+        let k = keys(&a);
+        assert_eq!(k, vec!["end"]);
+    }
+
+    #[test]
+    fn reconstruct_csi_insert_delete() {
+        let a = reconstruct(&[(0, "\x1b[2~")]);
+        let k = keys(&a);
+        assert_eq!(k, vec!["insert"]);
+        let a = reconstruct(&[(0, "\x1b[3~")]);
+        let k = keys(&a);
+        assert_eq!(k, vec!["delete"]);
+    }
+
+    #[test]
+    fn reconstruct_csi_pageup_pagedown() {
+        let a = reconstruct(&[(0, "\x1b[5~")]);
+        let k = keys(&a);
+        assert_eq!(k, vec!["pageup"]);
+        let a = reconstruct(&[(0, "\x1b[6~")]);
+        let k = keys(&a);
+        assert_eq!(k, vec!["pagedown"]);
+    }
+
+    #[test]
+    fn reconstruct_csi_f1_f12() {
+        // F5 = CSI 1 5 ~
+        let a = reconstruct(&[(0, "\x1b[15~")]);
+        let k = keys(&a);
+        assert_eq!(k, vec!["f5"]);
+        // F12 = CSI 2 4 ~
+        let a = reconstruct(&[(0, "\x1b[24~")]);
+        let k = keys(&a);
+        assert_eq!(k, vec!["f12"]);
+    }
+
+    #[test]
+    fn reconstruct_csi_home_via_code1() {
+        // CSI 1 ~ = home
+        let a = reconstruct(&[(0, "\x1b[1~")]);
+        let k = keys(&a);
+        assert_eq!(k, vec!["home"]);
+        // CSI 7 ~ = home
+        let a = reconstruct(&[(0, "\x1b[7~")]);
+        let k = keys(&a);
+        assert_eq!(k, vec!["home"]);
+    }
+
+    #[test]
+    fn reconstruct_csi_end_via_code() {
+        // CSI 4 ~ = end
+        let a = reconstruct(&[(0, "\x1b[4~")]);
+        let k = keys(&a);
+        assert_eq!(k, vec!["end"]);
+        // CSI 8 ~ = end
+        let a = reconstruct(&[(0, "\x1b[8~")]);
+        let k = keys(&a);
+        assert_eq!(k, vec!["end"]);
+    }
+
+    #[test]
+    fn reconstruct_csi_f1_f4_bare() {
+        // ESC P/Q/R/S without modifier = F1-F4
+        let a = reconstruct(&[(0, "\x1bOP")]);
+        assert_eq!(keys(&a), vec!["f1"]);
+        let a = reconstruct(&[(0, "\x1bOQ")]);
+        assert_eq!(keys(&a), vec!["f2"]);
+        let a = reconstruct(&[(0, "\x1bOR")]);
+        assert_eq!(keys(&a), vec!["f3"]);
+        let a = reconstruct(&[(0, "\x1bOS")]);
+        assert_eq!(keys(&a), vec!["f4"]);
+    }
+
+    #[test]
+    fn reconstruct_csi_unknown_final_byte() {
+        // CSI with an unrecognized final byte is ignored
+        let a = reconstruct(&[(0, "\x1b[1X")]);
+        assert!(a.is_empty());
+    }
+
+    #[test]
+    fn reconstruct_control_char_in_main_ignored() {
+        // Bell (0x07) and other control chars are ignored
+        let a = reconstruct(&[(0, "ab\u{7}cd")]);
+        let t = typed(&a);
+        assert_eq!(t, vec!["abcd"]);
+    }
+
+    #[test]
+    fn reconstruct_shift_ctrl_modifier() {
+        // modifier 6 = ctrl+shift
+        let a = reconstruct(&[(0, "\x1b[1;6A")]);
+        let k = keys(&a);
+        assert_eq!(k, vec!["ctrl+shift-up"]);
+    }
+
+    #[test]
+    fn reconstruct_ctrl_alt_modifier() {
+        // modifier 7 = ctrl+alt
+        let a = reconstruct(&[(0, "\x1b[1;7B")]);
+        let k = keys(&a);
+        assert_eq!(k, vec!["ctrl+alt-down"]);
+    }
+
+    #[test]
+    fn reconstruct_ctrl_alt_shift_modifier() {
+        // modifier 8 = ctrl+alt+shift
+        let a = reconstruct(&[(0, "\x1b[1;8C")]);
+        let k = keys(&a);
+        assert_eq!(k, vec!["ctrl+alt+shift-right"]);
+    }
+
+    #[test]
+    fn reconstruct_alt_shift_modifier() {
+        // modifier 4 = alt+shift
+        let a = reconstruct(&[(0, "\x1b[1;4D")]);
+        let k = keys(&a);
+        assert_eq!(k, vec!["alt+shift-left"]);
+    }
+
+    #[test]
+    fn reconstruct_paste_csi_unknown() {
+        // Paste mode with CSI but unknown ~ code stays in paste mode
+        let input = "\x1b[200~abc\x1b[99~def\x1b[201~";
+        let a = reconstruct(&[(0, input)]);
+        let t = typed(&a);
+        assert_eq!(t, vec!["abcdef"]);
+    }
+
+    #[test]
+    fn reconstruct_paste_csi_not_201() {
+        // Paste mode with CSI that ends with non-~ keeps paste
+        let input = "\x1b[200~ab\x1b[1Xcd\x1b[201~";
+        let a = reconstruct(&[(0, input)]);
+        let t = typed(&a);
+        assert_eq!(t, vec!["abcd"]);
+    }
+
+    #[test]
+    fn reconstruct_paste_saw_non_bracket() {
+        // In PasteSaw mode, non-[ goes back to Paste
+        let input = "\x1b[200~\x1bOab\x1b[201~";
+        let a = reconstruct(&[(0, input)]);
+        let t = typed(&a);
+        assert_eq!(t, vec!["ab"]);
+    }
+
+    #[test]
+    fn orphan_osc_unit_empty() {
+        assert_eq!(orphan_osc_unit_len(&[]), None);
+    }
+
+    #[test]
+    fn orphan_osc_unit_starts_with_non_digit() {
+        assert_eq!(orphan_osc_unit_len(&['a', ';', '1']), None);
+    }
+
+    #[test]
+    fn orphan_osc_unit_digit_only_no_semicolon() {
+        assert_eq!(orphan_osc_unit_len(&['1', '0']), None);
+    }
+
+    #[test]
+    fn orphan_osc_unit_empty_param_after_semicolon() {
+        // "10;;rgb:aaaabbbbcccc" — double semicolons: empty param breaks the loop
+        // then ";rgb:" doesn't match "rgb:"
+        assert_eq!(
+            orphan_osc_unit_len(&[
+                '1', '0', ';', ';', 'r', 'g', 'b', ':', 'a', 'a', 'a', 'a', '/', 'b', 'b', 'b',
+                'b', '/', 'c', 'c', 'c', 'c'
+            ]),
+            None
+        );
+    }
+
+    #[test]
+    fn orphan_osc_unit_missing_slash_separator() {
+        // "10;rgb:aaaabbbbcccc" — no slash between components
+        let chars: Vec<char> = "10;rgb:aaaabbbbcccc".chars().collect();
+        assert_eq!(orphan_osc_unit_len(&chars), None);
+    }
+
+    #[test]
+    fn orphan_osc_unit_zero_hex_length() {
+        // "10;rgb:" with no hex digits at all
+        assert_eq!(
+            orphan_osc_unit_len(&['1', '0', ';', 'r', 'g', 'b', ':']),
+            None
+        );
+    }
+
+    #[test]
+    fn orphan_osc_cluster_single_unit() {
+        let chars: Vec<char> = "10;rgb:abab/baba/baba".chars().collect();
+        assert_eq!(orphan_osc_cluster_len(&chars), Some(21));
+    }
+
+    #[test]
+    fn orphan_osc_cluster_two_units_no_separator() {
+        let chars: Vec<char> = "10;rgb:abab/baba/baba11;rgb:1414/1414/1414"
+            .chars()
+            .collect();
+        assert_eq!(orphan_osc_cluster_len(&chars), Some(42));
+    }
+
+    #[test]
+    fn orphan_osc_cluster_two_units_with_separator() {
+        // Two units separated by semicolon: 10;rgb:...;4;0;rgb:...
+        let chars: Vec<char> = "10;rgb:abab/baba/baba;4;0;rgb:0000/0000/0000"
+            .chars()
+            .collect();
+        let len = chars.len();
+        assert_eq!(orphan_osc_cluster_len(&chars), Some(len));
+    }
+
+    #[test]
+    fn orphan_osc_cluster_empty() {
+        assert_eq!(orphan_osc_cluster_len(&[]), None);
+    }
+
+    #[test]
+    fn orphan_osc_cluster_non_osc() {
+        assert_eq!(orphan_osc_cluster_len(&['h', 'e', 'l', 'l', 'o']), None);
+    }
+
+    #[test]
+    fn strip_orphan_osc_bodies_with_trailing_text() {
+        assert_eq!(
+            strip_orphan_osc_bodies("10;rgb:aabb/ccdd/eeff/path"),
+            "/path"
+        );
+    }
+
+    #[test]
+    fn strip_orphan_osc_bodies_empty_string() {
+        assert_eq!(strip_orphan_osc_bodies(""), "");
+    }
+
+    #[test]
+    fn strip_orphan_osc_bodies_no_osc() {
+        assert_eq!(strip_orphan_osc_bodies("hello world"), "hello world");
+    }
+
+    #[test]
+    fn reconstruct_multichar_ctrl_s() {
+        // Ctrl+S (0x13) flushes before it
+        let a = reconstruct(&[(0, "hello\u{13}world")]);
+        let t = typed(&a);
+        assert_eq!(t, vec!["hello", "world"]);
+    }
 }

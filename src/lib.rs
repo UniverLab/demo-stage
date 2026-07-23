@@ -79,4 +79,53 @@ mod tests {
     fn cli_definition_is_valid() {
         crate::cli::Cli::command().debug_assert();
     }
+
+    #[test]
+    fn stop_command_is_correct_string() {
+        assert_eq!(crate::STOP_COMMAND, "demo stop");
+    }
+
+    #[test]
+    fn banner_contains_wordmark() {
+        assert!(crate::BANNER.contains("████"));
+        assert!(crate::BANNER.contains("██"));
+    }
+
+    #[test]
+    fn banner_is_non_empty() {
+        assert!(!crate::BANNER.is_empty());
+        assert!(crate::BANNER.len() > 100);
+    }
+
+    #[test]
+    fn banner_starts_with_newline() {
+        assert!(crate::BANNER.starts_with('\n'));
+    }
+
+    #[test]
+    fn stop_command_ends_with_stop() {
+        assert!(crate::STOP_COMMAND.ends_with("stop"));
+    }
+
+    #[test]
+    fn stop_command_starts_with_demo() {
+        assert!(crate::STOP_COMMAND.starts_with("demo"));
+    }
+
+    #[test]
+    fn stop_command_has_two_words() {
+        let words: Vec<&str> = crate::STOP_COMMAND.split_whitespace().collect();
+        assert_eq!(words.len(), 2);
+    }
+
+    #[test]
+    fn banner_has_multiple_lines() {
+        let lines: Vec<&str> = crate::BANNER.lines().collect();
+        assert!(lines.len() > 5);
+    }
+
+    #[test]
+    fn stop_command_no_whitespace_around_words() {
+        assert_eq!(crate::STOP_COMMAND, "demo stop");
+    }
 }

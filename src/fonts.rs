@@ -81,3 +81,58 @@ pub fn load_emoji() -> Font {
     Font::from_bytes(EMOJI_BYTES, FontSettings::default())
         .expect("bundled emoji font failed to parse")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_font_name_strips_description() {
+        assert_eq!(
+            parse_font_name("DejaVu Sans Mono   (best Unicode — MapSCII, box drawing)"),
+            "DejaVu Sans Mono"
+        );
+        assert_eq!(
+            parse_font_name("JetBrains Mono     (clean, modern, ligatures)"),
+            "JetBrains Mono"
+        );
+    }
+
+    #[test]
+    fn parse_font_name_plain_name() {
+        assert_eq!(parse_font_name("DejaVu Sans Mono"), "DejaVu Sans Mono");
+    }
+
+    #[test]
+    fn parse_font_name_empty() {
+        assert_eq!(parse_font_name(""), "");
+    }
+
+    #[test]
+    fn font_constants_not_empty() {
+        assert!(!FONT_NAMES.is_empty());
+        assert!(!FONT_KEYS.is_empty());
+        assert!(!DEFAULT_FONT.is_empty());
+    }
+
+    #[test]
+    fn load_default_font_works() {
+        let font = load(DEFAULT_FONT);
+        let metrics = font.metrics('A', 16.0);
+        assert!(metrics.width > 0);
+    }
+
+    #[test]
+    fn load_unknown_font_falls_back_to_default() {
+        let font = load("NonExistent Font Name");
+        let metrics = font.metrics('A', 16.0);
+        assert!(metrics.width > 0);
+    }
+
+    #[test]
+    fn load_emoji_works() {
+        let font = load_emoji();
+        let metrics = font.metrics('\u{1F600}', 16.0);
+        assert!(metrics.width > 0);
+    }
+}

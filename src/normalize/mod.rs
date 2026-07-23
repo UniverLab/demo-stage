@@ -917,4 +917,1034 @@ action = "terminate"
             .unwrap();
         assert!(type_at < view_at, "flow must precede the view trigger");
     }
+
+    // ── helper function coverage ──────────────────────────────────────
+
+    #[test]
+    fn reveal_hold_ms_with_explicit_hold() {
+        assert_eq!(reveal_hold_ms(Some(3000), false), 3000);
+        assert_eq!(reveal_hold_ms(Some(5000), true), 5000);
+    }
+
+    #[test]
+    fn reveal_hold_ms_default_non_scroll() {
+        assert_eq!(reveal_hold_ms(None, false), REVEAL_HOLD_MS);
+    }
+
+    #[test]
+    fn reveal_hold_ms_default_scroll() {
+        assert_eq!(reveal_hold_ms(None, true), SCROLL_HOLD_MS);
+    }
+
+    #[test]
+    fn collect_reveals_sorted_by_time() {
+        let r = raw(vec![
+            RawEvent::Reveal {
+                t_ms: 500,
+                panes: vec![RevealPane {
+                    id: "b".into(),
+                    url: Some("https://b".into()),
+                    theme: None,
+                }],
+                orientation: Orientation::Horizontal,
+                hold_ms: None,
+                scroll: false,
+            },
+            RawEvent::Reveal {
+                t_ms: 100,
+                panes: vec![RevealPane {
+                    id: "a".into(),
+                    url: Some("https://a".into()),
+                    theme: None,
+                }],
+                orientation: Orientation::Horizontal,
+                hold_ms: None,
+                scroll: false,
+            },
+        ]);
+        let reveals = collect_reveals(&r);
+        assert_eq!(reveals.len(), 2);
+        assert_eq!(reveals[0].t_ms, 100);
+        assert_eq!(reveals[1].t_ms, 500);
+        assert_eq!(reveals[0].index, 0);
+        assert_eq!(reveals[1].index, 1);
+    }
+
+    #[test]
+    fn collect_reveals_empty_when_no_reveals() {
+        let r = raw(vec![RawEvent::Output {
+            t_ms: 0,
+            data: "hi".into(),
+        }]);
+        let reveals = collect_reveals(&r);
+        assert!(reveals.is_empty());
+    }
+
+    #[test]
+    fn action_start_and_end_for_type() {
+        let a = Action::Type {
+            text: "ls".into(),
+            t_ms: 100,
+            end_ms: 200,
+        };
+        assert_eq!(action_start(&a), 100);
+        assert_eq!(action_end(&a), 200);
+    }
+
+    #[test]
+    fn action_start_and_end_for_key() {
+        let a = Action::Key {
+            key: "enter".into(),
+            t_ms: 300,
+        };
+        assert_eq!(action_start(&a), 300);
+        assert_eq!(action_end(&a), 300);
+    }
+
+    #[test]
+    fn should_use_wait_for_quiet_true_when_gap() {
+        // 2s gap between commands with output activity then silence → use wait_for_quiet
+        assert!(should_use_wait_for_quiet(0, 2000, &[500, 800]));
+    }
+
+    #[test]
+    fn should_use_wait_for_quiet_false_when_no_output() {
+        // No output during the 0..2s gap → can't use wait_for_quiet
+        assert!(!should_use_wait_for_quiet(0, 2000, &[]));
+    }
+
+    #[test]
+    fn should_use_wait_for_quiet_false_when_short_gap() {
+        // Short gap (< 500ms) → no wait needed
+        assert!(!should_use_wait_for_quiet(0, 200, &[100]));
+    }
+
+    #[test]
+    fn should_use_wait_for_quiet_false_single_output() {
+        // Only one output event → too few
+        assert!(!should_use_wait_for_quiet(0, 2000, &[500]));
+    }
+
+    #[test]
+    fn strip_trailing_stop_removes_demo_stop() {
+        let mut actions = vec![
+            Action::Type {
+                text: "echo hi".into(),
+                t_ms: 0,
+                end_ms: 100,
+            },
+            Action::Key {
+                key: "enter".into(),
+                t_ms: 100,
+            },
+            Action::Type {
+                text: "demo stop".into(),
+                t_ms: 200,
+                end_ms: 300,
+            },
+            Action::Key {
+                key: "enter".into(),
+                t_ms: 300,
+            },
+        ];
+        strip_trailing_stop(&mut actions);
+        assert_eq!(actions.len(), 2);
+        assert!(matches!(&actions[0], Action::Type { text, .. } if text == "echo hi"));
+    }
+
+    #[test]
+    fn strip_trailing_stop_preserves_non_stop() {
+        let mut actions = vec![
+            Action::Type {
+                text: "ls".into(),
+                t_ms: 0,
+                end_ms: 50,
+            },
+            Action::Key {
+                key: "enter".into(),
+                t_ms: 50,
+            },
+        ];
+        strip_trailing_stop(&mut actions);
+        assert_eq!(actions.len(), 2);
+    }
+
+    #[test]
+    fn typing_function_uses_options() {
+        let opts = Options {
+            typing_ms: 100,
+            salt_ms: 20,
+            seed: Some(42),
+        };
+        let t = typing(&opts);
+        assert_eq!(t.base_ms, 100);
+        assert_eq!(t.salt_ms, 20);
+        assert_eq!(t.seed, Some(42));
+    }
+
+    #[test]
+    fn default_layout_sets_canvas_dimensions() {
+        let r = raw(vec![RawEvent::Output {
+            t_ms: 0,
+            data: "x".into(),
+        }]);
+        let layout = default_layout(&r);
+        assert_eq!(layout.width, 800);
+        assert_eq!(layout.height, 480);
+        assert_eq!(layout.panes.len(), 1);
+        assert_eq!(layout.panes[0].kind, PaneKind::Terminal);
+    }
+
+    #[test]
+    fn default_layout_with_explicit_resolution() {
+        let mut r = raw(vec![RawEvent::Output {
+            t_ms: 0,
+            data: "x".into(),
+        }]);
+        r.meta.resolution = Some((1920, 1080));
+        let layout = default_layout(&r);
+        assert_eq!(layout.width, 1920);
+        assert_eq!(layout.height, 1080);
+    }
+
+    #[test]
+    fn pane_rects_single_terminal() {
+        let rects = pane_rects(800, 480, 1, Orientation::Horizontal);
+        assert_eq!(rects.len(), 1);
+        assert_eq!(rects[0], (0, 0, 800, 480));
+    }
+
+    #[test]
+    fn pane_rects_horizontal_split() {
+        let rects = pane_rects(800, 480, 2, Orientation::Horizontal);
+        assert_eq!(rects.len(), 2);
+        assert_eq!(rects[0], (0, 0, 400, 480));
+        assert_eq!(rects[1], (400, 0, 400, 480));
+    }
+
+    #[test]
+    fn pane_rects_vertical_split() {
+        let rects = pane_rects(800, 480, 2, Orientation::Vertical);
+        assert_eq!(rects.len(), 2);
+        assert_eq!(rects[0], (0, 0, 800, 240));
+        assert_eq!(rects[1], (0, 240, 800, 240));
+    }
+
+    #[test]
+    fn pane_rects_empty() {
+        let rects = pane_rects(800, 480, 0, Orientation::Horizontal);
+        assert_eq!(rects.len(), 1);
+    }
+
+    #[test]
+    fn reveal_hold_ms_with_zero_hold() {
+        assert_eq!(reveal_hold_ms(Some(0), false), 0);
+    }
+
+    #[test]
+    fn collect_reveals_preserves_orientation() {
+        let r = raw(vec![RawEvent::Reveal {
+            t_ms: 100,
+            panes: vec![RevealPane {
+                id: "b".into(),
+                url: Some("https://b".into()),
+                theme: None,
+            }],
+            orientation: Orientation::Vertical,
+            hold_ms: Some(3000),
+            scroll: true,
+        }]);
+        let reveals = collect_reveals(&r);
+        assert_eq!(reveals[0].orientation, Orientation::Vertical);
+        assert_eq!(reveals[0].hold_ms, Some(3000));
+        assert!(reveals[0].scroll);
+    }
+
+    #[test]
+    fn merge_stage_prepends_focus_when_no_terminal_anchor() {
+        // A stage with no focus on the terminal pane → merged flow is prepended.
+        let stage: Score = toml::from_str(
+            r##"
+[demo]
+name = "t"
+[layout]
+width = 800
+height = 480
+  [[layout.panes]]
+  id = "main"
+  type = "terminal"
+  x = 0
+  y = 0
+  width = 800
+  height = 480
+[[timeline]]
+action = "focus"
+pane = "main"
+[[timeline]]
+action = "terminate"
+"##,
+        )
+        .unwrap();
+        let r = raw(vec![RawEvent::Input {
+            t_ms: 0,
+            bytes: "echo\r".into(),
+        }]);
+        let merged = merge_into_stage(stage, &r, &opts());
+        let typed: Vec<&str> = merged
+            .timeline
+            .iter()
+            .filter_map(|s| match s {
+                Step::Type { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(typed, vec!["echo"]);
+    }
+
+    #[test]
+    fn merge_stage_adds_terminate_if_missing() {
+        let stage: Score = toml::from_str(
+            r##"
+[demo]
+name = "t"
+[layout]
+width = 800
+height = 480
+  [[layout.panes]]
+  id = "main"
+  type = "terminal"
+  x = 0
+  y = 0
+  width = 800
+  height = 480
+[[timeline]]
+action = "focus"
+pane = "main"
+"##,
+        )
+        .unwrap();
+        let r = raw(vec![RawEvent::Input {
+            t_ms: 0,
+            bytes: "ls\r".into(),
+        }]);
+        let merged = merge_into_stage(stage, &r, &opts());
+        assert!(matches!(merged.timeline.last(), Some(Step::Terminate)));
+    }
+
+    #[test]
+    fn terminal_steps_with_secret_between_commands() {
+        let r = raw(vec![
+            RawEvent::Input {
+                t_ms: 0,
+                bytes: "git pull\r".into(),
+            },
+            RawEvent::Secret {
+                t_ms: 500,
+                prompt: "Passphrase:".into(),
+            },
+            RawEvent::Input {
+                t_ms: 1000,
+                bytes: "echo done\r".into(),
+            },
+        ]);
+        let reveals = collect_reveals(&r);
+        let steps = terminal_steps(&r, &reveals);
+        let secrets: Vec<&str> = steps
+            .iter()
+            .filter_map(|s| match s {
+                Step::Secret { prompt } => Some(prompt.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(secrets, vec!["Passphrase:"]);
+    }
+
+    #[test]
+    fn terminal_steps_with_reveal_after_last_command() {
+        let r = raw(vec![
+            RawEvent::Input {
+                t_ms: 0,
+                bytes: "ls\r".into(),
+            },
+            RawEvent::Reveal {
+                t_ms: 500,
+                panes: vec![RevealPane {
+                    id: "browser".into(),
+                    url: Some("https://example.com".into()),
+                    theme: None,
+                }],
+                orientation: Orientation::Horizontal,
+                hold_ms: None,
+                scroll: false,
+            },
+        ]);
+        let reveals = collect_reveals(&r);
+        let steps = terminal_steps(&r, &reveals);
+        // Browser pane IDs are formatted as "{id}-r{index}"
+        assert!(steps.iter().any(
+            |s| matches!(s, Step::Focus { pane, .. } if pane.as_deref() == Some("browser-r1"))
+        ));
+    }
+
+    #[test]
+    fn terminal_steps_with_reveal_before_command() {
+        let r = raw(vec![
+            RawEvent::Reveal {
+                t_ms: 0,
+                panes: vec![RevealPane {
+                    id: "docs".into(),
+                    url: Some("https://docs.rs".into()),
+                    theme: None,
+                }],
+                orientation: Orientation::Horizontal,
+                hold_ms: None,
+                scroll: false,
+            },
+            RawEvent::Input {
+                t_ms: 500,
+                bytes: "ls\r".into(),
+            },
+        ]);
+        let reveals = collect_reveals(&r);
+        let steps = terminal_steps(&r, &reveals);
+        // Browser pane IDs are formatted as "{id}-r{index}"
+        let focus_at = steps.iter().position(
+            |s| matches!(s, Step::Focus { pane, .. } if pane.as_deref() == Some("docs-r1")),
+        );
+        let type_at = steps.iter().position(|s| matches!(s, Step::Type { .. }));
+        assert!(focus_at.unwrap() < type_at.unwrap());
+    }
+
+    #[test]
+    fn terminal_steps_secret_after_last_input() {
+        let r = raw(vec![
+            RawEvent::Input {
+                t_ms: 0,
+                bytes: "ssh host\r".into(),
+            },
+            RawEvent::Secret {
+                t_ms: 1000,
+                prompt: "password:".into(),
+            },
+        ]);
+        let reveals = collect_reveals(&r);
+        let steps = terminal_steps(&r, &reveals);
+        let secrets: Vec<&str> = steps
+            .iter()
+            .filter_map(|s| match s {
+                Step::Secret { prompt } => Some(prompt.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(secrets, vec!["password:"]);
+    }
+
+    #[test]
+    fn settle_waits_normalizes_wait_before_enter() {
+        let r = raw(vec![
+            RawEvent::Input {
+                t_ms: 0,
+                bytes: "cmd".into(),
+            },
+            RawEvent::Input {
+                t_ms: 800,
+                bytes: "\r".into(),
+            },
+        ]);
+        let score = normalize(&r, "t", &opts());
+        // The wait before enter should be ENTER_SETTLE_MS
+        for w in score.timeline.windows(2) {
+            if let (Step::Wait { duration_ms }, Step::Keypress { key }) = (&w[0], &w[1]) {
+                if key == "enter" {
+                    assert_eq!(*duration_ms, ENTER_SETTLE_MS);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn wait_for_quiet_emitted_for_long_gap_with_output() {
+        // A 2s gap with output at 500ms and 800ms → should use wait_for_quiet
+        let r = raw(vec![
+            RawEvent::Input {
+                t_ms: 0,
+                bytes: "make\r".into(),
+            },
+            RawEvent::Output {
+                t_ms: 500,
+                data: "building...".into(),
+            },
+            RawEvent::Output {
+                t_ms: 800,
+                data: "done!".into(),
+            },
+            RawEvent::Input {
+                t_ms: 2000,
+                bytes: "echo ok\r".into(),
+            },
+        ]);
+        let score = normalize(&r, "t", &opts());
+        let has_quiet = score
+            .timeline
+            .iter()
+            .any(|s| matches!(s, Step::WaitForQuiet { .. }));
+        assert!(has_quiet, "expected wait_for_quiet in the timeline");
+    }
+
+    #[test]
+    fn no_wait_for_quiet_for_short_gap() {
+        let r = raw(vec![
+            RawEvent::Input {
+                t_ms: 0,
+                bytes: "ls\r".into(),
+            },
+            RawEvent::Input {
+                t_ms: 100,
+                bytes: "pwd\r".into(),
+            },
+        ]);
+        let score = normalize(&r, "t", &opts());
+        let has_quiet = score
+            .timeline
+            .iter()
+            .any(|s| matches!(s, Step::WaitForQuiet { .. }));
+        assert!(!has_quiet, "should not use wait_for_quiet for short gaps");
+    }
+
+    #[test]
+    fn strip_trailing_stop_with_only_stop() {
+        let mut actions = vec![
+            Action::Type {
+                text: "demo stop".into(),
+                t_ms: 0,
+                end_ms: 100,
+            },
+            Action::Key {
+                key: "enter".into(),
+                t_ms: 100,
+            },
+        ];
+        strip_trailing_stop(&mut actions);
+        assert!(actions.is_empty());
+    }
+
+    #[test]
+    fn strip_trailing_stop_empty() {
+        let mut actions: Vec<Action> = vec![];
+        strip_trailing_stop(&mut actions);
+        assert!(actions.is_empty());
+    }
+
+    #[test]
+    fn pane_rects_many_horizontal_falls_back_to_two() {
+        let rects = pane_rects(900, 600, 5, Orientation::Horizontal);
+        assert_eq!(rects.len(), 2);
+        assert_eq!(rects[0], (0, 0, 450, 600));
+        assert_eq!(rects[1], (450, 0, 450, 600));
+    }
+
+    #[test]
+    fn pane_rects_many_vertical_falls_back_to_two() {
+        let rects = pane_rects(900, 600, 5, Orientation::Vertical);
+        assert_eq!(rects.len(), 2);
+        assert_eq!(rects[0], (0, 0, 900, 300));
+        assert_eq!(rects[1], (0, 300, 900, 300));
+    }
+
+    #[test]
+    fn layout_with_reveals_single_terminal_no_reveals() {
+        let r = raw(vec![RawEvent::Output {
+            t_ms: 0,
+            data: "x".into(),
+        }]);
+        let reveals = collect_reveals(&r);
+        let layout = layout_with_reveals(&r, &reveals);
+        assert_eq!(layout.panes.len(), 1);
+        assert_eq!(layout.panes[0].kind, PaneKind::Terminal);
+    }
+
+    #[test]
+    fn layout_with_reveals_with_horizontal_split() {
+        let r = raw(vec![RawEvent::Reveal {
+            t_ms: 0,
+            panes: vec![
+                RevealPane::terminal(),
+                RevealPane {
+                    id: "web".into(),
+                    url: Some("https://x.com".into()),
+                    theme: None,
+                },
+            ],
+            orientation: Orientation::Horizontal,
+            hold_ms: None,
+            scroll: false,
+        }]);
+        let reveals = collect_reveals(&r);
+        let layout = layout_with_reveals(&r, &reveals);
+        assert_eq!(layout.panes.len(), 2);
+        let web = &layout.panes[1];
+        assert_eq!(web.kind, PaneKind::Browser);
+        assert!(web.x > 0, "browser pane should be offset to the right");
+    }
+
+    #[test]
+    fn layout_with_reveals_with_vertical_split() {
+        let r = raw(vec![RawEvent::Reveal {
+            t_ms: 0,
+            panes: vec![
+                RevealPane::terminal(),
+                RevealPane {
+                    id: "web".into(),
+                    url: Some("https://x.com".into()),
+                    theme: None,
+                },
+            ],
+            orientation: Orientation::Vertical,
+            hold_ms: None,
+            scroll: false,
+        }]);
+        let reveals = collect_reveals(&r);
+        let layout = layout_with_reveals(&r, &reveals);
+        assert_eq!(layout.panes.len(), 2);
+        let web = &layout.panes[1];
+        assert_eq!(web.kind, PaneKind::Browser);
+        assert!(web.y > 0, "browser pane should be offset downward");
+    }
+
+    #[test]
+    fn normalize_empty_capture() {
+        let r = raw(vec![]);
+        let score = normalize(&r, "t", &opts());
+        assert!(crate::validate::validate(&score).is_empty());
+    }
+
+    #[test]
+    fn should_use_wait_for_quiet_false_short_activity_span() {
+        // Output activity span < 200ms
+        assert!(!should_use_wait_for_quiet(0, 2000, &[100, 200]));
+    }
+
+    #[test]
+    fn should_use_wait_for_quiet_false_short_trailing_silence() {
+        // Activity span ok but trailing silence < 300ms (600 to 800 = 200ms)
+        assert!(!should_use_wait_for_quiet(0, 800, &[100, 400, 600]));
+    }
+
+    #[test]
+    fn should_use_wait_for_quiet_exact_boundary() {
+        // Exactly OUTPUT_ACTIVITY_MIN_MS activity and TRAILING_SILENCE_MIN_MS silence
+        assert!(should_use_wait_for_quiet(0, 500, &[0, 200, 200]));
+    }
+
+    #[test]
+    fn should_use_wait_for_quiet_output_outside_window() {
+        // Output exists but outside the [from, to) window
+        assert!(!should_use_wait_for_quiet(500, 1000, &[100, 200]));
+    }
+
+    #[test]
+    fn default_layout_with_fps() {
+        let mut r = raw(vec![]);
+        r.meta.fps = Some(30);
+        let layout = default_layout(&r);
+        assert_eq!(layout.fps, 30);
+    }
+
+    #[test]
+    fn default_layout_without_fps() {
+        let r = raw(vec![]);
+        let layout = default_layout(&r);
+        assert_eq!(layout.fps, 15);
+    }
+
+    #[test]
+    fn layout_with_reveals_with_resolution_and_fps() {
+        let mut r = raw(vec![RawEvent::Reveal {
+            t_ms: 0,
+            panes: vec![
+                RevealPane::terminal(),
+                RevealPane {
+                    id: "web".into(),
+                    url: Some("https://x.com".into()),
+                    theme: None,
+                },
+            ],
+            orientation: Orientation::Horizontal,
+            hold_ms: None,
+            scroll: false,
+        }]);
+        r.meta.resolution = Some((1920, 1080));
+        r.meta.fps = Some(30);
+        let reveals = collect_reveals(&r);
+        let layout = layout_with_reveals(&r, &reveals);
+        assert_eq!(layout.width, 1920);
+        assert_eq!(layout.height, 1080);
+        assert_eq!(layout.fps, 30);
+        assert_eq!(layout.panes.len(), 2);
+    }
+
+    #[test]
+    fn layout_with_reveals_multiple_reveals() {
+        let r = raw(vec![
+            RawEvent::Reveal {
+                t_ms: 1000,
+                panes: vec![
+                    RevealPane::terminal(),
+                    RevealPane {
+                        id: "web".into(),
+                        url: Some("https://a.com".into()),
+                        theme: None,
+                    },
+                ],
+                orientation: Orientation::Horizontal,
+                hold_ms: None,
+                scroll: false,
+            },
+            RawEvent::Reveal {
+                t_ms: 5000,
+                panes: vec![
+                    RevealPane::terminal(),
+                    RevealPane {
+                        id: "docs".into(),
+                        url: Some("https://b.com".into()),
+                        theme: None,
+                    },
+                ],
+                orientation: Orientation::Vertical,
+                hold_ms: Some(3000),
+                scroll: false,
+            },
+        ]);
+        let reveals = collect_reveals(&r);
+        let layout = layout_with_reveals(&r, &reveals);
+        // Terminal pane + 2 browser panes
+        assert_eq!(layout.panes.len(), 3);
+        // First browser has hide_at = second reveal time (5.0s)
+        let web = &layout.panes[1];
+        assert_eq!(web.reveal_at, Some(1.0));
+        assert_eq!(web.hide_at, Some(5.0));
+        // Second browser has no hide_at
+        let docs = &layout.panes[2];
+        assert_eq!(docs.reveal_at, Some(5.0));
+        assert_eq!(docs.hide_at, None);
+    }
+
+    #[test]
+    fn layout_with_reveals_terminal_only_reveal() {
+        // A reveal with only terminal pane (no browser)
+        let r = raw(vec![RawEvent::Reveal {
+            t_ms: 1000,
+            panes: vec![RevealPane::terminal()],
+            orientation: Orientation::Horizontal,
+            hold_ms: None,
+            scroll: false,
+        }]);
+        let reveals = collect_reveals(&r);
+        let layout = layout_with_reveals(&r, &reveals);
+        // Only the terminal pane (the reveal has no browser)
+        assert_eq!(layout.panes.len(), 1);
+    }
+
+    #[test]
+    fn strip_trailing_stop_only_stop_no_enter() {
+        // Just "demo stop" without enter at the end
+        let mut actions = vec![Action::Type {
+            text: "demo stop".into(),
+            t_ms: 0,
+            end_ms: 100,
+        }];
+        strip_trailing_stop(&mut actions);
+        assert!(actions.is_empty());
+    }
+
+    #[test]
+    fn strip_trailing_stop_enter_without_stop() {
+        // Enter that's not after stop should be kept
+        let mut actions = vec![
+            Action::Type {
+                text: "ls".into(),
+                t_ms: 0,
+                end_ms: 50,
+            },
+            Action::Key {
+                key: "enter".into(),
+                t_ms: 50,
+            },
+            Action::Type {
+                text: "echo hi".into(),
+                t_ms: 100,
+                end_ms: 200,
+            },
+            Action::Key {
+                key: "enter".into(),
+                t_ms: 200,
+            },
+        ];
+        strip_trailing_stop(&mut actions);
+        assert_eq!(actions.len(), 4);
+    }
+
+    #[test]
+    fn strip_trailing_stop_stop_with_whitespace() {
+        // "demo stop  " with trailing whitespace
+        let mut actions = vec![
+            Action::Type {
+                text: "demo stop  ".into(),
+                t_ms: 0,
+                end_ms: 100,
+            },
+            Action::Key {
+                key: "enter".into(),
+                t_ms: 100,
+            },
+        ];
+        strip_trailing_stop(&mut actions);
+        assert!(actions.is_empty());
+    }
+
+    #[test]
+    fn browser_rects_filters_terminal() {
+        let panes = vec![
+            RevealPane::terminal(),
+            RevealPane {
+                id: "web".into(),
+                url: Some("https://x.com".into()),
+                theme: None,
+            },
+        ];
+        let rects = vec![(0, 0, 800, 480), (400, 0, 400, 480)];
+        let result = browser_rects(&rects, &panes);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0], (400, 0, 400, 480));
+    }
+
+    #[test]
+    fn browser_rects_all_browser() {
+        let panes = vec![
+            RevealPane {
+                id: "a".into(),
+                url: Some("https://a.com".into()),
+                theme: None,
+            },
+            RevealPane {
+                id: "b".into(),
+                url: Some("https://b.com".into()),
+                theme: None,
+            },
+        ];
+        let rects = vec![(0, 0, 400, 480), (400, 0, 400, 480)];
+        let result = browser_rects(&rects, &panes);
+        assert_eq!(result.len(), 2);
+    }
+
+    #[test]
+    fn browser_rects_out_of_bounds_index() {
+        let panes = vec![RevealPane {
+            id: "a".into(),
+            url: Some("https://a.com".into()),
+            theme: None,
+        }];
+        let rects = vec![];
+        let result = browser_rects(&rects, &panes);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0], (0, 0, 0, 0));
+    }
+
+    #[test]
+    fn settle_waits_before_enter_leaves_non_enter_alone() {
+        let mut steps = vec![
+            Step::Wait { duration_ms: 1000 },
+            Step::Keypress { key: "tab".into() },
+        ];
+        settle_waits_before_enter(&mut steps);
+        assert_eq!(steps[0], Step::Wait { duration_ms: 1000 });
+    }
+
+    #[test]
+    fn settle_waits_before_enter_leaves_non_wait_alone() {
+        let mut steps = vec![
+            Step::Type {
+                text: "ls".into(),
+                human_salt: false,
+            },
+            Step::Keypress {
+                key: "enter".into(),
+            },
+        ];
+        settle_waits_before_enter(&mut steps);
+        assert!(matches!(&steps[0], Step::Type { .. }));
+    }
+
+    #[test]
+    fn push_reveal_terminal_only() {
+        let mut steps = Vec::new();
+        let r = Reveal {
+            t_ms: 1000,
+            index: 0,
+            panes: vec![RevealPane::terminal()],
+            orientation: Orientation::Horizontal,
+            hold_ms: None,
+            scroll: false,
+        };
+        push_reveal(&mut steps, &r, true);
+        assert_eq!(steps.len(), 1);
+        assert!(matches!(&steps[0], Step::Focus { pane } if pane.as_deref() == Some("main")));
+    }
+
+    #[test]
+    fn push_reveal_with_scroll() {
+        let mut steps = Vec::new();
+        let r = Reveal {
+            t_ms: 1000,
+            index: 0,
+            panes: vec![RevealPane {
+                id: "web".into(),
+                url: Some("https://x.com".into()),
+                theme: None,
+            }],
+            orientation: Orientation::Horizontal,
+            hold_ms: Some(2000),
+            scroll: true,
+        };
+        push_reveal(&mut steps, &r, false);
+        // Focus + Scroll + Wait = 3 steps
+        assert_eq!(steps.len(), 3);
+        assert!(matches!(&steps[0], Step::Focus { .. }));
+        assert!(matches!(&steps[1], Step::Scroll { .. }));
+        assert!(matches!(&steps[2], Step::Wait { .. }));
+    }
+
+    #[test]
+    fn push_reveal_without_scroll() {
+        let mut steps = Vec::new();
+        let r = Reveal {
+            t_ms: 1000,
+            index: 0,
+            panes: vec![RevealPane {
+                id: "web".into(),
+                url: Some("https://x.com".into()),
+                theme: None,
+            }],
+            orientation: Orientation::Horizontal,
+            hold_ms: Some(2000),
+            scroll: false,
+        };
+        push_reveal(&mut steps, &r, true);
+        // Focus + Wait + Focus(main) = 3 steps
+        assert_eq!(steps.len(), 3);
+        assert!(matches!(&steps[0], Step::Focus { .. }));
+        assert!(matches!(&steps[1], Step::Wait { .. }));
+        assert!(matches!(&steps[2], Step::Focus { pane } if pane.as_deref() == Some("main")));
+    }
+
+    #[test]
+    fn push_reveal_multiple_browsers() {
+        let mut steps = Vec::new();
+        let r = Reveal {
+            t_ms: 1000,
+            index: 0,
+            panes: vec![
+                RevealPane::terminal(),
+                RevealPane {
+                    id: "a".into(),
+                    url: Some("https://a.com".into()),
+                    theme: None,
+                },
+                RevealPane {
+                    id: "b".into(),
+                    url: Some("https://b.com".into()),
+                    theme: None,
+                },
+            ],
+            orientation: Orientation::Horizontal,
+            hold_ms: Some(2000),
+            scroll: false,
+        };
+        push_reveal(&mut steps, &r, false);
+        // 2 focuses (for a and b) + 1 wait = 3 steps
+        let focuses: Vec<_> = steps
+            .iter()
+            .filter(|s| matches!(s, Step::Focus { .. }))
+            .collect();
+        assert_eq!(focuses.len(), 2);
+    }
+
+    #[test]
+    fn normalize_output_only_no_input() {
+        let r = raw(vec![
+            RawEvent::Output {
+                t_ms: 0,
+                data: "welcome".into(),
+            },
+            RawEvent::Output {
+                t_ms: 100,
+                data: "banner".into(),
+            },
+        ]);
+        let score = normalize(&r, "t", &opts());
+        assert!(crate::validate::validate(&score).is_empty());
+        // No type steps since no input
+        let types: Vec<&str> = score
+            .timeline
+            .iter()
+            .filter_map(|s| match s {
+                Step::Type { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(types.is_empty());
+    }
+
+    #[test]
+    fn normalize_preserves_ctrl_c_as_step() {
+        let r = raw(vec![
+            RawEvent::Input {
+                t_ms: 0,
+                bytes: "sleep 100\r".into(),
+            },
+            RawEvent::Input {
+                t_ms: 500,
+                bytes: "\u{3}".into(),
+            },
+        ]);
+        let score = normalize(&r, "t", &opts());
+        let has_ctrl_c = score
+            .timeline
+            .iter()
+            .any(|s| matches!(s, Step::Keypress { key } if key == "ctrl+c"));
+        assert!(has_ctrl_c, "ctrl+c should be preserved");
+    }
+
+    #[test]
+    fn normalize_multiple_commands_with_output() {
+        let r = raw(vec![
+            RawEvent::Input {
+                t_ms: 0,
+                bytes: "echo a\r".into(),
+            },
+            RawEvent::Output {
+                t_ms: 100,
+                data: "a\n".into(),
+            },
+            RawEvent::Input {
+                t_ms: 200,
+                bytes: "echo b\r".into(),
+            },
+            RawEvent::Output {
+                t_ms: 300,
+                data: "b\n".into(),
+            },
+        ]);
+        let score = normalize(&r, "t", &opts());
+        assert!(crate::validate::validate(&score).is_empty());
+        let types: Vec<&str> = score
+            .timeline
+            .iter()
+            .filter_map(|s| match s {
+                Step::Type { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(types, vec!["echo a", "echo b"]);
+    }
 }

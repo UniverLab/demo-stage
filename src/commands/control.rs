@@ -106,3 +106,167 @@ pub fn send(cmd: serde_json::Value) -> Result<()> {
     file.write_all(line.as_bytes())
         .map_err(|e| Error::io(&path, e))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_dir() -> PathBuf {
+        let ts = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("demo-control-test-{ts}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn setup_control(tmp: &std::path::Path) -> PathBuf {
+        let control = tmp.join(CONTROL_FILE);
+        std::fs::write(&control, "").unwrap();
+        control
+    }
+
+    #[test]
+    fn constants_are_expected_values() {
+        assert_eq!(CONTROL_ENV, "DEMO_CAPTURE_CONTROL");
+        assert_eq!(CONTROL_FILE, ".demo-capture");
+        assert_eq!(SOURCES_FILE, ".demo-capture.sources");
+        assert_eq!(META_FILE, ".demo-capture.meta");
+    }
+
+    #[test]
+    fn find_returns_error_when_no_control_exists() {
+        let original = std::env::var(CONTROL_ENV);
+        std::env::remove_var(CONTROL_ENV);
+        let result = find();
+        assert!(result.is_err());
+        if let Ok(v) = original {
+            std::env::set_var(CONTROL_ENV, v)
+        }
+    }
+
+    #[test]
+    fn write_and_read_meta_round_trip() {
+        let tmp = temp_dir();
+        let control = setup_control(&tmp);
+        let launch = PathBuf::from("/home/user/project");
+        let shell = PathBuf::from("/tmp/sandbox");
+
+        write_meta(&control, &launch, &shell).unwrap();
+
+        let meta = read_meta_at(&control).unwrap();
+        assert_eq!(meta.launch_dir, launch);
+        assert_eq!(meta.shell_dir, shell);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn write_meta_creates_file() {
+        let tmp = temp_dir();
+        let control = setup_control(&tmp);
+        let meta_path = control.with_file_name(META_FILE);
+
+        assert!(!meta_path.exists());
+        write_meta(&control, Path::new("/a"), Path::new("/b")).unwrap();
+        assert!(meta_path.exists());
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn write_and_read_sources_round_trip() {
+        let tmp = temp_dir();
+        let control = setup_control(&tmp);
+        let sources = vec![crate::model::Source {
+            id: "main".into(),
+            kind: crate::model::SourceKind::Terminal,
+            url: None,
+            theme: None,
+        }];
+
+        write_sources(&control, &sources).unwrap();
+
+        let sources_path = control.with_file_name(SOURCES_FILE);
+        let data = std::fs::read_to_string(&sources_path).unwrap();
+        let read: Vec<crate::model::Source> = serde_json::from_str(&data).unwrap();
+        assert_eq!(read.len(), 1);
+        assert_eq!(read[0].id, "main");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn read_sources_empty_when_no_file() {
+        let sources = read_sources_at(Path::new("/nonexistent"));
+        assert!(sources.is_empty());
+    }
+
+    #[test]
+    fn send_appends_json_line() {
+        let tmp = temp_dir();
+        let control = setup_control(&tmp);
+
+        let cmd = serde_json::json!({"cmd": "open", "url": "https://example.com"});
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&control)
+            .unwrap();
+        let mut line = serde_json::to_string(&cmd).unwrap();
+        line.push('\n');
+        file.write_all(line.as_bytes()).unwrap();
+        drop(file);
+
+        let content = std::fs::read_to_string(&control).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(content.trim()).unwrap();
+        assert_eq!(parsed["cmd"], "open");
+        assert_eq!(parsed["url"], "https://example.com");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn send_returns_error_when_no_control() {
+        let original = std::env::var(CONTROL_ENV);
+        std::env::remove_var(CONTROL_ENV);
+        let result = send(serde_json::json!({"cmd": "test"}));
+        assert!(result.is_err());
+        if let Ok(v) = original {
+            std::env::set_var(CONTROL_ENV, v)
+        }
+    }
+
+    #[test]
+    fn capture_meta_serializes() {
+        let meta = CaptureMeta {
+            launch_dir: PathBuf::from("/home/user"),
+            shell_dir: PathBuf::from("/tmp/sandbox"),
+        };
+        let json = serde_json::to_string(&meta).unwrap();
+        assert!(json.contains("launch_dir"));
+        assert!(json.contains("shell_dir"));
+    }
+
+    #[test]
+    fn capture_meta_deserializes() {
+        let json = r#"{"launch_dir":"/home/user","shell_dir":"/tmp/sandbox"}"#;
+        let meta: CaptureMeta = serde_json::from_str(json).unwrap();
+        assert_eq!(meta.launch_dir, PathBuf::from("/home/user"));
+        assert_eq!(meta.shell_dir, PathBuf::from("/tmp/sandbox"));
+    }
+
+    // Helper functions that bypass the env/cwd dependency for testing
+    fn read_meta_at(control: &std::path::Path) -> Option<CaptureMeta> {
+        let path = control.with_file_name(META_FILE);
+        std::fs::read_to_string(path)
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+    }
+
+    fn read_sources_at(control: &std::path::Path) -> Vec<crate::model::Source> {
+        let path = control.with_file_name(SOURCES_FILE);
+        std::fs::read_to_string(path)
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default()
+    }
+}

@@ -126,5 +126,91 @@ mod tests {
         assert!(labels.iter().any(|l| l.starts_with("nested")));
         assert!(labels.contains(&"a.pdf"));
         assert!(!labels.contains(&"notes.txt"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn list_entries_skips_hidden_files() {
+        let dir = std::env::temp_dir().join(format!("demo-picker-hidden-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join(".hidden.pdf"), b"x").unwrap();
+        fs::write(dir.join("visible.pdf"), b"x").unwrap();
+
+        let entries = list_entries(&dir).unwrap();
+        let labels: Vec<_> = entries.iter().map(|(l, _)| l.as_str()).collect();
+        assert!(!labels.contains(&".hidden.pdf"));
+        assert!(labels.contains(&"visible.pdf"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn list_entries_returns_dirs_before_files() {
+        let dir = std::env::temp_dir().join(format!("demo-picker-order-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("aaa.pdf"), b"x").unwrap();
+        fs::create_dir(dir.join("zzz_dir")).unwrap();
+
+        let entries = list_entries(&dir).unwrap();
+        // Directories come first
+        let first = &entries[0].1;
+        assert!(matches!(first, Pick::Enter(_)));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn list_entries_includes_supported_extensions() {
+        let dir = std::env::temp_dir().join(format!("demo-picker-ext-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("page.html"), b"x").unwrap();
+        fs::write(dir.join("image.png"), b"x").unwrap();
+        fs::write(dir.join("doc.pdf"), b"x").unwrap();
+        fs::write(dir.join("unknown.xyz"), b"x").unwrap();
+
+        let entries = list_entries(&dir).unwrap();
+        let labels: Vec<_> = entries.iter().map(|(l, _)| l.as_str()).collect();
+        assert!(labels.contains(&"page.html"));
+        assert!(labels.contains(&"image.png"));
+        assert!(labels.contains(&"doc.pdf"));
+        assert!(!labels.contains(&"unknown.xyz"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn list_entries_handles_nonexistent_dir() {
+        let result = list_entries(Path::new("/nonexistent_dir_xyz123"));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn list_entries_empty_dir() {
+        let dir = std::env::temp_dir().join(format!("demo-picker-empty-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+
+        let entries = list_entries(&dir).unwrap();
+        assert!(entries.is_empty());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn list_entries_sorted_alphabetically() {
+        let dir = std::env::temp_dir().join(format!("demo-picker-sort-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("zzz.pdf"), b"x").unwrap();
+        fs::write(dir.join("aaa.pdf"), b"x").unwrap();
+        fs::write(dir.join("mmm.pdf"), b"x").unwrap();
+
+        let entries = list_entries(&dir).unwrap();
+        let file_labels: Vec<_> = entries
+            .iter()
+            .filter(|(_, p)| matches!(p, Pick::Select(_)))
+            .map(|(l, _)| l.as_str())
+            .collect();
+        assert_eq!(file_labels, vec!["aaa.pdf", "mmm.pdf", "zzz.pdf"]);
+        let _ = fs::remove_dir_all(&dir);
     }
 }

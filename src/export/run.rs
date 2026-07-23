@@ -811,6 +811,274 @@ mod tests {
         assert_eq!(sh_single_quote("a'b"), "'a'\\''b'");
     }
 
+    #[test]
+    fn is_zsh_detects_zsh_paths() {
+        assert!(is_zsh("/bin/zsh"));
+        assert!(is_zsh("zsh"));
+        assert!(!is_zsh("/bin/bash"));
+        assert!(!is_zsh("bash"));
+    }
+
+    #[test]
+    fn default_prompt_for_zsh() {
+        let p = default_prompt_for("/bin/zsh");
+        assert!(p.contains("user@demo"));
+        assert!(p.contains("%B%F{green}"));
+    }
+
+    #[test]
+    fn default_prompt_for_bash() {
+        let p = default_prompt_for("/bin/bash");
+        assert_eq!(p, DEFAULT_PROMPT);
+    }
+
+    #[test]
+    fn key_to_bytes_special_keys() {
+        assert_eq!(key_to_bytes("space"), vec![b' ']);
+        assert_eq!(key_to_bytes("esc"), vec![0x1b]);
+        assert_eq!(key_to_bytes("escape"), vec![0x1b]);
+        assert_eq!(key_to_bytes("backspace"), vec![0x7f]);
+        assert_eq!(key_to_bytes("delete"), vec![0x1b, b'[', b'3', b'~']);
+        assert_eq!(key_to_bytes("insert"), vec![0x1b, b'[', b'2', b'~']);
+        assert_eq!(key_to_bytes("home"), vec![0x1b, b'[', b'H']);
+        assert_eq!(key_to_bytes("end"), vec![0x1b, b'[', b'F']);
+        assert_eq!(key_to_bytes("pageup"), vec![0x1b, b'[', b'5', b'~']);
+        assert_eq!(key_to_bytes("pagedown"), vec![0x1b, b'[', b'6', b'~']);
+    }
+
+    #[test]
+    fn key_to_bytes_ctrl_keys() {
+        assert_eq!(key_to_bytes("ctrl+d"), vec![0x04]);
+        assert_eq!(key_to_bytes("ctrl+u"), vec![0x15]);
+        assert_eq!(key_to_bytes("ctrl+l"), vec![0x0c]);
+    }
+
+    #[test]
+    fn key_to_bytes_unknown_falls_back_to_enter() {
+        // Multiple chars → enter
+        assert_eq!(key_to_bytes("unknown"), vec![b'\r']);
+    }
+
+    #[test]
+    fn key_to_bytes_single_char() {
+        assert_eq!(key_to_bytes("x"), b"x".to_vec());
+        // Note: to_ascii_lowercase is applied, so "Z" becomes "z"
+        assert_eq!(key_to_bytes("Z"), b"z".to_vec());
+    }
+
+    #[test]
+    fn modifier_code_values() {
+        assert_eq!(modifier_code("shift"), Some(2));
+        assert_eq!(modifier_code("alt"), Some(3));
+        assert_eq!(modifier_code("ctrl"), Some(5));
+        assert_eq!(modifier_code("ctrl+shift"), Some(6));
+        assert_eq!(modifier_code("ctrl+alt"), Some(7));
+        assert_eq!(modifier_code("unknown"), None);
+    }
+
+    #[test]
+    fn arrow_code_values() {
+        assert_eq!(arrow_code("up"), Some((1, 'A')));
+        assert_eq!(arrow_code("down"), Some((1, 'B')));
+        assert_eq!(arrow_code("right"), Some((1, 'C')));
+        assert_eq!(arrow_code("left"), Some((1, 'D')));
+        assert_eq!(arrow_code("f1"), Some((11, '~')));
+        assert_eq!(arrow_code("f12"), Some((24, '~')));
+        assert_eq!(arrow_code("unknown"), None);
+    }
+
+    #[test]
+    fn parse_modifier_key_valid() {
+        let seq = parse_modifier_key("shift-up").unwrap();
+        assert_eq!(seq, vec![0x1b, b'[', b'1', b';', b'2', b'A']);
+    }
+
+    #[test]
+    fn parse_modifier_key_with_plus_separator() {
+        let seq = parse_modifier_key("ctrl+home").unwrap();
+        assert_eq!(seq, vec![0x1b, b'[', b'1', b';', b'5', b'H']);
+    }
+
+    #[test]
+    fn parse_modifier_key_unknown_mod() {
+        assert!(parse_modifier_key("super-up").is_none());
+    }
+
+    #[test]
+    fn parse_modifier_key_unknown_arrow() {
+        assert!(parse_modifier_key("shift-unknown").is_none());
+    }
+
+    #[test]
+    fn secret_needle_strips_punctuation() {
+        assert_eq!(secret_needle("Vault passphrase:"), "Vault passphrase");
+        assert_eq!(secret_needle("Password? "), "Password");
+        assert_eq!(secret_needle("  Token  "), "Token");
+        assert_eq!(secret_needle("API key:"), "API key");
+    }
+
+    #[test]
+    fn recent_contains_checks_recent_events() {
+        let events = vec![
+            (0.0, "line 1".into()),
+            (0.1, "line 2".into()),
+            (0.2, "secret prompt:".into()),
+        ];
+        assert!(recent_contains(&events, "secret"));
+        assert!(!recent_contains(&events, "missing"));
+    }
+
+    #[test]
+    fn recent_contains_only_checks_last_40() {
+        let mut events: Vec<(f64, String)> =
+            (0..50).map(|i| (i as f64, format!("event {i}"))).collect();
+        events.push((50.0, "needle found".into()));
+        assert!(recent_contains(&events, "needle"));
+        assert!(!recent_contains(&events, "event 0"));
+    }
+
+    #[test]
+    fn progress_bar_zero_to_hundred() {
+        progress_bar("test", 0, 100);
+        progress_bar("test", 50, 100);
+        progress_bar("test", 100, 100);
+        progress_bar("test", 1, 3);
+    }
+
+    #[test]
+    fn progress_bar_zero_total() {
+        progress_bar("test", 0, 0);
+    }
+
+    #[test]
+    fn single_terminal_pane_one_terminal() {
+        let score: Score = toml::from_str(
+            r#"
+[demo]
+name = "t"
+[layout]
+width = 100
+height = 100
+  [[layout.panes]]
+  id = "c"
+  type = "terminal"
+  x = 0
+  y = 0
+  width = 100
+  height = 100
+"#,
+        )
+        .unwrap();
+        let pane = single_terminal_pane(&score).unwrap();
+        assert_eq!(pane.id, "c");
+    }
+
+    #[test]
+    fn single_terminal_pane_no_panes() {
+        let score: Score = toml::from_str(
+            r#"
+[demo]
+name = "t"
+[layout]
+width = 100
+height = 100
+"#,
+        )
+        .unwrap();
+        let err = single_terminal_pane(&score).unwrap_err();
+        assert!(format!("{err}").contains("no terminal pane"));
+    }
+
+    #[test]
+    fn single_terminal_pane_with_browser() {
+        let score: Score = toml::from_str(
+            r#"
+[demo]
+name = "t"
+[layout]
+width = 200
+height = 100
+  [[layout.panes]]
+  id = "c"
+  type = "terminal"
+  x = 0
+  y = 0
+  width = 100
+  height = 100
+  [[layout.panes]]
+  id = "b"
+  type = "browser"
+  x = 100
+  y = 0
+  width = 100
+  height = 100
+  url = "https://example.com"
+"#,
+        )
+        .unwrap();
+        let err = single_terminal_pane(&score).unwrap_err();
+        assert!(format!("{err}").contains("browser"));
+    }
+
+    #[test]
+    fn single_terminal_pane_multiple_terminals() {
+        let score: Score = toml::from_str(
+            r#"
+[demo]
+name = "t"
+[layout]
+width = 200
+height = 100
+  [[layout.panes]]
+  id = "c1"
+  type = "terminal"
+  x = 0
+  y = 0
+  width = 100
+  height = 100
+  [[layout.panes]]
+  id = "c2"
+  type = "terminal"
+  x = 100
+  y = 0
+  width = 100
+  height = 100
+"#,
+        )
+        .unwrap();
+        let err = single_terminal_pane(&score).unwrap_err();
+        assert!(format!("{err}").contains("single"));
+    }
+
+    #[test]
+    fn progress_clear_does_not_panic() {
+        progress_clear();
+    }
+
+    #[test]
+    fn sh_single_quote_empty_string() {
+        assert_eq!(sh_single_quote(""), "''");
+    }
+
+    #[test]
+    fn sh_single_quote_with_newlines() {
+        assert_eq!(sh_single_quote("a\nb"), "'a\nb'");
+    }
+
+    #[test]
+    fn screen_contains_finds_pattern() {
+        let mut parser = VtParser::new(2, 80, 0);
+        parser.process(b"Hello World\r\n");
+        assert!(screen_contains(&parser, "Hello"));
+        assert!(!screen_contains(&parser, "Goodbye"));
+    }
+
+    #[test]
+    fn screen_contains_empty_screen() {
+        let parser = VtParser::new(2, 80, 0);
+        assert!(!screen_contains(&parser, "anything"));
+    }
+
     /// A demo whose last command leaves a process in the foreground must not hang
     /// teardown: bounded shutdown caps it at the grace period plus the drain, not
     /// the command's lifetime.

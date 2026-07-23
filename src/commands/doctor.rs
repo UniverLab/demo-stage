@@ -268,3 +268,200 @@ fn on_path(name: &str) -> Option<PathBuf> {
         .map(|dir| dir.join(name))
         .find(|p| p.is_file())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn is_snap_detects_snap_path() {
+        assert!(is_snap(Path::new("/snap/chromium/current/chromium")));
+    }
+
+    #[test]
+    fn is_snap_rejects_non_snap_path() {
+        assert!(!is_snap(Path::new("/usr/bin/chromium")));
+        assert!(!is_snap(Path::new("/opt/google/chrome/chrome")));
+    }
+
+    #[test]
+    fn is_snap_rejects_empty_path() {
+        assert!(!is_snap(Path::new("")));
+    }
+
+    #[test]
+    fn on_path_finds_existing_binary() {
+        let result = on_path("ls");
+        assert!(result.is_some());
+        assert!(result.unwrap().is_file());
+    }
+
+    #[test]
+    fn on_path_returns_none_for_nonexistent() {
+        assert!(on_path("definitely_not_a_real_binary_xyz123").is_none());
+    }
+
+    #[test]
+    fn chrome_install_hint_linux_mentions_deb() {
+        let plat = Platform {
+            os: Os::Linux,
+            wsl: false,
+            apt: true,
+        };
+        let hint = chrome_install_hint(&plat);
+        assert!(hint.contains("google-chrome"));
+        assert!(hint.contains("apt") || hint.contains("dpkg"));
+    }
+
+    #[test]
+    fn chrome_install_hint_mac_mentions_brew() {
+        let plat = Platform {
+            os: Os::Mac,
+            wsl: false,
+            apt: false,
+        };
+        let hint = chrome_install_hint(&plat);
+        assert!(hint.contains("brew"));
+    }
+
+    #[test]
+    fn chrome_install_hint_windows_mentions_google() {
+        let plat = Platform {
+            os: Os::Windows,
+            wsl: false,
+            apt: false,
+        };
+        let hint = chrome_install_hint(&plat);
+        assert!(hint.contains("google.com"));
+    }
+
+    #[test]
+    fn chrome_install_hint_other_mentions_chrome() {
+        let plat = Platform {
+            os: Os::Other,
+            wsl: false,
+            apt: false,
+        };
+        let hint = chrome_install_hint(&plat);
+        assert!(hint.contains("Chrome") || hint.contains("Chromium"));
+    }
+
+    #[test]
+    fn platform_label_linux() {
+        let plat = Platform {
+            os: Os::Linux,
+            wsl: false,
+            apt: true,
+        };
+        assert_eq!(plat.label(), "Linux");
+    }
+
+    #[test]
+    fn platform_label_wsl() {
+        let plat = Platform {
+            os: Os::Linux,
+            wsl: true,
+            apt: true,
+        };
+        assert_eq!(plat.label(), "Linux (WSL)");
+    }
+
+    #[test]
+    fn platform_label_mac() {
+        let plat = Platform {
+            os: Os::Mac,
+            wsl: false,
+            apt: false,
+        };
+        assert_eq!(plat.label(), "macOS");
+    }
+
+    #[test]
+    fn platform_label_windows() {
+        let plat = Platform {
+            os: Os::Windows,
+            wsl: false,
+            apt: false,
+        };
+        assert_eq!(plat.label(), "Windows");
+    }
+
+    #[test]
+    fn platform_label_other() {
+        let plat = Platform {
+            os: Os::Other,
+            wsl: false,
+            apt: false,
+        };
+        assert_eq!(plat.label(), "this platform");
+    }
+
+    #[test]
+    fn check_display_ok_when_display_set() {
+        let plat = Platform {
+            os: Os::Linux,
+            wsl: false,
+            apt: false,
+        };
+        let original = std::env::var_os("DISPLAY");
+        let original_w = std::env::var_os("WAYLAND_DISPLAY");
+        std::env::set_var("DISPLAY", ":0");
+        std::env::remove_var("WAYLAND_DISPLAY");
+        let check = check_display(&plat);
+        assert!(matches!(check.level, Level::Ok));
+        if let Some(v) = original {
+            std::env::set_var("DISPLAY", v)
+        } else {
+            std::env::remove_var("DISPLAY")
+        }
+        if let Some(v) = original_w {
+            std::env::set_var("WAYLAND_DISPLAY", v)
+        }
+    }
+
+    #[test]
+    fn check_display_warn_when_no_display() {
+        let plat = Platform {
+            os: Os::Linux,
+            wsl: false,
+            apt: false,
+        };
+        let original = std::env::var_os("DISPLAY");
+        let original_w = std::env::var_os("WAYLAND_DISPLAY");
+        std::env::remove_var("DISPLAY");
+        std::env::remove_var("WAYLAND_DISPLAY");
+        let check = check_display(&plat);
+        assert!(matches!(check.level, Level::Warn));
+        if let Some(v) = original {
+            std::env::set_var("DISPLAY", v)
+        }
+        if let Some(v) = original_w {
+            std::env::set_var("WAYLAND_DISPLAY", v)
+        }
+    }
+
+    #[test]
+    fn check_ffmpeg_reports_status() {
+        let plat = Platform {
+            os: Os::Linux,
+            wsl: false,
+            apt: true,
+        };
+        let check = check_ffmpeg(&plat);
+        // Just verify it returns without panic
+        assert!(!check.name.is_empty());
+        assert!(!check.detail.is_empty());
+    }
+
+    #[test]
+    fn check_chromium_returns_check() {
+        let plat = Platform {
+            os: Os::Linux,
+            wsl: false,
+            apt: true,
+        };
+        let check = check_chromium(&plat);
+        assert_eq!(check.name, "chromium");
+        assert!(!check.detail.is_empty());
+    }
+}
