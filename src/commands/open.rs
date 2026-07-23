@@ -376,3 +376,202 @@ fn finalize_url(url: &str) -> String {
         normalize_url(u)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reveal_panes_split_returns_two() {
+        let panes = reveal_panes("http://example.com", &None, "split", &None);
+        assert_eq!(panes.len(), 2);
+        assert_eq!(panes[0]["id"], "main");
+        assert_eq!(panes[1]["url"], "http://example.com");
+    }
+
+    #[test]
+    fn reveal_panes_replace_returns_one() {
+        let panes = reveal_panes("http://example.com", &None, "replace", &None);
+        assert_eq!(panes.len(), 1);
+        assert_eq!(panes[0]["url"], "http://example.com");
+    }
+
+    #[test]
+    fn reveal_panes_uses_name_as_id() {
+        let panes = reveal_panes(
+            "http://example.com",
+            &Some("mypage".into()),
+            "replace",
+            &None,
+        );
+        assert_eq!(panes[0]["id"], "mypage");
+    }
+
+    #[test]
+    fn reveal_panes_includes_theme() {
+        let panes = reveal_panes("http://example.com", &None, "replace", &Some("dark".into()));
+        assert_eq!(panes[0]["theme"], "dark");
+    }
+
+    #[test]
+    fn reveal_panes_no_theme_is_null() {
+        let panes = reveal_panes("http://example.com", &None, "replace", &None);
+        assert!(panes[0]["theme"].is_null());
+    }
+
+    #[test]
+    fn finalize_url_file_protocol_unchanged() {
+        assert_eq!(finalize_url("file:///tmp/test.pdf"), "file:///tmp/test.pdf");
+    }
+
+    #[test]
+    fn finalize_url_http_gets_normalized() {
+        let result = finalize_url("example.com");
+        assert!(result.starts_with("http"));
+    }
+
+    #[test]
+    fn finalize_url_trims_whitespace() {
+        assert_eq!(
+            finalize_url("  file:///tmp/test.pdf  "),
+            "file:///tmp/test.pdf"
+        );
+    }
+
+    #[test]
+    fn finalize_url_preserves_http() {
+        assert_eq!(finalize_url("http://example.com"), "http://example.com");
+    }
+
+    #[test]
+    fn finalize_url_preserves_https() {
+        assert_eq!(finalize_url("https://example.com"), "https://example.com");
+    }
+
+    #[test]
+    fn reveal_panes_split_has_terminal_and_browser() {
+        let panes = reveal_panes("https://docs.rs", &Some("docs".into()), "split", &None);
+        assert_eq!(panes.len(), 2);
+        assert_eq!(panes[0]["id"], "main");
+        assert_eq!(panes[1]["id"], "docs");
+        assert_eq!(panes[1]["url"], "https://docs.rs");
+    }
+
+    #[test]
+    fn reveal_panes_replace_only_browser() {
+        let panes = reveal_panes(
+            "https://example.com",
+            &None,
+            "replace",
+            &Some("dark".into()),
+        );
+        assert_eq!(panes.len(), 1);
+        assert_eq!(panes[0]["theme"], "dark");
+    }
+
+    #[test]
+    fn reveal_panes_split_with_theme() {
+        let panes = reveal_panes(
+            "https://docs.rs",
+            &Some("docs".into()),
+            "split",
+            &Some("light".into()),
+        );
+        assert_eq!(panes.len(), 2);
+        assert_eq!(panes[1]["theme"], "light");
+    }
+
+    #[test]
+    fn reveal_panes_replace_with_name_and_theme() {
+        let panes = reveal_panes(
+            "https://example.com",
+            &Some("mypage".into()),
+            "replace",
+            &Some("dark".into()),
+        );
+        assert_eq!(panes.len(), 1);
+        assert_eq!(panes[0]["id"], "mypage");
+        assert_eq!(panes[0]["theme"], "dark");
+    }
+
+    #[test]
+    fn finalize_url_trailing_whitespace() {
+        assert_eq!(
+            finalize_url("  https://example.com  "),
+            "https://example.com"
+        );
+    }
+
+    #[test]
+    fn finalize_url_just_whitespace() {
+        // Whitespace only, after trim it's empty, goes to normalize_url
+        let result = finalize_url("  ");
+        assert!(result.starts_with("http"));
+    }
+
+    #[test]
+    fn reveal_panes_split_has_two() {
+        let panes = reveal_panes("https://example.com", &None, "split", &None);
+        assert_eq!(panes.len(), 2);
+        assert_eq!(panes[0]["id"], "main");
+        assert_eq!(panes[1]["url"], "https://example.com");
+    }
+
+    #[test]
+    fn reveal_panes_replace_has_one() {
+        let panes = reveal_panes("https://example.com", &None, "replace", &None);
+        assert_eq!(panes.len(), 1);
+    }
+
+    #[test]
+    fn reveal_panes_split_default_browser_id() {
+        let panes = reveal_panes("https://example.com", &None, "split", &None);
+        assert_eq!(panes[1]["id"], "browser");
+    }
+
+    #[test]
+    fn finalize_url_file_with_trailing_space() {
+        assert_eq!(
+            finalize_url("  file:///tmp/test.pdf  "),
+            "file:///tmp/test.pdf"
+        );
+    }
+
+    #[test]
+    fn finalize_url_preserves_file_protocol() {
+        assert_eq!(
+            finalize_url("file:///home/user/doc.html"),
+            "file:///home/user/doc.html"
+        );
+    }
+
+    #[test]
+    fn reveal_panes_replace_no_theme_is_null() {
+        let panes = reveal_panes("https://example.com", &None, "replace", &None);
+        assert!(panes[0]["theme"].is_null());
+    }
+
+    #[test]
+    fn reveal_panes_split_both_have_url() {
+        let panes = reveal_panes("https://example.com", &Some("docs".into()), "split", &None);
+        assert_eq!(panes[0]["id"], "main");
+        assert!(panes[0]["url"].is_null());
+        assert_eq!(panes[1]["url"], "https://example.com");
+    }
+
+    #[test]
+    fn finalize_url_http_unchanged() {
+        assert_eq!(
+            finalize_url("http://localhost:3000"),
+            "http://localhost:3000"
+        );
+    }
+
+    #[test]
+    fn finalize_url_https_unchanged() {
+        assert_eq!(
+            finalize_url("https://example.com/path"),
+            "https://example.com/path"
+        );
+    }
+}

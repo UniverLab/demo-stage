@@ -306,3 +306,260 @@ fn wizard(sources: &[Source], args: &FocusArgs) -> Result<WizardOutcome> {
 fn ask<T>(r: std::result::Result<T, inquire::InquireError>) -> Result<T> {
     r.map_err(|e| Error::Export(format!("wizard: {e}")))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn is_terminal_id_matches_main_and_terminal() {
+        assert!(is_terminal_id("main"));
+        assert!(is_terminal_id("terminal"));
+        assert!(!is_terminal_id("docs"));
+        assert!(!is_terminal_id("browser"));
+    }
+
+    #[test]
+    fn orientation_flag_default_horizontal() {
+        let args = FocusArgs {
+            sources: vec![],
+            vertical: false,
+            horizontal: false,
+            when: None,
+            after: false,
+            hold: None,
+            scroll: false,
+            theme: None,
+        };
+        assert_eq!(orientation_flag(&args), "horizontal");
+    }
+
+    #[test]
+    fn orientation_flag_vertical() {
+        let args = FocusArgs {
+            sources: vec![],
+            vertical: true,
+            horizontal: false,
+            when: None,
+            after: false,
+            hold: None,
+            scroll: false,
+            theme: None,
+        };
+        assert_eq!(orientation_flag(&args), "vertical");
+    }
+
+    #[test]
+    fn source_hint_empty() {
+        assert_eq!(source_hint(&[]), "");
+    }
+
+    #[test]
+    fn source_hint_lists_ids() {
+        let sources = vec![
+            Source {
+                id: "main".into(),
+                kind: SourceKind::Terminal,
+                url: None,
+                theme: None,
+            },
+            Source {
+                id: "docs".into(),
+                kind: SourceKind::Browser,
+                url: None,
+                theme: None,
+            },
+        ];
+        let hint = source_hint(&sources);
+        assert!(hint.contains("main"));
+        assert!(hint.contains("docs"));
+        assert!(hint.starts_with(" (sources:"));
+    }
+
+    #[test]
+    fn is_terminal_id_exact_match() {
+        assert!(is_terminal_id("main"));
+        assert!(is_terminal_id("terminal"));
+        assert!(!is_terminal_id("Main"));
+        assert!(!is_terminal_id("MAIN"));
+        assert!(!is_terminal_id("web"));
+    }
+
+    #[test]
+    fn orientation_flag_prefers_vertical() {
+        let args = FocusArgs {
+            sources: vec![],
+            vertical: true,
+            horizontal: true,
+            when: None,
+            after: false,
+            hold: None,
+            scroll: false,
+            theme: None,
+        };
+        assert_eq!(orientation_flag(&args), "vertical");
+    }
+
+    #[test]
+    fn source_hint_single_source() {
+        let sources = vec![Source {
+            id: "web".into(),
+            kind: SourceKind::Browser,
+            url: None,
+            theme: None,
+        }];
+        let hint = source_hint(&sources);
+        assert!(hint.contains("web"));
+    }
+
+    #[test]
+    fn orientation_flag_horizontal_explicit() {
+        let args = FocusArgs {
+            sources: vec![],
+            vertical: false,
+            horizontal: true,
+            when: None,
+            after: false,
+            hold: None,
+            scroll: false,
+            theme: None,
+        };
+        assert_eq!(orientation_flag(&args), "horizontal");
+    }
+
+    #[test]
+    fn resolve_pane_main_returns_terminal() {
+        let result = resolve_pane("main", &[], None).unwrap();
+        assert_eq!(result["id"], "main");
+    }
+
+    #[test]
+    fn resolve_pane_terminal_returns_terminal() {
+        let result = resolve_pane("terminal", &[], None).unwrap();
+        assert_eq!(result["id"], "main");
+    }
+
+    #[test]
+    fn resolve_pane_browser_source_returns_url() {
+        let sources = vec![Source {
+            id: "docs".into(),
+            kind: SourceKind::Browser,
+            url: Some("https://x.com".into()),
+            theme: None,
+        }];
+        let result = resolve_pane("docs", &sources, None).unwrap();
+        assert_eq!(result["id"], "docs");
+        assert_eq!(result["url"], "https://x.com");
+    }
+
+    #[test]
+    fn resolve_pane_browser_with_theme_override() {
+        let sources = vec![Source {
+            id: "docs".into(),
+            kind: SourceKind::Browser,
+            url: Some("https://x.com".into()),
+            theme: Some("light".into()),
+        }];
+        let result = resolve_pane("docs", &sources, Some("dark")).unwrap();
+        assert_eq!(result["theme"], "dark");
+    }
+
+    #[test]
+    fn resolve_pane_browser_without_theme_override_uses_source_theme() {
+        let sources = vec![Source {
+            id: "docs".into(),
+            kind: SourceKind::Browser,
+            url: Some("https://x.com".into()),
+            theme: Some("light".into()),
+        }];
+        let result = resolve_pane("docs", &sources, None).unwrap();
+        assert_eq!(result["theme"], "light");
+    }
+
+    #[test]
+    fn resolve_pane_terminal_source_returns_main() {
+        let sources = vec![Source {
+            id: "web".into(),
+            kind: SourceKind::Terminal,
+            url: None,
+            theme: None,
+        }];
+        let result = resolve_pane("web", &sources, None).unwrap();
+        assert_eq!(result["id"], "main");
+    }
+
+    #[test]
+    fn resolve_pane_unknown_source_errors() {
+        let result = resolve_pane("nonexistent", &[], None);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn build_panes_single_non_terminal_splits_with_main() {
+        let sources = vec![Source {
+            id: "docs".into(),
+            kind: SourceKind::Browser,
+            url: Some("https://x.com".into()),
+            theme: None,
+        }];
+        let result = build_panes(&["docs".into()], true, &sources, None).unwrap();
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0]["id"], "main");
+        assert_eq!(result[1]["id"], "docs");
+    }
+
+    #[test]
+    fn build_panes_single_terminal_no_split() {
+        let result = build_panes(&["main".into()], true, &[], None).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0]["id"], "main");
+    }
+
+    #[test]
+    fn build_panes_multiple_sources() {
+        let sources = vec![
+            Source {
+                id: "docs".into(),
+                kind: SourceKind::Browser,
+                url: Some("https://x.com".into()),
+                theme: None,
+            },
+            Source {
+                id: "code".into(),
+                kind: SourceKind::Browser,
+                url: Some("https://y.com".into()),
+                theme: None,
+            },
+        ];
+        let result = build_panes(&["docs".into(), "code".into()], false, &sources, None).unwrap();
+        assert_eq!(result.len(), 2);
+    }
+
+    #[test]
+    fn source_hint_multiple_sources() {
+        let sources = vec![
+            Source {
+                id: "main".into(),
+                kind: SourceKind::Terminal,
+                url: None,
+                theme: None,
+            },
+            Source {
+                id: "docs".into(),
+                kind: SourceKind::Browser,
+                url: None,
+                theme: None,
+            },
+            Source {
+                id: "code".into(),
+                kind: SourceKind::Browser,
+                url: None,
+                theme: None,
+            },
+        ];
+        let hint = source_hint(&sources);
+        assert!(hint.contains("main"));
+        assert!(hint.contains("docs"));
+        assert!(hint.contains("code"));
+    }
+}

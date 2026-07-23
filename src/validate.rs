@@ -345,4 +345,720 @@ height = 100
         );
         assert!(validate(&s).iter().any(|p| p.contains("duplicate id")));
     }
+
+    // ── Multiple overlapping panes ────────────────────────────────────────
+
+    #[test]
+    fn overlapping_panes_are_valid() {
+        let s = score_from(
+            r##"
+[demo]
+name = "t"
+[layout]
+width = 100
+height = 100
+  [[layout.panes]]
+  id = "a"
+  type = "terminal"
+  x = 0
+  y = 0
+  width = 80
+  height = 80
+  [[layout.panes]]
+  id = "b"
+  type = "browser"
+  x = 20
+  y = 20
+  width = 80
+  height = 80
+  url = "file:///x.pdf"
+[[timeline]]
+action = "focus"
+pane = "a"
+[[timeline]]
+action = "type"
+text = "hello"
+[[timeline]]
+action = "terminate"
+"##,
+        );
+        assert!(validate(&s).is_empty());
+    }
+
+    #[test]
+    fn fully_overlapping_panes_are_valid() {
+        let s = score_from(
+            r##"
+[demo]
+name = "t"
+[layout]
+width = 100
+height = 100
+  [[layout.panes]]
+  id = "a"
+  type = "terminal"
+  x = 0
+  y = 0
+  width = 100
+  height = 100
+  [[layout.panes]]
+  id = "b"
+  type = "terminal"
+  x = 0
+  y = 0
+  width = 100
+  height = 100
+[[timeline]]
+action = "focus"
+pane = "a"
+[[timeline]]
+action = "type"
+text = "hello"
+[[timeline]]
+action = "terminate"
+"##,
+        );
+        assert!(validate(&s).is_empty());
+    }
+
+    // ── Scroll on terminal pane (explicit pane target) ────────────────────
+
+    #[test]
+    fn flags_scroll_on_terminal_via_explicit_pane() {
+        let s = score_from(
+            r#"
+[demo]
+name = "t"
+[layout]
+width = 100
+height = 100
+  [[layout.panes]]
+  id = "t1"
+  type = "terminal"
+  x = 0
+  y = 0
+  width = 100
+  height = 100
+[[timeline]]
+action = "scroll"
+pane = "t1"
+direction = "up"
+duration_ms = 500
+"#,
+        );
+        assert!(validate(&s).iter().any(|p| p.contains("must be a Browser")));
+    }
+
+    #[test]
+    fn flags_scroll_on_unknown_pane() {
+        let s = score_from(
+            r#"
+[demo]
+name = "t"
+[layout]
+width = 100
+height = 100
+  [[layout.panes]]
+  id = "t1"
+  type = "terminal"
+  x = 0
+  y = 0
+  width = 100
+  height = 100
+[[timeline]]
+action = "scroll"
+pane = "ghost"
+direction = "down"
+duration_ms = 1000
+"#,
+        );
+        assert!(validate(&s).iter().any(|p| p.contains("unknown pane")));
+    }
+
+    #[test]
+    fn flags_scroll_with_no_target_and_no_focus() {
+        let s = score_from(
+            r#"
+[demo]
+name = "t"
+[layout]
+width = 100
+height = 100
+  [[layout.panes]]
+  id = "b1"
+  type = "browser"
+  x = 0
+  y = 0
+  width = 100
+  height = 100
+  url = "file:///x.pdf"
+[[timeline]]
+action = "scroll"
+direction = "down"
+duration_ms = 1000
+"#,
+        );
+        assert!(validate(&s)
+            .iter()
+            .any(|p| p.contains("scroll needs a pane")));
+    }
+
+    // ── Missing required env vars ─────────────────────────────────────────
+
+    #[test]
+    fn flags_multiple_missing_env_vars() {
+        let s = score_from(
+            r#"
+[demo]
+name = "t"
+[env]
+requires = ["DEMOSTAGE_FAKE_A", "DEMOSTAGE_FAKE_B"]
+[layout]
+width = 100
+height = 100
+  [[layout.panes]]
+  id = "c"
+  type = "terminal"
+  x = 0
+  y = 0
+  width = 100
+  height = 100
+"#,
+        );
+        let problems = validate(&s);
+        assert!(problems.iter().any(|p| p.contains("DEMOSTAGE_FAKE_A")));
+        assert!(problems.iter().any(|p| p.contains("DEMOSTAGE_FAKE_B")));
+    }
+
+    #[test]
+    fn no_env_section_is_valid() {
+        let s = score_from(
+            r##"
+[demo]
+name = "t"
+[layout]
+width = 100
+height = 100
+  [[layout.panes]]
+  id = "c"
+  type = "terminal"
+  x = 0
+  y = 0
+  width = 100
+  height = 100
+[[timeline]]
+action = "focus"
+pane = "c"
+[[timeline]]
+action = "type"
+text = "ls"
+[[timeline]]
+action = "terminate"
+"##,
+        );
+        assert!(validate(&s).is_empty());
+    }
+
+    // ── Browser pane without URL ──────────────────────────────────────────
+
+    #[test]
+    fn flags_multiple_browsers_without_url() {
+        let s = score_from(
+            r#"
+[demo]
+name = "t"
+[layout]
+width = 200
+height = 100
+  [[layout.panes]]
+  id = "b1"
+  type = "browser"
+  x = 0
+  y = 0
+  width = 100
+  height = 100
+  [[layout.panes]]
+  id = "b2"
+  type = "browser"
+  x = 100
+  y = 0
+  width = 100
+  height = 100
+"#,
+        );
+        let problems = validate(&s);
+        assert!(problems
+            .iter()
+            .any(|p| p.contains("b1") && p.contains("url")));
+        assert!(problems
+            .iter()
+            .any(|p| p.contains("b2") && p.contains("url")));
+    }
+
+    // ── Input pane without focus ──────────────────────────────────────────
+
+    #[test]
+    fn flags_keypress_without_focus() {
+        let s = score_from(
+            r#"
+[demo]
+name = "t"
+[layout]
+width = 100
+height = 100
+  [[layout.panes]]
+  id = "c"
+  type = "terminal"
+  x = 0
+  y = 0
+  width = 100
+  height = 100
+[[timeline]]
+action = "keypress"
+key = "enter"
+"#,
+        );
+        assert!(validate(&s).iter().any(|p| p.contains("no focused pane")));
+    }
+
+    #[test]
+    fn flags_secret_without_focus() {
+        let s = score_from(
+            r#"
+[demo]
+name = "t"
+[layout]
+width = 100
+height = 100
+  [[layout.panes]]
+  id = "c"
+  type = "terminal"
+  x = 0
+  y = 0
+  width = 100
+  height = 100
+[[timeline]]
+action = "secret"
+prompt = "Password:"
+"#,
+        );
+        assert!(validate(&s).iter().any(|p| p.contains("no focused pane")));
+    }
+
+    #[test]
+    fn flags_type_on_browser_pane() {
+        let s = score_from(
+            r#"
+[demo]
+name = "t"
+[layout]
+width = 100
+height = 100
+  [[layout.panes]]
+  id = "b1"
+  type = "browser"
+  x = 0
+  y = 0
+  width = 100
+  height = 100
+  url = "file:///x.pdf"
+[[timeline]]
+action = "focus"
+pane = "b1"
+[[timeline]]
+action = "type"
+text = "hello"
+"#,
+        );
+        assert!(validate(&s)
+            .iter()
+            .any(|p| p.contains("requires a focused terminal")));
+    }
+
+    #[test]
+    fn flags_keypress_on_browser_pane() {
+        let s = score_from(
+            r#"
+[demo]
+name = "t"
+[layout]
+width = 100
+height = 100
+  [[layout.panes]]
+  id = "b1"
+  type = "browser"
+  x = 0
+  y = 0
+  width = 100
+  height = 100
+  url = "file:///x.pdf"
+[[timeline]]
+action = "focus"
+pane = "b1"
+[[timeline]]
+action = "keypress"
+key = "enter"
+"#,
+        );
+        assert!(validate(&s)
+            .iter()
+            .any(|p| p.contains("requires a focused terminal")));
+    }
+
+    #[test]
+    fn flags_secret_on_browser_pane() {
+        let s = score_from(
+            r#"
+[demo]
+name = "t"
+[layout]
+width = 100
+height = 100
+  [[layout.panes]]
+  id = "b1"
+  type = "browser"
+  x = 0
+  y = 0
+  width = 100
+  height = 100
+  url = "file:///x.pdf"
+[[timeline]]
+action = "focus"
+pane = "b1"
+[[timeline]]
+action = "secret"
+prompt = "Pass:"
+"#,
+        );
+        assert!(validate(&s)
+            .iter()
+            .any(|p| p.contains("requires a focused terminal")));
+    }
+
+    // ── Focus edge cases ──────────────────────────────────────────────────
+
+    #[test]
+    fn flags_focus_with_none_pane() {
+        let s = score_from(
+            r#"
+[demo]
+name = "t"
+[layout]
+width = 100
+height = 100
+  [[layout.panes]]
+  id = "c"
+  type = "terminal"
+  x = 0
+  y = 0
+  width = 100
+  height = 100
+[[timeline]]
+action = "focus"
+"#,
+        );
+        assert!(validate(&s)
+            .iter()
+            .any(|p| p.contains("focus must reference a 'pane'")));
+    }
+
+    #[test]
+    fn flags_focus_on_unknown_pane() {
+        let s = score_from(
+            r#"
+[demo]
+name = "t"
+[layout]
+width = 100
+height = 100
+  [[layout.panes]]
+  id = "c"
+  type = "terminal"
+  x = 0
+  y = 0
+  width = 100
+  height = 100
+[[timeline]]
+action = "focus"
+pane = "nonexistent"
+"#,
+        );
+        assert!(validate(&s).iter().any(|p| p.contains("unknown pane")));
+    }
+
+    // ── Canvas bounds checking edge cases ─────────────────────────────────
+
+    #[test]
+    fn flags_zero_width_canvas() {
+        let s = score_from(
+            r#"
+[demo]
+name = "t"
+[layout]
+width = 0
+height = 100
+  [[layout.panes]]
+  id = "c"
+  type = "terminal"
+  x = 0
+  y = 0
+  width = 0
+  height = 100
+"#,
+        );
+        assert!(validate(&s)
+            .iter()
+            .any(|p| p.contains("width and height must be > 0")));
+    }
+
+    #[test]
+    fn flags_zero_height_canvas() {
+        let s = score_from(
+            r#"
+[demo]
+name = "t"
+[layout]
+width = 100
+height = 0
+  [[layout.panes]]
+  id = "c"
+  type = "terminal"
+  x = 0
+  y = 0
+  width = 100
+  height = 0
+"#,
+        );
+        assert!(validate(&s)
+            .iter()
+            .any(|p| p.contains("width and height must be > 0")));
+    }
+
+    #[test]
+    fn flags_zero_fps() {
+        let s = score_from(
+            r#"
+[demo]
+name = "t"
+[layout]
+width = 100
+height = 100
+fps = 0
+  [[layout.panes]]
+  id = "c"
+  type = "terminal"
+  x = 0
+  y = 0
+  width = 100
+  height = 100
+"#,
+        );
+        assert!(validate(&s).iter().any(|p| p.contains("fps must be > 0")));
+    }
+
+    #[test]
+    fn flags_no_panes() {
+        let s = score_from(
+            r#"
+[demo]
+name = "t"
+[layout]
+width = 100
+height = 100
+"#,
+        );
+        assert!(validate(&s).iter().any(|p| p.contains("at least one pane")));
+    }
+
+    #[test]
+    fn flags_zero_width_pane() {
+        let s = score_from(
+            r#"
+[demo]
+name = "t"
+[layout]
+width = 100
+height = 100
+  [[layout.panes]]
+  id = "c"
+  type = "terminal"
+  x = 0
+  y = 0
+  width = 0
+  height = 100
+"#,
+        );
+        assert!(validate(&s)
+            .iter()
+            .any(|p| p.contains("width and height must be > 0")));
+    }
+
+    #[test]
+    fn flags_zero_height_pane() {
+        let s = score_from(
+            r#"
+[demo]
+name = "t"
+[layout]
+width = 100
+height = 100
+  [[layout.panes]]
+  id = "c"
+  type = "terminal"
+  x = 0
+  y = 0
+  width = 100
+  height = 0
+"#,
+        );
+        assert!(validate(&s)
+            .iter()
+            .any(|p| p.contains("width and height must be > 0")));
+    }
+
+    #[test]
+    fn pane_at_exact_canvas_edge_is_valid() {
+        let s = score_from(
+            r##"
+[demo]
+name = "t"
+[layout]
+width = 100
+height = 100
+  [[layout.panes]]
+  id = "c"
+  type = "terminal"
+  x = 50
+  y = 50
+  width = 50
+  height = 50
+[[timeline]]
+action = "focus"
+pane = "c"
+[[timeline]]
+action = "type"
+text = "ok"
+[[timeline]]
+action = "terminate"
+"##,
+        );
+        assert!(validate(&s).is_empty());
+    }
+
+    #[test]
+    fn flags_pane_extending_beyond_bottom_right_corner() {
+        let s = score_from(
+            r#"
+[demo]
+name = "t"
+[layout]
+width = 10
+height = 10
+  [[layout.panes]]
+  id = "c"
+  type = "terminal"
+  x = 5
+  y = 5
+  width = 10
+  height = 10
+"#,
+        );
+        assert!(validate(&s).iter().any(|p| p.contains("beyond the")));
+    }
+
+    #[test]
+    fn flags_pane_with_large_coords_overflowing() {
+        let s = score_from(
+            r#"
+[demo]
+name = "t"
+[layout]
+width = 100
+height = 100
+  [[layout.panes]]
+  id = "c"
+  type = "terminal"
+  x = 4294967295
+  y = 0
+  width = 1
+  height = 1
+"#,
+        );
+        assert!(validate(&s).iter().any(|p| p.contains("beyond the")));
+    }
+
+    // ── WaitForStdout edge cases ──────────────────────────────────────────
+
+    #[test]
+    fn flags_wait_for_stdout_on_browser_pane() {
+        let s = score_from(
+            r#"
+[demo]
+name = "t"
+[layout]
+width = 100
+height = 100
+  [[layout.panes]]
+  id = "b1"
+  type = "browser"
+  x = 0
+  y = 0
+  width = 100
+  height = 100
+  url = "file:///x.pdf"
+[[timeline]]
+action = "wait_for_stdout"
+match = "ready"
+pane = "b1"
+"#,
+        );
+        assert!(validate(&s)
+            .iter()
+            .any(|p| p.contains("must be a Terminal")));
+    }
+
+    #[test]
+    fn flags_wait_for_stdout_with_no_target_and_no_focus() {
+        let s = score_from(
+            r#"
+[demo]
+name = "t"
+[layout]
+width = 100
+height = 100
+  [[layout.panes]]
+  id = "c"
+  type = "terminal"
+  x = 0
+  y = 0
+  width = 100
+  height = 100
+[[timeline]]
+action = "wait_for_stdout"
+match = "ready"
+"#,
+        );
+        assert!(validate(&s)
+            .iter()
+            .any(|p| p.contains("wait_for_stdout needs a pane")));
+    }
+
+    // ── Multiple problems reported at once ────────────────────────────────
+
+    #[test]
+    fn reports_all_problems_not_just_first() {
+        let s = score_from(
+            r#"
+[demo]
+name = "t"
+[env]
+requires = ["DEMOSTAGE_MISSING_A", "DEMOSTAGE_MISSING_B"]
+[layout]
+width = 0
+height = 0
+"#,
+        );
+        let problems = validate(&s);
+        assert!(problems.len() >= 3);
+    }
 }

@@ -409,4 +409,204 @@ mod tests {
         assert_eq!(scene.frame_at(0.95), &[3]);
         assert_eq!(scene.frame_at(2.0), &[3]);
     }
+
+    #[test]
+    fn frame_at_single_keyframe() {
+        let scene = Scene {
+            width: 1,
+            height: 1,
+            keyframes: vec![(0.0, vec![42])],
+        };
+        assert_eq!(scene.frame_at(0.0), &[42]);
+        assert_eq!(scene.frame_at(1.0), &[42]);
+    }
+
+    #[test]
+    fn frame_at_boundary_between_keyframes() {
+        let scene = Scene {
+            width: 1,
+            height: 1,
+            keyframes: vec![(0.0, vec![1]), (0.5, vec![2])],
+        };
+        assert_eq!(scene.frame_at(0.5), &[2]);
+        assert_eq!(scene.frame_at(0.499), &[1]);
+    }
+
+    #[test]
+    fn local_file_path_extracts_from_file_url() {
+        // Non-existent file should error (file doesn't exist)
+        let result = super::local_file_path("file:///tmp/nonexistent_test_file_12345.pdf");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn local_file_path_extracts_from_localhost_url() {
+        // Non-existent file should error
+        let result = super::local_file_path("http://127.0.0.1:8080/nonexistent.pdf");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn local_file_path_rejects_non_local_url() {
+        let result = super::local_file_path("https://example.com/page.html");
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("can't extract path"));
+    }
+
+    #[test]
+    fn local_file_path_rejects_localhost_without_path() {
+        let result = super::local_file_path("http://127.0.0.1:8080");
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("can't extract path"));
+    }
+
+    #[test]
+    fn local_file_path_rejects_file_url_without_path() {
+        let result = super::local_file_path("file://");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn local_file_path_rejects_ftp_url() {
+        let result = super::local_file_path("ftp://example.com/file.pdf");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn from_keyframes_builds_scene() {
+        let scene = Scene::from_keyframes(100, 200, vec![(0.0, vec![1, 2, 3])]);
+        assert_eq!(scene.width, 100);
+        assert_eq!(scene.height, 200);
+        assert_eq!(scene.frame_at(0.5), &[1, 2, 3]);
+    }
+
+    #[test]
+    fn from_keyframes_empty_keyframes() {
+        // Should not panic even with empty keyframes (frame_at would panic on empty)
+        let scene = Scene::from_keyframes(10, 10, vec![]);
+        // frame_at on empty keyframes would panic, but from_keyframes itself is fine
+        assert_eq!(scene.width, 10);
+        assert_eq!(scene.height, 10);
+    }
+
+    #[test]
+    fn png_to_rgba_rejects_invalid_png() {
+        let result = super::png_to_rgba(&[0, 1, 2, 3], 10, 10);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn png_to_rgba_converts_valid_png() {
+        // Create a minimal 2x2 RGBA PNG using png crate properly
+        let mut buf = std::io::Cursor::new(Vec::new());
+        {
+            let mut encoder = png::Encoder::new(&mut buf, 2, 2);
+            encoder.set_color(png::ColorType::Rgba);
+            encoder.set_depth(png::BitDepth::Eight);
+            let mut writer = encoder.write_header().unwrap();
+            let pixels: Vec<u8> = vec![
+                255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 0, 255,
+            ];
+            writer.write_image_data(&pixels).unwrap();
+            writer.finish().unwrap();
+        }
+        let png_bytes = buf.into_inner();
+
+        let rgba = super::png_to_rgba(&png_bytes, 2, 2).unwrap();
+        assert_eq!(rgba.len(), 2 * 2 * 4);
+        // Top-left pixel should be red
+        assert_eq!(&rgba[0..4], &[255, 0, 0, 255]);
+        // Top-right pixel should be green
+        assert_eq!(&rgba[4..8], &[0, 255, 0, 255]);
+    }
+
+    #[test]
+    fn png_to_rgba_crops_to_target_size() {
+        // Create a 4x4 RGB PNG
+        let mut buf = std::io::Cursor::new(Vec::new());
+        {
+            let mut encoder = png::Encoder::new(&mut buf, 4, 4);
+            encoder.set_color(png::ColorType::Rgb);
+            encoder.set_depth(png::BitDepth::Eight);
+            let mut writer = encoder.write_header().unwrap();
+            let pixels: Vec<u8> = (0..4 * 4 * 3).map(|i| i as u8).collect();
+            writer.write_image_data(&pixels).unwrap();
+            writer.finish().unwrap();
+        }
+        let png_bytes = buf.into_inner();
+
+        // Target is 2x2 — should crop to top-left
+        let rgba = super::png_to_rgba(&png_bytes, 2, 2).unwrap();
+        assert_eq!(rgba.len(), 2 * 2 * 4);
+        // All alpha should be 255
+        for px in rgba.chunks_exact(4) {
+            assert_eq!(px[3], 255);
+        }
+    }
+
+    #[test]
+    fn png_to_rgba_pads_when_target_larger() {
+        // Create a 1x1 RGB PNG
+        let mut buf = std::io::Cursor::new(Vec::new());
+        {
+            let mut encoder = png::Encoder::new(&mut buf, 1, 1);
+            encoder.set_color(png::ColorType::Rgb);
+            encoder.set_depth(png::BitDepth::Eight);
+            let mut writer = encoder.write_header().unwrap();
+            writer.write_image_data(&[255, 128, 64]).unwrap();
+            writer.finish().unwrap();
+        }
+        let png_bytes = buf.into_inner();
+
+        // Target is 3x3 — should have the pixel at (0,0) and zeros elsewhere
+        let rgba = super::png_to_rgba(&png_bytes, 3, 3).unwrap();
+        assert_eq!(rgba.len(), 3 * 3 * 4);
+        assert_eq!(&rgba[0..4], &[255, 128, 64, 255]);
+        // Second pixel should be black
+        assert_eq!(&rgba[4..8], &[0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn png_to_rgba_rejects_unsupported_color_type() {
+        // Create a 1x1 grayscale PNG
+        let mut buf = std::io::Cursor::new(Vec::new());
+        {
+            let mut encoder = png::Encoder::new(&mut buf, 1, 1);
+            encoder.set_color(png::ColorType::Grayscale);
+            encoder.set_depth(png::BitDepth::Eight);
+            let mut writer = encoder.write_header().unwrap();
+            writer.write_image_data(&[128]).unwrap();
+            writer.finish().unwrap();
+        }
+        let png_bytes = buf.into_inner();
+
+        let result = super::png_to_rgba(&png_bytes, 1, 1);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("unsupported screenshot format"));
+    }
+
+    #[test]
+    fn view_fps_constant() {
+        assert_eq!(super::VIEW_FPS, 8);
+    }
+
+    #[test]
+    fn scene_from_keyframes_preserves_dimensions() {
+        let scene = Scene::from_keyframes(640, 480, vec![]);
+        assert_eq!(scene.width, 640);
+        assert_eq!(scene.height, 480);
+    }
+
+    #[test]
+    fn frame_at_negative_progress_returns_first() {
+        let scene = Scene {
+            width: 1,
+            height: 1,
+            keyframes: vec![(0.0, vec![10]), (0.5, vec![20])],
+        };
+        assert_eq!(scene.frame_at(-1.0), &[10]);
+    }
 }

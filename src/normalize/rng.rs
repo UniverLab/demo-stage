@@ -47,4 +47,12 @@ mod tests {
         let mut b = Rng::new(2);
         assert_ne!(a.next_u64(), b.next_u64());
     }
+
+    #[test]
+    fn zero_seed_remapped_to_nonzero() {
+        let mut rng = Rng::new(0);
+        // Should not produce all-zero stream
+        let val = rng.next_u64();
+        assert_ne!(val, 0);
+    }
 }

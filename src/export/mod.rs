@@ -317,4 +317,358 @@ height = 100
         // The terminal pane has no window — untouched.
         assert_eq!(score.layout.panes[0].reveal_at, None);
     }
+
+    #[test]
+    fn is_localhost_wizard_url_true() {
+        assert!(is_localhost_wizard_url("http://127.0.0.1:8080/file.pdf"));
+        assert!(is_localhost_wizard_url("http://127.0.0.1:3000/"));
+    }
+
+    #[test]
+    fn is_localhost_wizard_url_false() {
+        assert!(!is_localhost_wizard_url("https://example.com"));
+        assert!(!is_localhost_wizard_url("http://localhost:3000/"));
+        assert!(!is_localhost_wizard_url("file:///tmp/test.pdf"));
+    }
+
+    #[test]
+    fn rewrite_wizard_url_changes_port() {
+        let url = "http://127.0.0.1:8080/home/user/doc.pdf";
+        assert_eq!(
+            rewrite_wizard_url(url, 9001),
+            "http://127.0.0.1:9001/home/user/doc.pdf"
+        );
+    }
+
+    #[test]
+    fn rewrite_wizard_url_no_path() {
+        let url = "http://127.0.0.1:8080";
+        assert_eq!(rewrite_wizard_url(url, 9001), url);
+    }
+
+    #[test]
+    fn rewrite_local_urls_converts_file_to_http() {
+        let score: Score = toml::from_str(
+            r#"
+[demo]
+name = "t"
+[layout]
+width = 100
+height = 100
+  [[layout.panes]]
+  id = "main"
+  type = "terminal"
+  x = 0
+  y = 0
+  width = 100
+  height = 100
+  [[layout.panes]]
+  id = "b"
+  type = "browser"
+  x = 0
+  y = 0
+  width = 100
+  height = 100
+  url = "file:///tmp/test.pdf"
+"#,
+        )
+        .unwrap();
+        let rewritten = rewrite_local_urls(&score, 8080);
+        let b = &rewritten.layout.panes[1];
+        assert!(b.url.as_ref().unwrap().contains("8080"));
+        assert!(b.url.as_ref().unwrap().starts_with("http://127.0.0.1:"));
+    }
+
+    #[test]
+    fn rewrite_local_urls_converts_wizard_url() {
+        let score: Score = toml::from_str(
+            r#"
+[demo]
+name = "t"
+[layout]
+width = 100
+height = 100
+  [[layout.panes]]
+  id = "main"
+  type = "terminal"
+  x = 0
+  y = 0
+  width = 100
+  height = 100
+  [[layout.panes]]
+  id = "b"
+  type = "browser"
+  x = 0
+  y = 0
+  width = 100
+  height = 100
+  url = "http://127.0.0.1:3000/page.html"
+"#,
+        )
+        .unwrap();
+        let rewritten = rewrite_local_urls(&score, 9000);
+        let b = &rewritten.layout.panes[1];
+        assert_eq!(b.url.as_deref(), Some("http://127.0.0.1:9000/page.html"));
+    }
+
+    #[test]
+    fn rewrite_local_urls_leaves_https_untouched() {
+        let score: Score = toml::from_str(
+            r#"
+[demo]
+name = "t"
+[layout]
+width = 100
+height = 100
+  [[layout.panes]]
+  id = "main"
+  type = "terminal"
+  x = 0
+  y = 0
+  width = 100
+  height = 100
+  [[layout.panes]]
+  id = "b"
+  type = "browser"
+  x = 0
+  y = 0
+  width = 100
+  height = 100
+  url = "https://example.com"
+"#,
+        )
+        .unwrap();
+        let rewritten = rewrite_local_urls(&score, 9000);
+        let b = &rewritten.layout.panes[1];
+        assert_eq!(b.url.as_deref(), Some("https://example.com"));
+    }
+
+    #[test]
+    fn resolve_output_sanitizes_name() {
+        let score: Score = toml::from_str(
+            r#"
+[demo]
+name = "my demo!"
+output_dir = "./dist"
+[layout]
+width = 100
+height = 100
+"#,
+        )
+        .unwrap();
+        let path = resolve_output(&score, "gif");
+        assert_eq!(path, std::path::PathBuf::from("./dist/my-demo-.gif"));
+    }
+
+    #[test]
+    fn resolve_output_html() {
+        let score: Score = toml::from_str(
+            r#"
+[demo]
+name = "test"
+output_dir = "./out"
+[layout]
+width = 100
+height = 100
+"#,
+        )
+        .unwrap();
+        let path = resolve_output(&score, "html");
+        assert_eq!(path, std::path::PathBuf::from("./out/test.html"));
+    }
+
+    #[test]
+    fn ensure_parent_creates_directory() {
+        let dir = std::env::temp_dir().join("demostage_test_ensure_parent");
+        let file = dir.join("sub/file.txt");
+        let _ = std::fs::remove_dir_all(&dir);
+        ensure_parent(&file).unwrap();
+        assert!(dir.is_dir());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn ensure_parent_empty_path_is_ok() {
+        let p = std::path::Path::new("");
+        ensure_parent(p).unwrap();
+    }
+
+    #[test]
+    fn sanitize_empty_string() {
+        assert_eq!(sanitize(""), "");
+    }
+
+    #[test]
+    fn sanitize_all_special_chars() {
+        assert_eq!(sanitize("!@#$%^&*()"), "----------");
+    }
+
+    #[test]
+    fn sanitize_preserves_underscores() {
+        assert_eq!(sanitize("my_demo_name"), "my_demo_name");
+    }
+
+    #[test]
+    fn sanitize_preserves_hyphens() {
+        assert_eq!(sanitize("my-demo-name"), "my-demo-name");
+    }
+
+    #[test]
+    fn is_localhost_wizard_url_with_port_only() {
+        assert!(is_localhost_wizard_url("http://127.0.0.1:8080"));
+    }
+
+    #[test]
+    fn is_localhost_wizard_url_with_path() {
+        assert!(is_localhost_wizard_url("http://127.0.0.1:3000/page.html"));
+    }
+
+    #[test]
+    fn is_localhost_wizard_url_localhost_not_127() {
+        assert!(!is_localhost_wizard_url("http://localhost:3000/"));
+    }
+
+    #[test]
+    fn is_localhost_wizard_url_https() {
+        assert!(!is_localhost_wizard_url("https://127.0.0.1:8080/"));
+    }
+
+    #[test]
+    fn rewrite_wizard_url_with_complex_path() {
+        let url = "http://127.0.0.1:8080/home/user/file.pdf?query=1";
+        assert_eq!(
+            rewrite_wizard_url(url, 9001),
+            "http://127.0.0.1:9001/home/user/file.pdf?query=1"
+        );
+    }
+
+    #[test]
+    fn rewrite_local_urls_no_browser_panes() {
+        let score: Score = toml::from_str(
+            r#"
+[demo]
+name = "t"
+[layout]
+width = 100
+height = 100
+  [[layout.panes]]
+  id = "main"
+  type = "terminal"
+  x = 0
+  y = 0
+  width = 100
+  height = 100
+"#,
+        )
+        .unwrap();
+        let rewritten = rewrite_local_urls(&score, 8080);
+        assert_eq!(rewritten.layout.panes.len(), 1);
+    }
+
+    #[test]
+    fn rewrite_local_urls_multiple_panes() {
+        let score: Score = toml::from_str(
+            r#"
+[demo]
+name = "t"
+[layout]
+width = 100
+height = 100
+  [[layout.panes]]
+  id = "main"
+  type = "terminal"
+  x = 0
+  y = 0
+  width = 100
+  height = 100
+  [[layout.panes]]
+  id = "b1"
+  type = "browser"
+  x = 0
+  y = 0
+  width = 100
+  height = 100
+  url = "file:///tmp/test1.pdf"
+  [[layout.panes]]
+  id = "b2"
+  type = "browser"
+  x = 0
+  y = 0
+  width = 100
+  height = 100
+  url = "file:///tmp/test2.pdf"
+"#,
+        )
+        .unwrap();
+        let rewritten = rewrite_local_urls(&score, 8080);
+        let b1 = &rewritten.layout.panes[1];
+        let b2 = &rewritten.layout.panes[2];
+        assert!(b1.url.as_ref().unwrap().contains("8080"));
+        assert!(b2.url.as_ref().unwrap().contains("8080"));
+    }
+
+    #[test]
+    fn resolve_output_custom_dir() {
+        let score: Score = toml::from_str(
+            r#"
+[demo]
+name = "test"
+output_dir = "/tmp/demos"
+[layout]
+width = 100
+height = 100
+"#,
+        )
+        .unwrap();
+        let path = resolve_output(&score, "gif");
+        assert_eq!(path, std::path::PathBuf::from("/tmp/demos/test.gif"));
+    }
+
+    #[test]
+    fn scale_recording_with_empty_events() {
+        let mut r = Recording {
+            cols: 80,
+            rows: 24,
+            title: "t".into(),
+            events: vec![],
+            captions: vec![],
+            focuses: vec![],
+            duration: 0.0,
+        };
+        scale_recording(&mut r, 2.0);
+        assert_eq!(r.duration, 0.0);
+    }
+
+    #[test]
+    fn scale_pane_windows_with_no_reveal() {
+        let mut score: Score = toml::from_str(
+            r#"
+[demo]
+name = "t"
+[layout]
+width = 100
+height = 100
+  [[layout.panes]]
+  id = "main"
+  type = "terminal"
+  x = 0
+  y = 0
+  width = 100
+  height = 100
+"#,
+        )
+        .unwrap();
+        scale_pane_windows(&mut score, 2.0);
+        assert_eq!(score.layout.panes[0].reveal_at, None);
+    }
+
+    #[test]
+    fn ensure_parent_nonexistent_path() {
+        let dir = std::env::temp_dir().join(format!("demostage_test_{}", std::process::id()));
+        let file = dir.join("deep/nested/file.txt");
+        let _ = std::fs::remove_dir_all(&dir);
+        ensure_parent(&file).unwrap();
+        assert!(dir.is_dir());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

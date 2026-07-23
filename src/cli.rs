@@ -345,3 +345,126 @@ pub struct FocusArgs {
     #[arg(long)]
     pub theme: Option<String>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_targets_gif_only() {
+        let result = parse_targets("gif").unwrap();
+        assert_eq!(result.0.len(), 1);
+        assert!(result.0.contains(&Target::Gif));
+    }
+
+    #[test]
+    fn parse_targets_mp4_only() {
+        let result = parse_targets("mp4").unwrap();
+        assert_eq!(result.0.len(), 1);
+        assert!(result.0.contains(&Target::Mp4));
+    }
+
+    #[test]
+    fn parse_targets_both() {
+        let result = parse_targets("gif,mp4").unwrap();
+        assert_eq!(result.0.len(), 2);
+    }
+
+    #[test]
+    fn parse_targets_all() {
+        let result = parse_targets("all").unwrap();
+        assert_eq!(result.0.len(), 2);
+    }
+
+    #[test]
+    fn parse_targets_all_case_insensitive() {
+        let result = parse_targets("ALL").unwrap();
+        assert_eq!(result.0.len(), 2);
+    }
+
+    #[test]
+    fn parse_targets_deduplicates() {
+        let result = parse_targets("gif,gif,mp4").unwrap();
+        assert_eq!(result.0.len(), 2);
+    }
+
+    #[test]
+    fn parse_targets_empty_string() {
+        assert!(parse_targets("").is_err());
+    }
+
+    #[test]
+    fn parse_targets_invalid_format() {
+        assert!(parse_targets("invalid").is_err());
+    }
+
+    #[test]
+    fn parse_targets_with_spaces() {
+        let result = parse_targets("gif , mp4").unwrap();
+        assert_eq!(result.0.len(), 2);
+    }
+
+    #[test]
+    fn parse_targets_leading_trailing_comma() {
+        let result = parse_targets(",gif,mp4,").unwrap();
+        assert_eq!(result.0.len(), 2);
+    }
+
+    #[test]
+    fn parse_speed_with_x_suffix() {
+        let result = parse_speed("2x").unwrap();
+        assert!((result - 2.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn parse_speed_with_x_suffix_uppercase() {
+        let result = parse_speed("3X").unwrap();
+        assert!((result - 3.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn parse_speed_bare_number() {
+        let result = parse_speed("0.5").unwrap();
+        assert!((result - 0.5).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn parse_speed_fraction() {
+        let result = parse_speed("1.5x").unwrap();
+        assert!((result - 1.5).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn parse_speed_zero_is_error() {
+        assert!(parse_speed("0").is_err());
+    }
+
+    #[test]
+    fn parse_speed_negative_is_error() {
+        assert!(parse_speed("-1").is_err());
+    }
+
+    #[test]
+    fn parse_speed_non_number_is_error() {
+        assert!(parse_speed("abc").is_err());
+    }
+
+    #[test]
+    fn parse_speed_empty_is_error() {
+        assert!(parse_speed("").is_err());
+    }
+
+    #[test]
+    fn all_targets_returns_gif_and_mp4() {
+        let targets = all_targets();
+        assert_eq!(targets.len(), 2);
+        assert!(targets.contains(&Target::Gif));
+        assert!(targets.contains(&Target::Mp4));
+    }
+
+    #[test]
+    fn parse_speed_with_whitespace() {
+        let result = parse_speed(" 2x ").unwrap();
+        assert!((result - 2.0).abs() < f64::EPSILON);
+    }
+}

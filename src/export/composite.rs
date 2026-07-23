@@ -147,4 +147,43 @@ mod tests {
         );
         assert_eq!(at(&img, 1, 0, 0), [0, 0, 255]);
     }
+
+    #[test]
+    fn clips_short_rgba_buffer() {
+        // A layer with a buffer shorter than w*h*4 should not panic.
+        let short_buf = [255u8, 128, 0, 255, 255, 128, 0, 255]; // only 2 pixels for a 2x2 layer
+        let img = composite(
+            3,
+            3,
+            [0, 0, 0],
+            &[Layer {
+                x: 0,
+                y: 0,
+                w: 2,
+                h: 2,
+                rgba: &short_buf,
+            }],
+        );
+        // First pixel should be painted, the rest should stay background.
+        assert_eq!(at(&img, 3, 0, 0), [255, 128, 0]);
+    }
+
+    #[test]
+    fn layer_completely_outside_canvas() {
+        let red = [255u8, 0, 0, 255].repeat(4);
+        let img = composite(
+            2,
+            2,
+            [10, 10, 10],
+            &[Layer {
+                x: 10,
+                y: 10,
+                w: 2,
+                h: 2,
+                rgba: &red,
+            }],
+        );
+        // Canvas should remain all background.
+        assert_eq!(at(&img, 2, 0, 0), [10, 10, 10]);
+    }
 }

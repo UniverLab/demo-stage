@@ -414,4 +414,376 @@ mod tests {
             Some("file://./new.pdf")
         );
     }
+
+    fn mk_layout(w: u32, h: u32) -> Layout {
+        Layout {
+            width: w,
+            height: h,
+            fps: 15,
+            line_height: 1.2,
+            background: None,
+            font_family: None,
+            font_size: None,
+            panes: vec![],
+        }
+    }
+
+    fn mk_pane(id: &str, w: u32, h: u32) -> Pane {
+        Pane {
+            id: id.into(),
+            kind: PaneKind::Terminal,
+            x: 0,
+            y: 0,
+            width: w,
+            height: h,
+            font_family: None,
+            font_size: None,
+            url: None,
+            theme: None,
+            reveal_at: None,
+            hide_at: None,
+        }
+    }
+
+    #[test]
+    fn detect_placement_fullscreen() {
+        let layout = mk_layout(100, 100);
+        let pane = mk_pane("main", 100, 100);
+        assert_eq!(detect_placement(&pane, &layout), Placement::Replace);
+    }
+
+    #[test]
+    fn detect_placement_split_horizontal() {
+        let layout = mk_layout(100, 100);
+        let pane = mk_pane("main", 50, 100);
+        assert_eq!(detect_placement(&pane, &layout), Placement::SplitHorizontal);
+    }
+
+    #[test]
+    fn detect_placement_split_vertical() {
+        let layout = mk_layout(100, 100);
+        let pane = mk_pane("main", 100, 50);
+        assert_eq!(detect_placement(&pane, &layout), Placement::SplitVertical);
+    }
+
+    #[test]
+    fn detect_placement_non_standard_goes_replace() {
+        let layout = mk_layout(100, 100);
+        let pane = mk_pane("main", 70, 70);
+        assert_eq!(detect_placement(&pane, &layout), Placement::Replace);
+    }
+
+    #[test]
+    fn has_scroll_after_true_when_next_is_scroll_for_same_pane() {
+        let s = Score {
+            timeline: vec![
+                Step::Focus {
+                    pane: Some("pdf".into()),
+                },
+                Step::Scroll {
+                    direction: ScrollDirection::Down,
+                    velocity: Velocity::Constant,
+                    duration_ms: 1000,
+                    pane: Some("pdf".into()),
+                },
+            ],
+            ..sample_score()
+        };
+        assert!(has_scroll_after(&s, 0, "pdf"));
+    }
+
+    #[test]
+    fn has_scroll_after_false_when_no_scroll() {
+        let s = Score {
+            timeline: vec![
+                Step::Focus {
+                    pane: Some("pdf".into()),
+                },
+                Step::Wait { duration_ms: 1000 },
+            ],
+            ..sample_score()
+        };
+        assert!(!has_scroll_after(&s, 0, "pdf"));
+    }
+
+    #[test]
+    fn has_scroll_after_false_when_wrong_pane() {
+        let s = Score {
+            timeline: vec![
+                Step::Focus {
+                    pane: Some("pdf".into()),
+                },
+                Step::Scroll {
+                    direction: ScrollDirection::Down,
+                    velocity: Velocity::Constant,
+                    duration_ms: 1000,
+                    pane: Some("other".into()),
+                },
+            ],
+            ..sample_score()
+        };
+        assert!(!has_scroll_after(&s, 0, "pdf"));
+    }
+
+    #[test]
+    fn hold_after_returns_wait_duration() {
+        let s = Score {
+            timeline: vec![
+                Step::Focus {
+                    pane: Some("pdf".into()),
+                },
+                Step::Wait { duration_ms: 4200 },
+            ],
+            ..sample_score()
+        };
+        assert_eq!(hold_after(&s, 0, false), 4200);
+    }
+
+    #[test]
+    fn hold_after_skips_scroll_when_present() {
+        let s = Score {
+            timeline: vec![
+                Step::Focus {
+                    pane: Some("pdf".into()),
+                },
+                Step::Scroll {
+                    direction: ScrollDirection::Down,
+                    velocity: Velocity::Constant,
+                    duration_ms: 8000,
+                    pane: Some("pdf".into()),
+                },
+                Step::Wait { duration_ms: 3000 },
+            ],
+            ..sample_score()
+        };
+        assert_eq!(hold_after(&s, 0, true), 3000);
+    }
+
+    #[test]
+    fn hold_after_defaults_for_scroll_without_wait() {
+        let s = Score {
+            timeline: vec![
+                Step::Focus {
+                    pane: Some("pdf".into()),
+                },
+                Step::Scroll {
+                    direction: ScrollDirection::Down,
+                    velocity: Velocity::Constant,
+                    duration_ms: 8000,
+                    pane: Some("pdf".into()),
+                },
+            ],
+            ..sample_score()
+        };
+        assert_eq!(hold_after(&s, 0, true), SCROLL_HOLD_MS);
+    }
+
+    #[test]
+    fn hold_after_defaults_for_no_scroll_no_wait() {
+        let s = sample_score();
+        assert_eq!(hold_after(&s, 0, false), DEFAULT_HOLD_MS);
+    }
+
+    #[test]
+    fn replace_placement_updates_both_panes() {
+        let mut s = sample_score();
+        apply_placement(&mut s.layout, "pdf-r1", Placement::Replace);
+        let main = s.pane("main").unwrap();
+        let pdf = s.pane("pdf-r1").unwrap();
+        assert_eq!(main.width, 100);
+        assert_eq!(main.height, 100);
+        assert_eq!(pdf.width, 100);
+        assert_eq!(pdf.height, 100);
+    }
+
+    #[test]
+    fn split_vertical_updates_layout() {
+        let mut s = sample_score();
+        apply_placement(&mut s.layout, "pdf-r1", Placement::SplitVertical);
+        let main = s.pane("main").unwrap();
+        let pdf = s.pane("pdf-r1").unwrap();
+        assert_eq!(main.height, 50);
+        assert_eq!(pdf.y, 50);
+        assert_eq!(pdf.height, 50);
+    }
+
+    #[test]
+    fn is_browser_focus_false_for_terminal_pane() {
+        let mut s = sample_score();
+        s.timeline[0] = Step::Focus {
+            pane: Some("main".into()),
+        };
+        assert!(!is_browser_focus(&s, 0));
+    }
+
+    #[test]
+    fn is_browser_focus_false_for_none_pane() {
+        let mut s = sample_score();
+        s.timeline[0] = Step::Focus { pane: None };
+        assert!(!is_browser_focus(&s, 0));
+    }
+
+    #[test]
+    fn update_reveal_tail_no_scroll_only_wait() {
+        let mut timeline = vec![
+            Step::Focus {
+                pane: Some("pdf-r1".into()),
+            },
+            Step::Wait { duration_ms: 1000 },
+        ];
+        update_reveal_tail(&mut timeline, 0, "pdf-r1", false, 5000);
+        assert_eq!(timeline.len(), 2);
+        assert!(matches!(timeline[1], Step::Wait { duration_ms: 5000 }));
+    }
+
+    #[test]
+    fn update_reveal_tail_removes_existing_scroll_for_same_pane() {
+        let mut timeline = vec![
+            Step::Focus {
+                pane: Some("pdf-r1".into()),
+            },
+            Step::Scroll {
+                direction: ScrollDirection::Down,
+                velocity: Velocity::Constant,
+                duration_ms: 8000,
+                pane: Some("pdf-r1".into()),
+            },
+            Step::Wait { duration_ms: 8000 },
+            Step::Type {
+                text: "keep".into(),
+                human_salt: false,
+            },
+        ];
+        update_reveal_tail(&mut timeline, 0, "pdf-r1", true, 5000);
+        assert!(matches!(timeline[1], Step::Scroll { .. }));
+        assert!(matches!(timeline[2], Step::Wait { duration_ms: 5000 }));
+        assert!(matches!(timeline[3], Step::Type { .. }));
+    }
+
+    #[test]
+    fn update_reveal_tail_removes_multiple_scrolls_for_same_pane() {
+        let mut timeline = vec![
+            Step::Focus {
+                pane: Some("pdf-r1".into()),
+            },
+            Step::Scroll {
+                direction: ScrollDirection::Down,
+                velocity: Velocity::Constant,
+                duration_ms: 2000,
+                pane: Some("pdf-r1".into()),
+            },
+            Step::Scroll {
+                direction: ScrollDirection::Down,
+                velocity: Velocity::Constant,
+                duration_ms: 3000,
+                pane: Some("pdf-r1".into()),
+            },
+            Step::Wait { duration_ms: 8000 },
+        ];
+        update_reveal_tail(&mut timeline, 0, "pdf-r1", true, 5000);
+        // Should have: Focus, Scroll (new), Wait (new)
+        assert_eq!(timeline.len(), 3);
+        assert!(matches!(
+            timeline[1],
+            Step::Scroll {
+                duration_ms: 5000,
+                ..
+            }
+        ));
+        assert!(matches!(timeline[2], Step::Wait { duration_ms: 5000 }));
+    }
+
+    #[test]
+    fn update_reveal_tail_keeps_scroll_for_different_pane() {
+        let mut timeline = vec![
+            Step::Focus {
+                pane: Some("pdf-r1".into()),
+            },
+            Step::Scroll {
+                direction: ScrollDirection::Down,
+                velocity: Velocity::Constant,
+                duration_ms: 4000,
+                pane: Some("other".into()),
+            },
+            Step::Wait { duration_ms: 2000 },
+        ];
+        update_reveal_tail(&mut timeline, 0, "pdf-r1", false, 6000);
+        // The scroll for "other" stays, then a new Wait is inserted after Focus
+        let has_scroll_other = timeline.iter().any(|s| {
+            matches!(
+                s, Step::Scroll { pane: Some(ref p), .. } if p == "other"
+            )
+        });
+        assert!(has_scroll_other, "scroll for different pane should remain");
+        // A new Wait should be inserted
+        let waits: Vec<_> = timeline
+            .iter()
+            .filter(|s| matches!(s, Step::Wait { .. }))
+            .collect();
+        assert_eq!(waits.len(), 2, "should have two waits (new + old)");
+    }
+
+    #[test]
+    fn update_reveal_tail_empty_timeline_after_focus() {
+        let mut timeline = vec![Step::Focus {
+            pane: Some("pdf-r1".into()),
+        }];
+        update_reveal_tail(&mut timeline, 0, "pdf-r1", false, 3000);
+        assert_eq!(timeline.len(), 2);
+        assert!(matches!(timeline[1], Step::Wait { duration_ms: 3000 }));
+    }
+
+    #[test]
+    fn sync_browser_url_updates_matching_prefix() {
+        let mut s = sample_score();
+        sync_browser_url(&mut s, "pdf-r2", "file://./v2.pdf");
+        // Should update the source with id "pdf" (stem of "pdf-r2")
+        assert_eq!(
+            s.source("pdf").unwrap().url.as_deref(),
+            Some("file://./v2.pdf")
+        );
+    }
+
+    #[test]
+    fn sync_browser_url_no_source_match() {
+        let mut s = sample_score();
+        sync_browser_url(&mut s, "unknown", "file://./x.pdf");
+        // Source "pdf" should not be updated
+        assert_eq!(
+            s.source("pdf").unwrap().url.as_deref(),
+            Some("file://./old.pdf")
+        );
+    }
+
+    #[test]
+    fn detect_placement_exact_half_width() {
+        let layout = mk_layout(100, 100);
+        // width = 50 = exactly half → SplitHorizontal
+        let pane = mk_pane("main", 50, 100);
+        assert_eq!(detect_placement(&pane, &layout), Placement::SplitHorizontal);
+    }
+
+    #[test]
+    fn detect_placement_exact_half_height() {
+        let layout = mk_layout(100, 100);
+        // height = 50 = exactly half → SplitVertical
+        let pane = mk_pane("main", 100, 50);
+        assert_eq!(detect_placement(&pane, &layout), Placement::SplitVertical);
+    }
+
+    #[test]
+    fn detect_placement_wider_than_half() {
+        let layout = mk_layout(100, 100);
+        // width = 60, height = 100 → not half-width (60 > 50), so Replace
+        let pane = mk_pane("main", 60, 100);
+        assert_eq!(detect_placement(&pane, &layout), Placement::Replace);
+    }
+
+    #[test]
+    fn detect_placement_taller_than_half() {
+        let layout = mk_layout(100, 100);
+        // width = 100, height = 60 → not half-height (60 > 50), so Replace
+        let pane = mk_pane("main", 100, 60);
+        assert_eq!(detect_placement(&pane, &layout), Placement::Replace);
+    }
 }
