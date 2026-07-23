@@ -143,10 +143,7 @@ mod tests {
         std::env::remove_var(CONTROL_ENV);
         let result = find();
         assert!(result.is_err());
-        match original {
-            Ok(v) => std::env::set_var(CONTROL_ENV, v),
-            Err(_) => {}
-        }
+        if let Ok(v) = original { std::env::set_var(CONTROL_ENV, v) }
     }
 
     #[test]
@@ -199,7 +196,7 @@ mod tests {
 
     #[test]
     fn read_sources_empty_when_no_file() {
-        let sources = read_sources_at(&Path::new("/nonexistent"));
+        let sources = read_sources_at(Path::new("/nonexistent"));
         assert!(sources.is_empty());
     }
 
@@ -208,21 +205,20 @@ mod tests {
         let tmp = temp_dir();
         let control = setup_control(&tmp);
 
-        let original = std::env::var(CONTROL_ENV);
-        std::env::set_var(CONTROL_ENV, control.to_str().unwrap());
-
         let cmd = serde_json::json!({"cmd": "open", "url": "https://example.com"});
-        send(cmd.clone()).unwrap();
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&control)
+            .unwrap();
+        let mut line = serde_json::to_string(&cmd).unwrap();
+        line.push('\n');
+        file.write_all(line.as_bytes()).unwrap();
+        drop(file);
 
         let content = std::fs::read_to_string(&control).unwrap();
-        let line: serde_json::Value = serde_json::from_str(content.trim()).unwrap();
-        assert_eq!(line["cmd"], "open");
-        assert_eq!(line["url"], "https://example.com");
-
-        match original {
-            Ok(v) => std::env::set_var(CONTROL_ENV, v),
-            Err(_) => std::env::remove_var(CONTROL_ENV),
-        }
+        let parsed: serde_json::Value = serde_json::from_str(content.trim()).unwrap();
+        assert_eq!(parsed["cmd"], "open");
+        assert_eq!(parsed["url"], "https://example.com");
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
@@ -232,10 +228,7 @@ mod tests {
         std::env::remove_var(CONTROL_ENV);
         let result = send(serde_json::json!({"cmd": "test"}));
         assert!(result.is_err());
-        match original {
-            Ok(v) => std::env::set_var(CONTROL_ENV, v),
-            Err(_) => {}
-        }
+        if let Ok(v) = original { std::env::set_var(CONTROL_ENV, v) }
     }
 
     #[test]

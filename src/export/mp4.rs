@@ -119,6 +119,14 @@ fn ffmpeg_tail(stderr: &str) -> String {
     format!("\nffmpeg: {tail}")
 }
 
+/// Single-terminal fast path: encode an MP4 straight from a recording.
+pub fn write_mp4(rec: &Recording, score: &Score, path: &Path) -> Result<()> {
+    let plan = raster::plan(rec, score);
+    encode(path, plan.width, plan.height, plan.fps, |emit| {
+        raster::render_frames(rec, score, |f| emit(f)).map(|_| ())
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -177,12 +185,4 @@ mod tests {
         assert!(result.contains("line1"));
         assert!(result.contains("line2"));
     }
-}
-
-/// Single-terminal fast path: encode an MP4 straight from a recording.
-pub fn write_mp4(rec: &Recording, score: &Score, path: &Path) -> Result<()> {
-    let plan = raster::plan(rec, score);
-    encode(path, plan.width, plan.height, plan.fps, |emit| {
-        raster::render_frames(rec, score, |f| emit(f)).map(|_| ())
-    })
 }

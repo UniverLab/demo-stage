@@ -89,7 +89,7 @@ mod tests {
         let toml_val: toml::Value = toml::Value::try_from(data).unwrap();
         let _err_str = toml::to_string_pretty(&toml_val).unwrap();
         // Just verify we can construct the error variant and its display works
-        let err = Error::Export(format!("could not serialize TOML: test"));
+        let err = Error::Export("could not serialize TOML: test".to_string());
         assert!(err.to_string().contains("could not serialize TOML"));
     }
 

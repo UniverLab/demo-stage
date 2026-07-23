@@ -125,6 +125,7 @@ mod tests {
 
         #[derive(serde::Deserialize, Debug)]
         struct S {
+            #[allow(dead_code)]
             name: String,
         }
 
@@ -144,6 +145,7 @@ mod tests {
 
         #[derive(serde::Deserialize, Debug)]
         struct S {
+            #[allow(dead_code)]
             name: String,
         }
 

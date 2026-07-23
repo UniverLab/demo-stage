@@ -417,7 +417,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_speed_with_X_suffix() {
+    fn parse_speed_with_x_suffix_uppercase() {
         let result = parse_speed("3X").unwrap();
         assert!((result - 3.0).abs() < f64::EPSILON);
     }

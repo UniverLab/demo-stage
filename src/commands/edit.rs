@@ -676,8 +676,8 @@ mod tests {
         // Original replaced + 3 new parts inserted
         assert!(timeline.len() > 2);
         // Verify all parts are Type steps
-        for i in 0..timeline.len() - 1 {
-            assert!(matches!(timeline[i], Step::Type { .. }));
+        for step in timeline.iter().take(timeline.len() - 1) {
+            assert!(matches!(step, Step::Type { .. }));
         }
     }
 

@@ -226,7 +226,7 @@ mod tests {
     #[test]
     fn diff_rect_full_width_change() {
         let w = 3;
-        let prev = vec![0u8; w * 1 * 4];
+        let prev = vec![0u8; w * 4];
         let mut cur = prev.clone();
         // Change all pixels in row 0
         for i in 0..w {
