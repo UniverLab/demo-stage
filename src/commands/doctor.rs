@@ -409,8 +409,14 @@ mod tests {
         std::env::remove_var("WAYLAND_DISPLAY");
         let check = check_display(&plat);
         assert!(matches!(check.level, Level::Ok));
-        if let Some(v) = original { std::env::set_var("DISPLAY", v) } else { std::env::remove_var("DISPLAY") }
-        if let Some(v) = original_w { std::env::set_var("WAYLAND_DISPLAY", v) }
+        if let Some(v) = original {
+            std::env::set_var("DISPLAY", v)
+        } else {
+            std::env::remove_var("DISPLAY")
+        }
+        if let Some(v) = original_w {
+            std::env::set_var("WAYLAND_DISPLAY", v)
+        }
     }
 
     #[test]
@@ -426,8 +432,12 @@ mod tests {
         std::env::remove_var("WAYLAND_DISPLAY");
         let check = check_display(&plat);
         assert!(matches!(check.level, Level::Warn));
-        if let Some(v) = original { std::env::set_var("DISPLAY", v) }
-        if let Some(v) = original_w { std::env::set_var("WAYLAND_DISPLAY", v) }
+        if let Some(v) = original {
+            std::env::set_var("DISPLAY", v)
+        }
+        if let Some(v) = original_w {
+            std::env::set_var("WAYLAND_DISPLAY", v)
+        }
     }
 
     #[test]

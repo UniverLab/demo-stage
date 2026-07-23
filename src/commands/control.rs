@@ -143,7 +143,9 @@ mod tests {
         std::env::remove_var(CONTROL_ENV);
         let result = find();
         assert!(result.is_err());
-        if let Ok(v) = original { std::env::set_var(CONTROL_ENV, v) }
+        if let Ok(v) = original {
+            std::env::set_var(CONTROL_ENV, v)
+        }
     }
 
     #[test]
@@ -228,7 +230,9 @@ mod tests {
         std::env::remove_var(CONTROL_ENV);
         let result = send(serde_json::json!({"cmd": "test"}));
         assert!(result.is_err());
-        if let Ok(v) = original { std::env::set_var(CONTROL_ENV, v) }
+        if let Ok(v) = original {
+            std::env::set_var(CONTROL_ENV, v)
+        }
     }
 
     #[test]
