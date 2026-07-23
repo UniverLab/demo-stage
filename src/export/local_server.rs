@@ -218,6 +218,42 @@ mod tests {
         assert_eq!(guess_mime(Path::new("doc.pdf")), "application/pdf");
         assert_eq!(guess_mime(Path::new("image.png")), "image/png");
         assert_eq!(guess_mime(Path::new("page.html")), "text/html");
+        assert_eq!(guess_mime(Path::new("page.htm")), "text/html");
+        assert_eq!(guess_mime(Path::new("style.css")), "text/css");
+        assert_eq!(guess_mime(Path::new("app.js")), "application/javascript");
+        assert_eq!(guess_mime(Path::new("photo.jpg")), "image/jpeg");
+        assert_eq!(guess_mime(Path::new("photo.jpeg")), "image/jpeg");
+        assert_eq!(guess_mime(Path::new("animation.gif")), "image/gif");
+        assert_eq!(guess_mime(Path::new("icon.svg")), "image/svg+xml");
+        assert_eq!(
+            guess_mime(Path::new("data.bin")),
+            "application/octet-stream"
+        );
+    }
+
+    #[test]
+    fn mime_type_case_insensitive() {
+        assert_eq!(guess_mime(Path::new("DOC.PDF")), "application/pdf");
+        assert_eq!(guess_mime(Path::new("IMAGE.PNG")), "image/png");
+    }
+
+    #[test]
+    fn mime_type_no_extension() {
+        assert_eq!(
+            guess_mime(Path::new("Makefile")),
+            "application/octet-stream"
+        );
+        assert_eq!(guess_mime(Path::new("README")), "application/octet-stream");
+    }
+
+    #[test]
+    fn rewrite_url_with_relative_path() {
+        let server = LocalServer {
+            port: 8080,
+            _thread_handle: None,
+        };
+        let rewritten = server.rewrite_url("file:///tmp/test.html");
+        assert_eq!(rewritten, "http://127.0.0.1:8080/tmp/test.html");
     }
 
     #[test]
@@ -235,5 +271,172 @@ mod tests {
         // Clean up
         std::fs::remove_file(&file).ok();
         std::fs::remove_dir(&dir).ok();
+    }
+
+    #[test]
+    fn rewrite_url_file_double_slash() {
+        let server = LocalServer {
+            port: 5555,
+            _thread_handle: None,
+        };
+        let rewritten = server.rewrite_url("file:///a/b/c");
+        assert_eq!(rewritten, "http://127.0.0.1:5555/a/b/c");
+    }
+
+    #[test]
+    fn rewrite_url_file_single_slash() {
+        let server = LocalServer {
+            port: 7777,
+            _thread_handle: None,
+        };
+        let rewritten = server.rewrite_url("file://a/b");
+        assert_eq!(rewritten, "http://127.0.0.1:7777/a/b");
+    }
+
+    #[test]
+    fn rewrite_url_ftp_unchanged() {
+        let server = LocalServer {
+            port: 9999,
+            _thread_handle: None,
+        };
+        assert_eq!(
+            server.rewrite_url("ftp://example.com/file"),
+            "ftp://example.com/file"
+        );
+    }
+
+    #[test]
+    fn rewrite_url_data_unchanged() {
+        let server = LocalServer {
+            port: 1234,
+            _thread_handle: None,
+        };
+        assert_eq!(
+            server.rewrite_url("data:text/html,<h1>Hi</h1>"),
+            "data:text/html,<h1>Hi</h1>"
+        );
+    }
+
+    #[test]
+    fn rewrite_url_blob_unchanged() {
+        let server = LocalServer {
+            port: 4321,
+            _thread_handle: None,
+        };
+        assert_eq!(
+            server.rewrite_url("blob:https://example.com/abc"),
+            "blob:https://example.com/abc"
+        );
+    }
+
+    #[test]
+    fn rewrite_url_file_root_path() {
+        let server = LocalServer {
+            port: 8888,
+            _thread_handle: None,
+        };
+        let rewritten = server.rewrite_url("file:///");
+        assert_eq!(rewritten, "http://127.0.0.1:8888/");
+    }
+
+    #[test]
+    fn guess_mime_webp() {
+        assert_eq!(
+            guess_mime(Path::new("image.webp")),
+            "application/octet-stream"
+        );
+    }
+
+    #[test]
+    fn guess_mime_avif() {
+        assert_eq!(
+            guess_mime(Path::new("image.avif")),
+            "application/octet-stream"
+        );
+    }
+
+    #[test]
+    fn guess_mime_png() {
+        assert_eq!(guess_mime(Path::new("photo.png")), "image/png");
+    }
+
+    #[test]
+    fn guess_mime_txt() {
+        assert_eq!(
+            guess_mime(Path::new("readme.txt")),
+            "application/octet-stream"
+        );
+    }
+
+    #[test]
+    fn guess_mime_json() {
+        assert_eq!(
+            guess_mime(Path::new("data.json")),
+            "application/octet-stream"
+        );
+    }
+
+    #[test]
+    fn guess_mime_xml() {
+        assert_eq!(
+            guess_mime(Path::new("data.xml")),
+            "application/octet-stream"
+        );
+    }
+
+    #[test]
+    fn guess_mime_mp4() {
+        assert_eq!(
+            guess_mime(Path::new("video.mp4")),
+            "application/octet-stream"
+        );
+    }
+
+    #[test]
+    fn guess_mime_webm() {
+        assert_eq!(
+            guess_mime(Path::new("video.webm")),
+            "application/octet-stream"
+        );
+    }
+
+    #[test]
+    fn guess_mime_woff() {
+        assert_eq!(
+            guess_mime(Path::new("font.woff")),
+            "application/octet-stream"
+        );
+    }
+
+    #[test]
+    fn guess_mime_woff2() {
+        assert_eq!(
+            guess_mime(Path::new("font.woff2")),
+            "application/octet-stream"
+        );
+    }
+
+    #[test]
+    fn guess_mime_ttf() {
+        assert_eq!(
+            guess_mime(Path::new("font.ttf")),
+            "application/octet-stream"
+        );
+    }
+
+    #[test]
+    fn guess_mime_otf() {
+        assert_eq!(
+            guess_mime(Path::new("font.otf")),
+            "application/octet-stream"
+        );
+    }
+
+    #[test]
+    fn guess_mime_wasm() {
+        assert_eq!(
+            guess_mime(Path::new("module.wasm")),
+            "application/octet-stream"
+        );
     }
 }

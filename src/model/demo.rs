@@ -408,4 +408,359 @@ action = "terminate"
         assert_eq!(t.salt_ms, 15);
         assert!(t.seed.is_none());
     }
+
+    #[test]
+    fn pane_not_found_returns_none() {
+        let score: Score = toml::from_str(SPEC_EXAMPLE).unwrap();
+        assert!(score.pane("nonexistent").is_none());
+    }
+
+    #[test]
+    fn source_not_found_returns_none() {
+        let score: Score = toml::from_str(SPEC_EXAMPLE).unwrap();
+        assert!(score.source("nonexistent").is_none());
+        assert!(score.source("").is_none());
+    }
+
+    #[test]
+    fn source_finds_matching_source() {
+        // SPEC_EXAMPLE has no sources, so test with a custom score
+        let toml_str = r#"
+[demo]
+name = "test"
+output_dir = "./dist"
+
+[[sources]]
+id = "docs"
+type = "browser"
+url = "https://example.com"
+
+[layout]
+width = 800
+height = 600
+"#;
+        let score: Score = toml::from_str(toml_str).unwrap();
+        assert!(score.source("docs").is_some());
+        assert_eq!(
+            score.source("docs").unwrap().url.as_deref(),
+            Some("https://example.com")
+        );
+    }
+
+    #[test]
+    fn default_output_dir_is_dist() {
+        let score: Score = toml::from_str(SPEC_EXAMPLE).unwrap();
+        assert_eq!(score.demo.output_dir, std::path::PathBuf::from("./dist"));
+    }
+
+    #[test]
+    fn typing_with_seed() {
+        let toml_str = r#"
+[demo]
+name = "test"
+output_dir = "./dist"
+
+[typing]
+base_ms = 50
+salt_ms = 10
+seed = 42
+
+[layout]
+width = 800
+height = 600
+"#;
+        let score: Score = toml::from_str(toml_str).unwrap();
+        let t = score.typing.unwrap();
+        assert_eq!(t.base_ms, 50);
+        assert_eq!(t.salt_ms, 10);
+        assert_eq!(t.seed, Some(42));
+    }
+
+    #[test]
+    fn score_save_and_load_round_trip() {
+        let score: Score = toml::from_str(SPEC_EXAMPLE).unwrap();
+        let dir = std::env::temp_dir().join(format!("demo-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("test.toml");
+        score.save(&path).unwrap();
+        let loaded = Score::load(&path).unwrap();
+        assert_eq!(score, loaded);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn score_load_error_on_missing_file() {
+        let dir = std::env::temp_dir().join(format!("demo-missing-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("nope.toml");
+        let err = Score::load(&path).unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("nope.toml"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn layout_defaults() {
+        let toml_str = r#"
+[demo]
+name = "test"
+[layout]
+width = 800
+height = 600
+"#;
+        let score: Score = toml::from_str(toml_str).unwrap();
+        assert_eq!(score.layout.fps, 15);
+        assert!(score.layout.background.is_none());
+    }
+
+    #[test]
+    fn pane_defaults() {
+        let toml_str = r#"
+[demo]
+name = "test"
+[layout]
+width = 800
+height = 600
+  [[layout.panes]]
+  id = "c"
+  type = "terminal"
+  x = 0
+  y = 0
+  width = 400
+  height = 300
+"#;
+        let score: Score = toml::from_str(toml_str).unwrap();
+        let pane = &score.layout.panes[0];
+        assert!(pane.font_family.is_none());
+        assert!(pane.font_size.is_none());
+        assert!(pane.url.is_none());
+        assert!(pane.reveal_at.is_none());
+        assert!(pane.hide_at.is_none());
+    }
+
+    #[test]
+    fn step_focus_without_pane() {
+        let toml_str = r#"
+[demo]
+name = "test"
+[layout]
+width = 800
+height = 600
+  [[layout.panes]]
+  id = "c"
+  type = "terminal"
+  x = 0
+  y = 0
+  width = 800
+  height = 600
+[[timeline]]
+action = "focus"
+[[timeline]]
+action = "terminate"
+"#;
+        let score: Score = toml::from_str(toml_str).unwrap();
+        assert!(matches!(&score.timeline[0], Step::Focus { pane: None }));
+    }
+
+    #[test]
+    fn step_wait_with_duration() {
+        let toml_str = r#"
+[demo]
+name = "test"
+[layout]
+width = 800
+height = 600
+  [[layout.panes]]
+  id = "c"
+  type = "terminal"
+  x = 0
+  y = 0
+  width = 800
+  height = 600
+[[timeline]]
+action = "wait"
+duration_ms = 1000
+[[timeline]]
+action = "terminate"
+"#;
+        let score: Score = toml::from_str(toml_str).unwrap();
+        assert!(matches!(
+            &score.timeline[0],
+            Step::Wait { duration_ms: 1000 }
+        ));
+    }
+
+    #[test]
+    fn step_wait_for_stdout_with_match() {
+        let toml_str = r#"
+[demo]
+name = "test"
+[layout]
+width = 800
+height = 600
+  [[layout.panes]]
+  id = "c"
+  type = "terminal"
+  x = 0
+  y = 0
+  width = 800
+  height = 600
+[[timeline]]
+action = "focus"
+pane = "c"
+[[timeline]]
+action = "wait_for_stdout"
+match = "ready"
+pane = "c"
+[[timeline]]
+action = "terminate"
+"#;
+        let score: Score = toml::from_str(toml_str).unwrap();
+        assert!(matches!(&score.timeline[1], Step::WaitForStdout { .. }));
+    }
+
+    #[test]
+    fn step_secret() {
+        let toml_str = r#"
+[demo]
+name = "test"
+[layout]
+width = 800
+height = 600
+  [[layout.panes]]
+  id = "c"
+  type = "terminal"
+  x = 0
+  y = 0
+  width = 800
+  height = 600
+[[timeline]]
+action = "focus"
+pane = "c"
+[[timeline]]
+action = "secret"
+prompt = "Password:"
+[[timeline]]
+action = "terminate"
+"#;
+        let score: Score = toml::from_str(toml_str).unwrap();
+        assert!(matches!(
+            &score.timeline[1],
+            Step::Secret { prompt } if prompt == "Password:"
+        ));
+    }
+
+    #[test]
+    fn env_requires() {
+        let toml_str = r#"
+[demo]
+name = "test"
+[env]
+requires = ["TOKEN", "API_KEY"]
+[layout]
+width = 800
+height = 600
+  [[layout.panes]]
+  id = "c"
+  type = "terminal"
+  x = 0
+  y = 0
+  width = 800
+  height = 600
+"#;
+        let score: Score = toml::from_str(toml_str).unwrap();
+        let env = score.env.unwrap();
+        assert_eq!(env.requires, vec!["TOKEN", "API_KEY"]);
+        assert!(!env.isolated);
+    }
+
+    #[test]
+    fn env_isolated_with_scripts() {
+        let toml_str = r#"
+[demo]
+name = "test"
+[env]
+isolated = true
+setup_script = "setup.sh"
+teardown_script = "teardown.sh"
+[layout]
+width = 800
+height = 600
+  [[layout.panes]]
+  id = "c"
+  type = "terminal"
+  x = 0
+  y = 0
+  width = 800
+  height = 600
+"#;
+        let score: Score = toml::from_str(toml_str).unwrap();
+        let env = score.env.unwrap();
+        assert!(env.isolated);
+        assert_eq!(env.setup_script.as_deref(), Some("setup.sh"));
+        assert_eq!(env.teardown_script.as_deref(), Some("teardown.sh"));
+    }
+
+    #[test]
+    fn custom_prompt() {
+        let toml_str = r#"
+[demo]
+name = "test"
+prompt = "$ "
+[layout]
+width = 800
+height = 600
+  [[layout.panes]]
+  id = "c"
+  type = "terminal"
+  x = 0
+  y = 0
+  width = 800
+  height = 600
+"#;
+        let score: Score = toml::from_str(toml_str).unwrap();
+        assert_eq!(score.demo.prompt.as_deref(), Some("$ "));
+    }
+
+    #[test]
+    fn pane_full_config() {
+        let toml_str = r#"
+[demo]
+name = "test"
+[layout]
+width = 1920
+height = 1080
+  [[layout.panes]]
+  id = "term"
+  type = "terminal"
+  x = 10
+  y = 20
+  width = 960
+  height = 540
+  font_family = "FiraCode"
+  font_size = 14
+  [[layout.panes]]
+  id = "web"
+  type = "browser"
+  x = 970
+  y = 20
+  width = 960
+  height = 540
+  url = "https://example.com"
+  theme = "dark"
+  reveal_at = 1.0
+  hide_at = 5.0
+"#;
+        let score: Score = toml::from_str(toml_str).unwrap();
+        let term = score.pane("term").unwrap();
+        assert_eq!(term.font_family.as_deref(), Some("FiraCode"));
+        assert_eq!(term.font_size, Some(14));
+        let web = score.pane("web").unwrap();
+        assert_eq!(web.url.as_deref(), Some("https://example.com"));
+        assert_eq!(web.theme.as_deref(), Some("dark"));
+        assert_eq!(web.reveal_at, Some(1.0));
+        assert_eq!(web.hide_at, Some(5.0));
+    }
 }

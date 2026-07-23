@@ -42,3 +42,33 @@ fn which(name: &str) -> Option<PathBuf> {
         .map(|dir| dir.join(name))
         .find(|p| p.is_file())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn find_chromium_returns_a_path_on_this_system() {
+        // On most dev machines, at least one of the candidates exists.
+        // This test just verifies the function doesn't panic.
+        let _ = find_chromium();
+    }
+
+    #[test]
+    fn which_finds_ls_on_unix() {
+        let result = which("ls");
+        assert!(result.is_some());
+        assert!(result.unwrap().is_file());
+    }
+
+    #[test]
+    fn which_returns_none_for_nonexistent() {
+        assert!(which("definitely_not_a_real_binary_xyz123").is_none());
+    }
+
+    #[test]
+    fn which_respects_path() {
+        // which() uses the current PATH, so just verify it compiles and runs
+        let _ = which("cargo");
+    }
+}

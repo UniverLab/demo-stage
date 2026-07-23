@@ -931,4 +931,157 @@ data = "file.txt\n"
             })
         ));
     }
+
+    #[test]
+    fn reveal_hold_ms_explicit() {
+        assert_eq!(reveal_hold_ms(Some(3000), false), 3000.0);
+        assert_eq!(reveal_hold_ms(Some(0), false), 0.0);
+    }
+
+    #[test]
+    fn reveal_hold_ms_scroll_default() {
+        assert_eq!(reveal_hold_ms(None, true), DEFAULT_SCROLL_HOLD_MS);
+    }
+
+    #[test]
+    fn reveal_hold_ms_no_scroll_default() {
+        assert_eq!(reveal_hold_ms(None, false), DEFAULT_REVEAL_HOLD_MS);
+    }
+
+    #[test]
+    fn pane_rects_zero_count() {
+        let rects = pane_rects(1000, 500, 0, Orientation::Horizontal);
+        assert_eq!(rects.len(), 1);
+        assert_eq!(rects[0].0, MIN_PAD);
+        assert_eq!(rects[0].1, MIN_PAD);
+    }
+
+    #[test]
+    fn pane_rects_one_count() {
+        let rects = pane_rects(1000, 500, 1, Orientation::Vertical);
+        assert_eq!(rects.len(), 1);
+    }
+
+    #[test]
+    fn pane_rects_two_horizontal() {
+        let rects = pane_rects(1000, 500, 2, Orientation::Horizontal);
+        assert_eq!(rects.len(), 2);
+        // Left pane starts at MIN_PAD
+        assert_eq!(rects[0].0, MIN_PAD);
+        // Right pane starts after left
+        assert!(rects[1].0 > rects[0].0);
+        // Both have same height
+        assert_eq!(rects[0].3, rects[1].3);
+    }
+
+    #[test]
+    fn pane_rects_two_vertical() {
+        let rects = pane_rects(1000, 500, 2, Orientation::Vertical);
+        assert_eq!(rects.len(), 2);
+        // Top pane
+        assert_eq!(rects[0].1, MIN_PAD);
+        // Bottom pane starts after top
+        assert!(rects[1].1 > rects[0].1);
+        // Both have same width
+        assert_eq!(rects[0].2, rects[1].2);
+    }
+
+    #[test]
+    fn stop_cutoff_ms_finds_demo_stop() {
+        let r = raw(vec![
+            RawEvent::Output {
+                t_ms: 100,
+                data: "hello".into(),
+            },
+            RawEvent::Input {
+                t_ms: 2000,
+                bytes: "demo stop\r".into(),
+            },
+            RawEvent::Output {
+                t_ms: 2010,
+                data: "stopping".into(),
+            },
+        ]);
+        let cutoff = stop_cutoff_ms(&r);
+        assert!(cutoff.is_some());
+        assert_eq!(cutoff.unwrap(), 2000);
+    }
+
+    #[test]
+    fn stop_cutoff_ms_no_stop() {
+        let r = raw(vec![RawEvent::Output {
+            t_ms: 100,
+            data: "hello".into(),
+        }]);
+        assert!(stop_cutoff_ms(&r).is_none());
+    }
+
+    #[test]
+    fn default_score_single_terminal() {
+        let score = default_score("test", 80, 24);
+        assert_eq!(score.demo.name, "test");
+        assert_eq!(score.layout.panes.len(), 1);
+        assert_eq!(score.layout.panes[0].kind, PaneKind::Terminal);
+    }
+
+    #[test]
+    fn default_score_canvas_dimensions() {
+        let score = default_score("test", 80, 24);
+        assert_eq!(score.layout.width, 80 * CELL_W);
+        assert_eq!(score.layout.height, 24 * CELL_H);
+    }
+
+    #[test]
+    fn default_score_fps() {
+        let score = default_score("test", 80, 24);
+        assert_eq!(score.layout.fps, 15);
+    }
+
+    #[test]
+    fn stop_cutoff_ms_stop_with_newline() {
+        let r = raw(vec![RawEvent::Input {
+            t_ms: 500,
+            bytes: "demo stop\n".into(),
+        }]);
+        let cutoff = stop_cutoff_ms(&r);
+        assert_eq!(cutoff, Some(500));
+    }
+
+    #[test]
+    fn stop_cutoff_ms_stop_among_other_commands() {
+        let r = raw(vec![
+            RawEvent::Input {
+                t_ms: 100,
+                bytes: "ls\n".into(),
+            },
+            RawEvent::Input {
+                t_ms: 500,
+                bytes: "demo stop\r".into(),
+            },
+        ]);
+        let cutoff = stop_cutoff_ms(&r);
+        assert_eq!(cutoff, Some(500));
+    }
+
+    #[test]
+    fn pane_rects_large_canvas() {
+        let rects = pane_rects(1920, 1080, 2, Orientation::Horizontal);
+        assert_eq!(rects.len(), 2);
+        // Inner width = 1920 - 2*32 = 1856, half = 928
+        let inner_w = 1920 - 2 * MIN_PAD;
+        assert_eq!(rects[0].2, inner_w / 2);
+        assert_eq!(rects[1].2, inner_w - inner_w / 2);
+    }
+
+    #[test]
+    fn reveal_hold_ms_large_explicit() {
+        assert_eq!(reveal_hold_ms(Some(60000), false), 60000.0);
+    }
+
+    #[test]
+    fn default_score_different_sizes() {
+        let score = default_score("small", 40, 12);
+        assert_eq!(score.layout.width, 40 * CELL_W);
+        assert_eq!(score.layout.height, 12 * CELL_H);
+    }
 }

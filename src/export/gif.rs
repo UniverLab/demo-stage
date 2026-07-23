@@ -206,4 +206,63 @@ mod tests {
         let mut c = DelayClock::new(15);
         assert_eq!(c.delay(30), 200);
     }
+
+    #[test]
+    fn diff_rect_identical_frames() {
+        let w = 4;
+        let frame = vec![128u8; w * 3 * 4];
+        assert_eq!(diff_rect(&frame, &frame, w), None);
+    }
+
+    #[test]
+    fn diff_rect_single_pixel_change() {
+        let w = 2;
+        let prev = vec![0u8; w * 2 * 4];
+        let mut cur = prev.clone();
+        cur[0] = 255; // (0,0)
+        assert_eq!(diff_rect(&prev, &cur, w), Some((0, 0, 1, 1)));
+    }
+
+    #[test]
+    fn diff_rect_full_width_change() {
+        let w = 3;
+        let prev = vec![0u8; w * 1 * 4];
+        let mut cur = prev.clone();
+        // Change all pixels in row 0
+        for i in 0..w {
+            cur[i * 4] = 255;
+        }
+        assert_eq!(diff_rect(&prev, &cur, w), Some((0, 0, 3, 1)));
+    }
+
+    #[test]
+    fn crop_rgba_full_canvas() {
+        let w = 2;
+        let rgba: Vec<u8> = (0..w * 2 * 4).map(|i| i as u8).collect();
+        let out = crop_rgba(&rgba, w, 0, 0, w, 2);
+        assert_eq!(out, rgba);
+    }
+
+    #[test]
+    fn crop_rgba_single_pixel() {
+        let w = 3;
+        let rgba: Vec<u8> = (0..w * 2 * 4).map(|i| i as u8).collect();
+        let out = crop_rgba(&rgba, w, 1, 1, 2, 2);
+        // Row 1, pixel 1 → bytes 16..20
+        assert_eq!(out, vec![16, 17, 18, 19]);
+    }
+
+    #[test]
+    fn delay_clock_single_frame() {
+        let mut c = DelayClock::new(10);
+        assert_eq!(c.delay(1), 10);
+    }
+
+    #[test]
+    fn delay_clock_zero_fps_uses_one() {
+        // fps=0 should be treated as fps=1
+        let mut c = DelayClock::new(0);
+        let d = c.delay(1);
+        assert!(d > 0);
+    }
 }

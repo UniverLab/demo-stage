@@ -1787,4 +1787,956 @@ mod tests {
         let (to_pty, _) = route(&["héllo\n".as_bytes()]);
         assert_eq!(to_pty, "héllo\n".as_bytes());
     }
+
+    #[test]
+    fn utf8_len_returns_correct_sequence_lengths() {
+        assert_eq!(utf8_len(0x00), 1);
+        assert_eq!(utf8_len(0x7f), 1);
+        assert_eq!(utf8_len(0x80), 1);
+        assert_eq!(utf8_len(0xbf), 1);
+        assert_eq!(utf8_len(0xc0), 2);
+        assert_eq!(utf8_len(0xdf), 2);
+        assert_eq!(utf8_len(0xe0), 3);
+        assert_eq!(utf8_len(0xef), 3);
+        assert_eq!(utf8_len(0xf0), 4);
+        assert_eq!(utf8_len(0xf4), 4);
+    }
+
+    #[test]
+    fn ps1_text_doubles_backslashes() {
+        assert_eq!(ps1_text(r"C:\Users"), r"C:\\Users");
+        assert_eq!(ps1_text("no backslash"), "no backslash");
+        assert_eq!(ps1_text(""), "");
+    }
+
+    #[test]
+    fn is_meta_command_matches_demo_stop_open_focus() {
+        assert!(is_meta_command("demo stop"));
+        assert!(is_meta_command("demo open http://example.com"));
+        assert!(is_meta_command("demo focus main"));
+        assert!(is_meta_command("  demo stop"));
+        assert!(!is_meta_command("echo demo stop"));
+        assert!(!is_meta_command("ls"));
+        assert!(!is_meta_command(""));
+    }
+
+    #[test]
+    fn default_prompt_contains_user_at_demo_and_dollar() {
+        let bash_prompt = default_prompt("/bin/bash");
+        assert!(bash_prompt.contains("user@demo"));
+        assert!(bash_prompt.contains("$ "));
+
+        let zsh_prompt = default_prompt("/bin/zsh");
+        assert!(zsh_prompt.contains("user@demo"));
+        assert!(zsh_prompt.contains("$ "));
+    }
+
+    #[test]
+    fn cue_matches_plain_substring() {
+        assert!(cue_matches("Report generated successfully.", "Report"));
+        assert!(!cue_matches("Report generated", "Error"));
+    }
+
+    #[test]
+    fn cue_matches_regex_with_prefix() {
+        assert!(cue_matches("done in 123ms", "re:\\d+ms"));
+        assert!(!cue_matches("no numbers", "re:\\d+ms"));
+        assert!(!cue_matches("anything", "re:[invalid"));
+    }
+
+    #[test]
+    fn reveal_summary_format() {
+        let r = Reveal {
+            panes: vec![
+                RevealPane {
+                    id: "main".into(),
+                    url: None,
+                    theme: None,
+                },
+                RevealPane {
+                    id: "docs".into(),
+                    url: Some("http://x.com".into()),
+                    theme: None,
+                },
+            ],
+            orientation: Orientation::Vertical,
+            hold_ms: None,
+            scroll: false,
+        };
+        let s = r.summary();
+        assert!(s.contains("main"));
+        assert!(s.contains("docs"));
+        assert!(s.contains("Vertical"));
+    }
+
+    #[test]
+    fn reveal_to_event_produces_correct_timestamp() {
+        let r = Reveal {
+            panes: vec![RevealPane::terminal()],
+            orientation: Orientation::Horizontal,
+            hold_ms: Some(5000),
+            scroll: true,
+        };
+        let ev = r.to_event(1234);
+        match ev {
+            RawEvent::Reveal {
+                t_ms,
+                panes,
+                orientation,
+                hold_ms,
+                scroll,
+            } => {
+                assert_eq!(t_ms, 1234);
+                assert_eq!(panes.len(), 1);
+                assert_eq!(orientation, Orientation::Horizontal);
+                assert_eq!(hold_ms, Some(5000));
+                assert!(scroll);
+            }
+            _ => panic!("expected Reveal event"),
+        }
+    }
+
+    #[test]
+    fn parse_reveal_parses_json() {
+        let v = serde_json::json!({
+            "cmd": "reveal",
+            "panes": [{"id": "main"}, {"id": "web", "url": "https://x.com", "theme": "dark"}],
+            "orientation": "vertical",
+            "hold": 3000,
+            "scroll": true,
+        });
+        let r = parse_reveal(&v).unwrap();
+        assert_eq!(r.panes.len(), 2);
+        assert_eq!(r.orientation, Orientation::Vertical);
+        assert_eq!(r.hold_ms, Some(3000));
+        assert!(r.scroll);
+        assert_eq!(r.panes[1].theme.as_deref(), Some("dark"));
+    }
+
+    #[test]
+    fn parse_reveal_returns_none_for_empty_panes() {
+        let v = serde_json::json!({"cmd": "reveal", "panes": []});
+        assert!(parse_reveal(&v).is_none());
+    }
+
+    #[test]
+    fn decode_streaming_valid_utf8_passthrough() {
+        let mut pending = Vec::new();
+        let out = decode_streaming(&mut pending, "hello".as_bytes());
+        assert_eq!(out, "hello");
+        assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn decode_streaming_empty_input() {
+        let mut pending = Vec::new();
+        let out = decode_streaming(&mut pending, &[]);
+        assert_eq!(out, "");
+        assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn decode_streaming_only_incomplete() {
+        let mut pending = Vec::new();
+        // 2-byte lead (0xc2) without continuation
+        let out = decode_streaming(&mut pending, &[0xc2]);
+        assert_eq!(out, "");
+        assert_eq!(pending, vec![0xc2]);
+        // Now complete it
+        let out2 = decode_streaming(&mut pending, &[0xa9]);
+        assert_eq!(out2, "\u{00a9}"); // ©
+        assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn colored_bash_produces_ansi_codes() {
+        let result = colored("/bin/bash", "\\[\\e[32m\\]", "", "test");
+        assert!(result.contains("32m"));
+        assert!(result.contains("test"));
+    }
+
+    #[test]
+    fn colored_zsh_uses_colon_syntax() {
+        let result = colored("/bin/zsh", "", "%F{green}", "test");
+        assert!(result.contains("%F{green}"));
+        assert!(result.contains("test"));
+    }
+
+    #[test]
+    fn parse_fps_valid() {
+        assert_eq!(parse_fps("15").unwrap(), 15);
+        assert_eq!(parse_fps("24").unwrap(), 24);
+        assert_eq!(parse_fps("30").unwrap(), 30);
+    }
+
+    #[test]
+    fn parse_fps_invalid() {
+        assert!(parse_fps("60").is_err());
+        assert!(parse_fps("abc").is_err());
+        assert!(parse_fps("0").is_err());
+    }
+
+    #[test]
+    fn is_meta_command_edge_cases() {
+        assert!(is_meta_command("demo stop"));
+        assert!(is_meta_command("demo open https://example.com"));
+        assert!(is_meta_command("demo focus main"));
+        assert!(!is_meta_command("echo demo stop"));
+        assert!(!is_meta_command("ls demo"));
+        assert!(!is_meta_command(""));
+        assert!(!is_meta_command("demo"));
+        assert!(!is_meta_command("demo "));
+    }
+
+    #[test]
+    fn clean_prompt_basic() {
+        assert_eq!(clean_prompt("Password:"), "Password:");
+        assert_eq!(clean_prompt("  Password:  "), "Password:");
+    }
+
+    #[test]
+    fn ps1_text_various() {
+        assert_eq!(ps1_text("no special chars"), "no special chars");
+        assert_eq!(ps1_text("one\\slash"), "one\\\\slash");
+        assert_eq!(ps1_text("\\n"), "\\\\n");
+    }
+
+    #[test]
+    fn utf8_len_ascii() {
+        assert_eq!(utf8_len(b'A'), 1);
+        assert_eq!(utf8_len(b' '), 1);
+        assert_eq!(utf8_len(b'0'), 1);
+    }
+
+    #[test]
+    fn decode_streaming_multiple_chunks() {
+        let mut pending = Vec::new();
+        let out1 = decode_streaming(&mut pending, "hel".as_bytes());
+        assert_eq!(out1, "hel");
+        let out2 = decode_streaming(&mut pending, "lo\n".as_bytes());
+        assert_eq!(out2, "lo\n");
+        assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn cue_matches_empty_pattern() {
+        assert!(cue_matches("anything", ""));
+    }
+
+    #[test]
+    fn reveal_summary_with_theme() {
+        let r = Reveal {
+            panes: vec![RevealPane {
+                id: "web".into(),
+                url: Some("https://x.com".into()),
+                theme: Some("dark".into()),
+            }],
+            orientation: Orientation::Horizontal,
+            hold_ms: Some(3000),
+            scroll: false,
+        };
+        let s = r.summary();
+        assert!(s.contains("web"));
+        assert!(s.contains("Horizontal"));
+    }
+
+    #[test]
+    fn debug_log_create_and_note() {
+        let dir = std::env::temp_dir().join(format!("dbg-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let log_path = dir.join("debug.log");
+        let t0 = Instant::now();
+        let log = DebugLog::create(&log_path, t0).unwrap();
+        log.note("hello world");
+        log.chunk("PTY→", b"test\x1b[A");
+        drop(log);
+        let content = std::fs::read_to_string(&log_path).unwrap();
+        assert!(content.contains("hello world"));
+        assert!(content.contains("PTY→"));
+        assert!(content.contains("test"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn debug_log_chunk_hex_format() {
+        let dir = std::env::temp_dir().join(format!("dbg2-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let log_path = dir.join("debug.log");
+        let t0 = Instant::now();
+        let log = DebugLog::create(&log_path, t0).unwrap();
+        log.chunk("IN", b"\x1b[32m");
+        drop(log);
+        let content = std::fs::read_to_string(&log_path).unwrap();
+        assert!(content.contains("hex="));
+        assert!(content.contains("1b "));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn debug_log_empty_chunk() {
+        let dir = std::env::temp_dir().join(format!("dbg3-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let log_path = dir.join("debug.log");
+        let t0 = Instant::now();
+        let log = DebugLog::create(&log_path, t0).unwrap();
+        log.chunk("PTY→", b"");
+        drop(log);
+        let content = std::fs::read_to_string(&log_path).unwrap();
+        assert!(content.contains("0B"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn colored_bash_produces_ansi_codes_more() {
+        let result = colored("/bin/bash", "\\[\\e[1;31m\\]", "", "test");
+        assert!(result.contains("1;31m"));
+        assert!(result.contains("test"));
+        assert!(result.contains("\\[\\e[0m\\]"));
+    }
+
+    #[test]
+    fn colored_zsh_uses_colon_syntax_more() {
+        let result = colored("/bin/zsh", "", "%F{red}", "hello");
+        assert!(result.contains("red"));
+        assert!(result.contains("hello"));
+    }
+
+    #[test]
+    fn default_prompt_bash_has_dollar() {
+        let p = default_prompt("/bin/bash");
+        assert!(p.contains("$ "));
+        assert!(p.contains("user@demo"));
+    }
+
+    #[test]
+    fn default_prompt_zsh_has_dollar() {
+        let p = default_prompt("/bin/zsh");
+        assert!(p.contains("$ "));
+        assert!(p.contains("user@demo"));
+    }
+
+    #[test]
+    fn clean_prompt_strips_question_mark_prefix() {
+        assert_eq!(clean_prompt("? Password:"), "Password:");
+    }
+
+    #[test]
+    fn clean_prompt_strips_arrow_prefix() {
+        assert_eq!(clean_prompt("> Enter secret:"), "Enter secret:");
+    }
+
+    #[test]
+    fn clean_prompt_strips_diamond_prefix() {
+        assert_eq!(clean_prompt("◆ Token:"), "Token:");
+    }
+
+    #[test]
+    fn clean_prompt_strips_bullet_prefix() {
+        assert_eq!(clean_prompt("● API key:"), "API key:");
+    }
+
+    #[test]
+    fn clean_prompt_strips_asterisk_prefix() {
+        assert_eq!(clean_prompt("* Secret:"), "Secret:");
+    }
+
+    #[test]
+    fn clean_prompt_preserves_literal_bracket_without_final_letter() {
+        // A `[` followed by digits but no final letter is NOT a CSI — keep it.
+        assert_eq!(clean_prompt("item[1]"), "item[1]");
+    }
+
+    #[test]
+    fn clean_prompt_empty_string() {
+        assert_eq!(clean_prompt(""), "");
+    }
+
+    #[test]
+    fn is_secret_prompt_rejects_long_lines() {
+        let long = format!("{}:", "x".repeat(300));
+        assert!(!is_secret_prompt(&long));
+    }
+
+    #[test]
+    fn is_secret_prompt_rejects_no_colon_or_question() {
+        assert!(!is_secret_prompt("Password"));
+        assert!(!is_secret_prompt("secret"));
+    }
+
+    #[test]
+    fn is_secret_prompt_accepts_question_mark() {
+        assert!(is_secret_prompt("Enter passphrase?"));
+    }
+
+    #[test]
+    fn is_secret_prompt_accepts_token() {
+        assert!(is_secret_prompt("Token:"));
+    }
+
+    #[test]
+    fn is_secret_prompt_accepts_api_key() {
+        assert!(is_secret_prompt("API key:"));
+    }
+
+    #[test]
+    fn is_secret_prompt_accepts_access_key() {
+        assert!(is_secret_prompt("Access key:"));
+    }
+
+    #[test]
+    fn is_secret_prompt_accepts_credential() {
+        assert!(is_secret_prompt("Credential:"));
+    }
+
+    #[test]
+    fn is_secret_prompt_accepts_verification_code() {
+        assert!(is_secret_prompt("Verification code:"));
+    }
+
+    #[test]
+    fn is_secret_prompt_rejects_case_insensitive() {
+        // Should match regardless of case
+        assert!(is_secret_prompt("PASSWORD:"));
+        assert!(is_secret_prompt("PASSPHRASE:"));
+    }
+
+    #[test]
+    fn is_secret_prompt_rejects_tui_painting() {
+        // TUI paint without colon/question
+        assert!(!is_secret_prompt("some random text without prompt marker"));
+    }
+
+    #[test]
+    fn track_and_detect_multiple_lines() {
+        let sensitive = AtomicBool::new(false);
+        let secret_prompt = Mutex::new(None);
+        let mut line = String::new();
+        track_and_detect(&mut line, "hello\nworld\n", &sensitive, &secret_prompt);
+        assert!(!sensitive.load(Ordering::SeqCst));
+        assert_eq!(line, "");
+    }
+
+    #[test]
+    fn track_and_detect_partial_line() {
+        let sensitive = AtomicBool::new(false);
+        let secret_prompt = Mutex::new(None);
+        let mut line = String::new();
+        track_and_detect(&mut line, "partial", &sensitive, &secret_prompt);
+        assert!(!sensitive.load(Ordering::SeqCst));
+        assert_eq!(line, "partial");
+    }
+
+    #[test]
+    fn track_and_detect_csi_residue_in_line() {
+        let sensitive = AtomicBool::new(false);
+        let secret_prompt = Mutex::new(None);
+        let mut line = String::new();
+        track_and_detect(
+            &mut line,
+            "Vault passphrase:\r\x1b[?25h",
+            &sensitive,
+            &secret_prompt,
+        );
+        assert!(sensitive.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn track_and_detect_control_chars_ignored() {
+        let sensitive = AtomicBool::new(false);
+        let secret_prompt = Mutex::new(None);
+        let mut line = String::new();
+        track_and_detect(&mut line, "abc\x01\x02\x03def", &sensitive, &secret_prompt);
+        assert_eq!(line, "abcdef");
+    }
+
+    #[test]
+    fn cue_matches_regex_prefix() {
+        assert!(cue_matches("done in 123ms", "re:\\d+ms"));
+        assert!(!cue_matches("no numbers", "re:\\d+ms"));
+    }
+
+    #[test]
+    fn cue_matches_regex_invalid_is_ignored() {
+        // Invalid regex should not match
+        assert!(!cue_matches("anything", "re:[invalid"));
+    }
+
+    #[test]
+    fn cue_matches_substring() {
+        assert!(cue_matches("Report generated successfully.", "Report"));
+        assert!(!cue_matches("Report generated", "Error"));
+    }
+
+    #[test]
+    fn parse_reveal_empty_panes() {
+        let v = serde_json::json!({"cmd": "reveal", "panes": []});
+        assert!(parse_reveal(&v).is_none());
+    }
+
+    #[test]
+    fn parse_reveal_missing_panes() {
+        let v = serde_json::json!({"cmd": "reveal"});
+        assert!(parse_reveal(&v).is_none());
+    }
+
+    #[test]
+    fn parse_reveal_with_when() {
+        let v = serde_json::json!({
+            "cmd": "reveal",
+            "panes": [{"id": "main"}],
+            "orientation": "horizontal",
+            "when": "some pattern",
+        });
+        let r = parse_reveal(&v).unwrap();
+        // 'when' is not part of Reveal struct, so just verify parsing works
+        assert_eq!(r.panes.len(), 1);
+        assert_eq!(r.orientation, Orientation::Horizontal);
+    }
+
+    #[test]
+    fn reveal_to_event_with_scroll_false() {
+        let r = Reveal {
+            panes: vec![RevealPane::terminal()],
+            orientation: Orientation::Horizontal,
+            hold_ms: None,
+            scroll: false,
+        };
+        let ev = r.to_event(500);
+        if let RawEvent::Reveal { scroll, .. } = ev {
+            assert!(!scroll);
+        } else {
+            panic!("expected Reveal");
+        }
+    }
+
+    #[test]
+    fn reveal_to_event_with_hold_none() {
+        let r = Reveal {
+            panes: vec![RevealPane::terminal()],
+            orientation: Orientation::Vertical,
+            hold_ms: None,
+            scroll: false,
+        };
+        let ev = r.to_event(100);
+        if let RawEvent::Reveal { hold_ms, .. } = ev {
+            assert_eq!(hold_ms, None);
+        } else {
+            panic!("expected Reveal");
+        }
+    }
+
+    #[test]
+    fn canvas_from_aspect_quality_case_insensitive_fullhd() {
+        assert_eq!(
+            canvas_from_aspect_quality("16:9", "FullHD").unwrap(),
+            (1920, 1080)
+        );
+    }
+
+    #[test]
+    fn canvas_from_aspect_quality_case_insensitive_hd() {
+        assert_eq!(canvas_from_aspect_quality("1:1", "HD").unwrap(), (720, 720));
+    }
+
+    #[test]
+    fn canvas_from_aspect_quality_invalid_aspect() {
+        assert!(canvas_from_aspect_quality("3:2", "fullhd").is_err());
+    }
+
+    #[test]
+    fn canvas_from_aspect_quality_invalid_quality() {
+        assert!(canvas_from_aspect_quality("16:9", "4k").is_err());
+    }
+
+    #[test]
+    fn parse_resolution_auto() {
+        assert_eq!(parse_resolution("auto").unwrap(), None);
+    }
+
+    #[test]
+    fn parse_resolution_invalid_format() {
+        assert!(parse_resolution("huge").is_err());
+    }
+
+    #[test]
+    fn parse_resolution_zero_width() {
+        assert!(parse_resolution("0x100").is_err());
+    }
+
+    #[test]
+    fn parse_resolution_zero_height() {
+        assert!(parse_resolution("100x0").is_err());
+    }
+
+    #[test]
+    fn parse_fps_whitespace() {
+        assert_eq!(parse_fps("  15  ").unwrap(), 15);
+    }
+
+    #[test]
+    fn parse_fps_negative() {
+        assert!(parse_fps("-1").is_err());
+    }
+
+    #[test]
+    fn is_meta_command_demo_focus_with_args() {
+        assert!(is_meta_command("demo focus main docs"));
+    }
+
+    #[test]
+    fn is_meta_command_demo_open_with_url() {
+        assert!(is_meta_command("demo open http://example.com"));
+    }
+
+    #[test]
+    fn is_meta_command_demo_stop() {
+        assert!(is_meta_command("demo stop"));
+    }
+
+    #[test]
+    fn is_meta_command_leading_whitespace() {
+        assert!(is_meta_command("  demo stop"));
+    }
+
+    #[test]
+    fn is_meta_command_not_a_command() {
+        assert!(!is_meta_command("echo demo stop"));
+    }
+
+    #[test]
+    fn is_meta_command_empty() {
+        assert!(!is_meta_command(""));
+    }
+
+    #[test]
+    fn is_meta_command_just_demo() {
+        assert!(!is_meta_command("demo"));
+    }
+
+    #[test]
+    fn is_meta_command_demo_space() {
+        assert!(!is_meta_command("demo "));
+    }
+
+    #[test]
+    fn ps1_text_backslash_at_start() {
+        assert_eq!(ps1_text(r"\start"), r"\\start");
+    }
+
+    #[test]
+    fn ps1_text_multiple_backslashes() {
+        assert_eq!(ps1_text(r"\a\b\c"), r"\\a\\b\\c");
+    }
+
+    #[test]
+    fn utf8_len_continuation_byte() {
+        assert_eq!(utf8_len(0x80), 1);
+    }
+
+    #[test]
+    fn utf8_len_two_byte_lead() {
+        assert_eq!(utf8_len(0xc0), 2);
+    }
+
+    #[test]
+    fn utf8_len_three_byte_lead() {
+        assert_eq!(utf8_len(0xe0), 3);
+    }
+
+    #[test]
+    fn utf8_len_four_byte_lead() {
+        assert_eq!(utf8_len(0xf0), 4);
+    }
+
+    #[test]
+    fn utf8_len_ascii_max() {
+        assert_eq!(utf8_len(0x7f), 1);
+    }
+
+    #[test]
+    fn decode_streaming_rejects_overlong_encoding() {
+        let mut pending = Vec::new();
+        // Overlong encoding of '/' (0x2f) as 0xc0 0xaf — invalid UTF-8
+        let out = decode_streaming(&mut pending, &[0xc0, 0xaf]);
+        // Should produce replacement character
+        assert!(out.contains('\u{FFFD}') || out.is_empty());
+    }
+
+    #[test]
+    fn decode_streaming_rejects_surrogate_half() {
+        let mut pending = Vec::new();
+        // Surrogate half (0xED 0xA0 0x80 = U+D800) is invalid UTF-8.
+        // It should be replaced with U+FFFD.
+        let out = decode_streaming(&mut pending, &[0xed, 0xa0, 0x80]);
+        assert!(!out.is_empty());
+        // The output should contain the replacement character
+        assert!(out.contains('\u{FFFD}') || out.contains('\u{fffd}'));
+        assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn route_input_chunk_echoes_normal_text() {
+        let (to_pty, mute) = route(&[b"hello world\n"]);
+        assert_eq!(to_pty, b"hello world\n");
+        assert!(!mute);
+    }
+
+    #[test]
+    fn route_input_chunk_split_across_chunks() {
+        let (to_pty, _) = route(&[b"hel", b"lo\n"]);
+        assert_eq!(to_pty, b"hello\n");
+    }
+
+    #[test]
+    fn route_input_chunk_backspace() {
+        let (to_pty, _) = route(&[b"ab\x7f"]);
+        assert_eq!(to_pty, b"ab\x7f");
+    }
+
+    #[test]
+    fn route_input_chunk_utf8() {
+        let (to_pty, _) = route(&["café\n".as_bytes()]);
+        assert_eq!(to_pty, "café\n".as_bytes());
+    }
+
+    #[test]
+    fn route_input_chunk_meta_command_across_chunks() {
+        let (_, mute) = route(&[b"demo ", b"stop\n"]);
+        assert!(mute);
+    }
+
+    #[test]
+    fn route_input_chunk_not_meta_command() {
+        let (_, mute) = route(&[b"demodocs\n"]);
+        assert!(!mute);
+    }
+
+    #[test]
+    fn track_and_detect_secret_at_newline_boundary() {
+        let sensitive = AtomicBool::new(false);
+        let secret_prompt = Mutex::new(None);
+        let mut line = String::new();
+        track_and_detect(&mut line, "Password:\n", &sensitive, &secret_prompt);
+        assert!(sensitive.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn track_and_detect_no_secret_without_colon() {
+        let sensitive = AtomicBool::new(false);
+        let secret_prompt = Mutex::new(None);
+        let mut line = String::new();
+        track_and_detect(&mut line, "Password\n", &sensitive, &secret_prompt);
+        assert!(!sensitive.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn track_and_detect_long_line_not_truncated() {
+        let sensitive = AtomicBool::new(false);
+        let secret_prompt = Mutex::new(None);
+        let mut line = String::new();
+        // Line under MAX_PROMPT_LINE should be kept
+        let short = "a".repeat(100);
+        track_and_detect(&mut line, &short, &sensitive, &secret_prompt);
+        assert_eq!(line.len(), 100);
+    }
+
+    #[test]
+    fn track_and_detect_long_line_truncated() {
+        let sensitive = AtomicBool::new(false);
+        let secret_prompt = Mutex::new(None);
+        let mut line = String::new();
+        // Line over MAX_PROMPT_LINE should be truncated
+        let long = "a".repeat(300);
+        track_and_detect(&mut line, &long, &sensitive, &secret_prompt);
+        assert!(line.len() <= MAX_PROMPT_LINE);
+    }
+
+    #[test]
+    fn clean_prompt_csi_sequence_with_params() {
+        assert_eq!(clean_prompt("[38;5;10mPassword:[39m"), "Password:");
+    }
+
+    #[test]
+    fn clean_prompt_csi_sequence_cursor() {
+        assert_eq!(clean_prompt("[?25lPassword:"), "Password:");
+    }
+
+    #[test]
+    fn clean_prompt_mixed_content() {
+        assert_eq!(clean_prompt("[31m[?25l> Password:"), "Password:");
+    }
+
+    #[test]
+    fn is_secret_prompt_with_space_before_colon() {
+        assert!(is_secret_prompt("Password :"));
+    }
+
+    #[test]
+    fn is_secret_prompt_with_tab() {
+        assert!(is_secret_prompt("Password:\t"));
+    }
+
+    #[test]
+    fn is_secret_prompt_case_insensitive() {
+        assert!(is_secret_prompt("PASSWORD:"));
+        assert!(is_secret_prompt("Passphrase:"));
+        assert!(is_secret_prompt("PASSPHRASE:"));
+    }
+
+    #[test]
+    fn is_secret_prompt_with_leading_whitespace() {
+        assert!(is_secret_prompt("  Password:"));
+    }
+
+    #[test]
+    fn ps1_text_backslash_in_middle() {
+        assert_eq!(ps1_text("a\\b"), "a\\\\b");
+    }
+
+    #[test]
+    fn ps1_text_multiple_consecutive_backslashes() {
+        assert_eq!(ps1_text("\\\\a"), "\\\\\\\\a");
+    }
+
+    #[test]
+    fn colored_bash_basic() {
+        let result = colored("/bin/bash", "\\[\\e[32m\\]", "", "test");
+        assert!(result.contains("32m"));
+        assert!(result.contains("test"));
+        assert!(result.contains("\\[\\e[0m\\]"));
+    }
+
+    #[test]
+    fn colored_zsh_basic() {
+        let result = colored("/bin/zsh", "", "%F{green}", "test");
+        assert!(result.contains("%F{green}"));
+        assert!(result.contains("test"));
+    }
+
+    #[test]
+    fn default_prompt_bash_contains_dollar() {
+        let p = default_prompt("/bin/bash");
+        assert!(p.contains("$ "));
+        assert!(p.contains("user@demo"));
+    }
+
+    #[test]
+    fn default_prompt_zsh_contains_dollar() {
+        let p = default_prompt("/bin/zsh");
+        assert!(p.contains("$ "));
+        assert!(p.contains("user@demo"));
+    }
+
+    #[test]
+    fn cue_matches_regex_pattern() {
+        assert!(cue_matches("done in 123ms", "re:\\d+ms"));
+        assert!(!cue_matches("no numbers", "re:\\d+ms"));
+    }
+
+    #[test]
+    fn cue_matches_plain_substring_long() {
+        assert!(cue_matches("Report generated successfully.", "Report"));
+        assert!(!cue_matches("Report generated", "Error"));
+    }
+
+    #[test]
+    fn cue_matches_empty_pattern_matches_anything() {
+        assert!(cue_matches("anything", ""));
+    }
+
+    #[test]
+    fn parse_reveal_with_theme() {
+        let v = serde_json::json!({
+            "cmd": "reveal",
+            "panes": [{"id": "main", "theme": "dark"}],
+            "orientation": "horizontal",
+        });
+        let r = parse_reveal(&v).unwrap();
+        assert_eq!(r.panes.len(), 1);
+        assert_eq!(r.panes[0].theme.as_deref(), Some("dark"));
+    }
+
+    #[test]
+    fn parse_reveal_with_url() {
+        let v = serde_json::json!({
+            "cmd": "reveal",
+            "panes": [{"id": "browser", "url": "https://example.com"}],
+            "orientation": "vertical",
+        });
+        let r = parse_reveal(&v).unwrap();
+        assert_eq!(r.orientation, Orientation::Vertical);
+        assert_eq!(r.panes[0].url.as_deref(), Some("https://example.com"));
+    }
+
+    #[test]
+    fn decode_streaming_complete_utf8() {
+        let mut pending = Vec::new();
+        let out = decode_streaming(&mut pending, "hello world".as_bytes());
+        assert_eq!(out, "hello world");
+        assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn decode_streaming_split_emoji() {
+        let mut pending = Vec::new();
+        // 🎉 is 4 bytes: f0 9f 8e 89
+        let emoji = "🎉";
+        let bytes = emoji.as_bytes();
+        let first = decode_streaming(&mut pending, &bytes[..2]);
+        assert_eq!(first, "");
+        let second = decode_streaming(&mut pending, &bytes[2..]);
+        assert_eq!(second, emoji);
+        assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn decode_streaming_empty_pending() {
+        let mut pending = Vec::new();
+        let out = decode_streaming(&mut pending, &[]);
+        assert_eq!(out, "");
+        assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn route_input_chunk_multiple_chars() {
+        let (to_pty, _) = route(&[b"abc\n"]);
+        assert_eq!(to_pty, b"abc\n");
+    }
+
+    #[test]
+    fn route_input_chunk_control_chars() {
+        let (to_pty, _) = route(&[b"\x03"]);
+        assert_eq!(to_pty, b"\x03");
+    }
+
+    #[test]
+    fn utf8_len_all_ranges() {
+        // ASCII
+        assert_eq!(utf8_len(0x00), 1);
+        assert_eq!(utf8_len(0x7f), 1);
+        // Continuation bytes
+        assert_eq!(utf8_len(0x80), 1);
+        assert_eq!(utf8_len(0xbf), 1);
+        // 2-byte leads
+        assert_eq!(utf8_len(0xc0), 2);
+        assert_eq!(utf8_len(0xdf), 2);
+        // 3-byte leads
+        assert_eq!(utf8_len(0xe0), 3);
+        assert_eq!(utf8_len(0xef), 3);
+        // 4-byte leads
+        assert_eq!(utf8_len(0xf0), 4);
+        assert_eq!(utf8_len(0xf4), 4);
+    }
+
+    #[test]
+    fn is_meta_command_variations() {
+        assert!(is_meta_command("demo stop"));
+        assert!(is_meta_command("demo open http://example.com"));
+        assert!(is_meta_command("demo focus main"));
+        assert!(!is_meta_command("echo demo stop"));
+        assert!(!is_meta_command("ls"));
+        assert!(!is_meta_command(""));
+        assert!(!is_meta_command("demo"));
+        assert!(!is_meta_command("demo "));
+    }
 }

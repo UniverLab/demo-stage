@@ -550,4 +550,109 @@ mod tests {
         assert!(!looks_like_local_path("style.css"));
         assert!(!looks_like_local_path("script.js"));
     }
+
+    #[test]
+    fn looks_like_unix_root_path_detects_common_paths() {
+        assert!(looks_like_unix_root_path("home/user/file.pdf"));
+        assert!(looks_like_unix_root_path("tmp/test.html"));
+        assert!(looks_like_unix_root_path("var/log/app.pdf"));
+        assert!(looks_like_unix_root_path("usr/bin/app"));
+        assert!(looks_like_unix_root_path("opt/app/file.pdf"));
+        assert!(looks_like_unix_root_path("mnt/c/file.pdf"));
+    }
+
+    #[test]
+    fn looks_like_unix_root_path_rejects_others() {
+        assert!(!looks_like_unix_root_path("etc/passwd"));
+        assert!(!looks_like_unix_root_path("foo/bar"));
+        assert!(!looks_like_unix_root_path(""));
+    }
+
+    #[test]
+    fn file_url_absolute_supported_extension() {
+        let dir = std::env::temp_dir().join(format!("demo-paths-abs-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("test.pdf");
+        fs::write(&file, b"%PDF-1").unwrap();
+
+        let url = file_url_absolute(&file).unwrap();
+        assert!(url.starts_with("file://"));
+        assert!(url.ends_with("/test.pdf"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn file_url_absolute_unsupported_extension_errors() {
+        let dir = std::env::temp_dir().join(format!("demo-paths-abs-unsup-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("readme.md");
+        fs::write(&file, b"# test").unwrap();
+
+        let err = file_url_absolute(&file).unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("unsupported file type"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn file_url_absolute_nonexistent_file_errors() {
+        let err = file_url_absolute(Path::new("/nonexistent/file.pdf")).unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("file not found"));
+    }
+
+    #[test]
+    fn normalize_windows_file_url_normalizes_wsl_paths() {
+        let url = "file:///Z:/home/user/file.pdf";
+        let result = normalize_windows_file_url(url);
+        // On Unix, this should normalize to file:///home/user/file.pdf
+        assert!(result.starts_with("file://"));
+        assert!(result.contains("/home/user/file.pdf"));
+    }
+
+    #[test]
+    fn normalize_windows_file_url_preserves_valid_unix_paths() {
+        let url = "file:///home/user/file.pdf";
+        assert_eq!(normalize_windows_file_url(url), url);
+    }
+
+    #[test]
+    fn normalize_url_empty_string() {
+        // Empty string should be treated as a bare domain (gets https://)
+        let result = normalize_url("");
+        assert_eq!(result, "https://");
+    }
+
+    #[test]
+    fn normalize_url_with_port() {
+        assert_eq!(normalize_url("localhost:3000"), "http://localhost:3000");
+    }
+
+    #[test]
+    fn repair_browser_url_with_windows_path() {
+        let dir = std::env::temp_dir().join(format!("demo-paths-win-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("file.pdf");
+        fs::write(&file, b"%PDF-1").unwrap();
+        // Windows-style path that normalize_windows_file_url should handle
+        let url = format!("file://{}", file.display());
+        let result = repair_browser_url(&url, &dir).unwrap();
+        assert!(result.starts_with("file://"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn resolve_browser_url_non_file_passthrough() {
+        let result = resolve_browser_url("https://example.com").unwrap();
+        assert_eq!(result, "https://example.com");
+    }
+
+    #[test]
+    fn resolve_browser_url_absolute_file_passthrough() {
+        let result = resolve_browser_url("file:///tmp/test.html").unwrap();
+        assert_eq!(result, "file:///tmp/test.html");
+    }
 }

@@ -149,4 +149,88 @@ height = 1080
         assert_eq!(pane.reveal_at, None);
         assert_eq!(pane.hide_at, Some(0.0));
     }
+
+    #[test]
+    fn focus_switches_between_two_browsers() {
+        let mut score = toml::from_str(
+            r#"
+[demo]
+name = "t"
+[layout]
+width = 1440
+height = 1080
+  [[layout.panes]]
+  id = "main"
+  type = "terminal"
+  x = 0
+  y = 0
+  width = 1440
+  height = 1080
+  [[layout.panes]]
+  id = "browser-a"
+  type = "browser"
+  x = 0
+  y = 0
+  width = 720
+  height = 1080
+  url = "https://a.com"
+  [[layout.panes]]
+  id = "browser-b"
+  type = "browser"
+  x = 720
+  y = 0
+  width = 720
+  height = 1080
+  url = "https://b.com"
+"#,
+        )
+        .unwrap();
+        let focuses = vec![
+            (1.0, "browser-a".to_string()),
+            (5.0, "browser-b".to_string()),
+        ];
+        anchor_browser_windows(&mut score, &focuses);
+        assert_eq!(score.layout.panes[1].reveal_at, Some(1.0));
+        assert_eq!(score.layout.panes[1].hide_at, Some(5.0));
+        assert_eq!(score.layout.panes[2].reveal_at, Some(5.0));
+        assert_eq!(score.layout.panes[2].hide_at, None);
+    }
+
+    #[test]
+    fn empty_focuses_hides_all_browsers() {
+        let mut score = score_with_browser();
+        anchor_browser_windows(&mut score, &[]);
+        let pane = &score.layout.panes[1];
+        assert_eq!(pane.reveal_at, None);
+        assert_eq!(pane.hide_at, Some(0.0));
+    }
+
+    #[test]
+    fn focus_returns_to_same_browser_extends_window() {
+        let mut score = score_with_browser();
+        // Focus browser, then terminal, then back to browser.
+        // `anchor_browser_windows` uses `position` (first match),
+        // so reveal_at = first focus time (1.0), hide_at = next different focus (5.0).
+        let focuses = vec![
+            (1.0, "github-r1".to_string()),
+            (5.0, "main".to_string()),
+            (10.0, "github-r1".to_string()),
+        ];
+        anchor_browser_windows(&mut score, &focuses);
+        let pane = &score.layout.panes[1];
+        // position() finds index 0 for github-r1, so reveal_at=1.0, hide_at=5.0
+        assert_eq!(pane.reveal_at, Some(1.0));
+        assert_eq!(pane.hide_at, Some(5.0));
+    }
+
+    #[test]
+    fn terminal_panes_are_ignored() {
+        let mut score = score_with_browser();
+        let focuses = vec![(1.0, "main".to_string())];
+        anchor_browser_windows(&mut score, &focuses);
+        // The terminal pane should not be touched
+        let terminal = &score.layout.panes[0];
+        assert_eq!(terminal.reveal_at, None);
+        assert_eq!(terminal.hide_at, None);
+    }
 }

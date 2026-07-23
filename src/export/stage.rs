@@ -342,4 +342,166 @@ duration_ms = 2100
         let bare = browser_pane(None, None);
         assert_eq!(pane_window(&bare, &[]), (0.0, None));
     }
+
+    #[test]
+    fn needs_stage_false_for_single_fullscreen_terminal() {
+        let s = score(
+            r#"
+[demo]
+name = "t"
+[layout]
+width = 100
+height = 100
+  [[layout.panes]]
+  id = "c"
+  type = "terminal"
+  x = 0
+  y = 0
+  width = 100
+  height = 100
+"#,
+        );
+        assert!(!needs_stage(&s));
+    }
+
+    #[test]
+    fn needs_stage_true_for_browser_pane() {
+        let s = score(
+            r#"
+[demo]
+name = "t"
+[layout]
+width = 200
+height = 100
+  [[layout.panes]]
+  id = "c"
+  type = "terminal"
+  x = 0
+  y = 0
+  width = 200
+  height = 100
+  [[layout.panes]]
+  id = "b"
+  type = "browser"
+  x = 0
+  y = 0
+  width = 200
+  height = 100
+  url = "https://x.com"
+"#,
+        );
+        assert!(needs_stage(&s));
+    }
+
+    #[test]
+    fn needs_stage_true_for_offset_terminal() {
+        let s = score(
+            r#"
+[demo]
+name = "t"
+[layout]
+width = 200
+height = 100
+  [[layout.panes]]
+  id = "c"
+  type = "terminal"
+  x = 50
+  y = 0
+  width = 100
+  height = 100
+"#,
+        );
+        assert!(needs_stage(&s));
+    }
+
+    #[test]
+    fn needs_stage_true_for_multiple_terminals() {
+        let s = score(
+            r#"
+[demo]
+name = "t"
+[layout]
+width = 200
+height = 100
+  [[layout.panes]]
+  id = "c1"
+  type = "terminal"
+  x = 0
+  y = 0
+  width = 100
+  height = 100
+  [[layout.panes]]
+  id = "c2"
+  type = "terminal"
+  x = 100
+  y = 0
+  width = 100
+  height = 100
+"#,
+        );
+        assert!(needs_stage(&s));
+    }
+
+    #[test]
+    fn scroll_keyframes_for_zero_when_no_scroll() {
+        let s = score(
+            r#"
+[demo]
+name = "t"
+[layout]
+width = 100
+height = 100
+  [[layout.panes]]
+  id = "c"
+  type = "terminal"
+  x = 0
+  y = 0
+  width = 100
+  height = 100
+"#,
+        );
+        assert_eq!(scroll_keyframes_for(&s, "c"), 0);
+    }
+
+    #[test]
+    fn scroll_keyframes_for_capped_at_16() {
+        let toml_str = r#"
+[demo]
+name = "t"
+[layout]
+width = 100
+height = 100
+  [[layout.panes]]
+  id = "c"
+  type = "terminal"
+  x = 0
+  y = 0
+  width = 100
+  height = 100
+"#;
+        let mut s: Score = toml::from_str(toml_str).unwrap();
+        // Add many scroll steps
+        for _ in 0..20 {
+            s.timeline.push(crate::model::Step::Scroll {
+                direction: crate::model::ScrollDirection::Down,
+                velocity: crate::model::Velocity::Constant,
+                duration_ms: 7000,
+                pane: Some("c".into()),
+            });
+        }
+        assert_eq!(scroll_keyframes_for(&s, "c"), 16);
+    }
+
+    #[test]
+    fn pane_window_no_focuses_uses_score_values() {
+        let pane = browser_pane(Some(5.0), Some(10.0));
+        assert_eq!(pane_window(&pane, &[]), (5.0, Some(10.0)));
+    }
+
+    #[test]
+    fn pane_window_focus_hides_at_next_different_focus() {
+        let pane = browser_pane(None, None);
+        let focuses = vec![(1.0, "b".to_string()), (3.0, "main".to_string())];
+        assert_eq!(pane_window(&pane, &focuses), (1.0, Some(3.0)));
+    }
 }

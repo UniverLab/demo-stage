@@ -119,6 +119,66 @@ fn ffmpeg_tail(stderr: &str) -> String {
     format!("\nffmpeg: {tail}")
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ffmpeg_tail_empty_string() {
+        assert_eq!(ffmpeg_tail(""), "");
+    }
+
+    #[test]
+    fn ffmpeg_tail_only_whitespace() {
+        assert_eq!(ffmpeg_tail("  \n  \n  "), "");
+    }
+
+    #[test]
+    fn ffmpeg_tail_single_line() {
+        let result = ffmpeg_tail("error: something failed");
+        assert_eq!(result, "\nffmpeg: error: something failed");
+    }
+
+    #[test]
+    fn ffmpeg_tail_few_lines() {
+        let input = "line1\nline2\nline3";
+        let result = ffmpeg_tail(input);
+        assert!(result.contains("line1"));
+        assert!(result.contains("line2"));
+        assert!(result.contains("line3"));
+        assert!(result.starts_with("\nffmpeg:"));
+    }
+
+    #[test]
+    fn ffmpeg_tail_trims_trailing_whitespace() {
+        let input = "line1   \nline2  \n";
+        let result = ffmpeg_tail(input);
+        assert!(result.contains("line1"));
+        assert!(result.contains("line2"));
+        assert!(!result.contains("   "));
+    }
+
+    #[test]
+    fn ffmpeg_tail_keeps_last_four_lines() {
+        let input = "a\nb\nc\nd\ne\nf";
+        let result = ffmpeg_tail(input);
+        assert!(!result.contains("\na\n"));
+        assert!(!result.contains("\nb\n"));
+        assert!(!result.contains("\nc\n"));
+        assert!(result.contains("d"));
+        assert!(result.contains("e"));
+        assert!(result.contains("f"));
+    }
+
+    #[test]
+    fn ffmpeg_tail_skips_empty_lines() {
+        let input = "line1\n\n\nline2\n";
+        let result = ffmpeg_tail(input);
+        assert!(result.contains("line1"));
+        assert!(result.contains("line2"));
+    }
+}
+
 /// Single-terminal fast path: encode an MP4 straight from a recording.
 pub fn write_mp4(rec: &Recording, score: &Score, path: &Path) -> Result<()> {
     let plan = raster::plan(rec, score);

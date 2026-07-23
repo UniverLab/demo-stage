@@ -165,3 +165,218 @@ fn rescale_layout(score: &mut Score, new_w: u32, new_h: u32) {
         pane.height = (pane.height as f64 * scale_y).round() as u32;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_score(w: u32, h: u32) -> Score {
+        Score {
+            demo: crate::model::DemoMeta {
+                name: "test".into(),
+                output_dir: "./dist".into(),
+                prompt: None,
+            },
+            env: None,
+            typing: None,
+            sources: vec![],
+            layout: crate::model::Layout {
+                width: w,
+                height: h,
+                fps: 15,
+                line_height: 1.2,
+                background: None,
+                font_family: None,
+                font_size: None,
+                panes: vec![
+                    crate::model::Pane {
+                        id: "main".into(),
+                        kind: crate::model::PaneKind::Terminal,
+                        x: 0,
+                        y: 0,
+                        width: w / 2,
+                        height: h,
+                        font_family: None,
+                        font_size: None,
+                        url: None,
+                        theme: None,
+                        reveal_at: None,
+                        hide_at: None,
+                    },
+                    crate::model::Pane {
+                        id: "browser".into(),
+                        kind: crate::model::PaneKind::Browser,
+                        x: w / 2,
+                        y: 0,
+                        width: w / 2,
+                        height: h,
+                        font_family: None,
+                        font_size: None,
+                        url: Some("http://example.com".into()),
+                        theme: None,
+                        reveal_at: None,
+                        hide_at: None,
+                    },
+                ],
+            },
+            timeline: vec![],
+        }
+    }
+
+    #[test]
+    fn parse_resolution_override_presets() {
+        assert_eq!(
+            parse_resolution_override("landscape").unwrap(),
+            (1920, 1080)
+        );
+        assert_eq!(parse_resolution_override("portrait").unwrap(), (1080, 1920));
+        assert_eq!(parse_resolution_override("square").unwrap(), (1080, 1080));
+        assert_eq!(parse_resolution_override("standard").unwrap(), (1280, 720));
+        assert_eq!(parse_resolution_override("fullhd").unwrap(), (1920, 1080));
+    }
+
+    #[test]
+    fn parse_resolution_override_wxh() {
+        assert_eq!(parse_resolution_override("800x600").unwrap(), (800, 600));
+        assert_eq!(parse_resolution_override("1024×768").unwrap(), (1024, 768));
+        assert_eq!(
+            parse_resolution_override(" 800 x 600 ").unwrap(),
+            (800, 600)
+        );
+    }
+
+    #[test]
+    fn parse_resolution_override_rejects_invalid() {
+        assert!(parse_resolution_override("huge").is_err());
+        assert!(parse_resolution_override("0x100").is_err());
+        assert!(parse_resolution_override("abcxdef").is_err());
+    }
+
+    #[test]
+    fn canvas_from_aspect_quality_all_ratios() {
+        assert_eq!(
+            canvas_from_aspect_quality("16:9", "fullhd").unwrap(),
+            (1920, 1080)
+        );
+        assert_eq!(
+            canvas_from_aspect_quality("9:16", "fullhd").unwrap(),
+            (1080, 1920)
+        );
+        assert_eq!(
+            canvas_from_aspect_quality("4:3", "fullhd").unwrap(),
+            (1440, 1080)
+        );
+        assert_eq!(
+            canvas_from_aspect_quality("1:1", "fullhd").unwrap(),
+            (1080, 1080)
+        );
+        assert_eq!(
+            canvas_from_aspect_quality("16:9", "hd").unwrap(),
+            (1280, 720)
+        );
+    }
+
+    #[test]
+    fn canvas_from_aspect_quality_case_insensitive() {
+        assert_eq!(
+            canvas_from_aspect_quality("16:9", "FullHD").unwrap(),
+            (1920, 1080)
+        );
+        assert_eq!(canvas_from_aspect_quality("1:1", "HD").unwrap(), (720, 720));
+    }
+
+    #[test]
+    fn canvas_from_aspect_quality_errors() {
+        assert!(canvas_from_aspect_quality("3:2", "fullhd").is_err());
+        assert!(canvas_from_aspect_quality("16:9", "4k").is_err());
+    }
+
+    #[test]
+    fn rescale_layout_doubles_dimensions() {
+        let mut score = test_score(100, 100);
+        rescale_layout(&mut score, 200, 200);
+        assert_eq!(score.layout.width, 200);
+        assert_eq!(score.layout.height, 200);
+        assert_eq!(score.layout.panes[0].x, 0);
+        assert_eq!(score.layout.panes[0].width, 100);
+        assert_eq!(score.layout.panes[1].x, 100);
+        assert_eq!(score.layout.panes[1].width, 100);
+    }
+
+    #[test]
+    fn rescale_layout_noop_when_same() {
+        let mut score = test_score(100, 100);
+        rescale_layout(&mut score, 100, 100);
+        assert_eq!(score.layout.panes[0].width, 50);
+    }
+
+    #[test]
+    fn rescale_layout_handles_non_square() {
+        let mut score = test_score(100, 100);
+        rescale_layout(&mut score, 200, 100);
+        assert_eq!(score.layout.width, 200);
+        assert_eq!(score.layout.height, 100);
+        assert_eq!(score.layout.panes[0].width, 100);
+        assert_eq!(score.layout.panes[0].height, 100);
+    }
+
+    #[test]
+    fn resolve_export_resolution_from_resolution() {
+        let args = ExportArgs {
+            input: "test.toml".into(),
+            targets: None,
+            resolution: Some("800x600".into()),
+            aspect: None,
+            quality: None,
+            speed: 1.0,
+            force: false,
+        };
+        let r = resolve_export_resolution(&args, 1920, 1080).unwrap();
+        assert_eq!(r, Some((800, 600)));
+    }
+
+    #[test]
+    fn resolve_export_resolution_from_aspect() {
+        let args = ExportArgs {
+            input: "test.toml".into(),
+            targets: None,
+            resolution: None,
+            aspect: Some("16:9".into()),
+            quality: Some("hd".into()),
+            speed: 1.0,
+            force: false,
+        };
+        let r = resolve_export_resolution(&args, 1920, 1080).unwrap();
+        assert_eq!(r, Some((1280, 720)));
+    }
+
+    #[test]
+    fn resolve_export_resolution_from_quality() {
+        let args = ExportArgs {
+            input: "test.toml".into(),
+            targets: None,
+            resolution: None,
+            aspect: None,
+            quality: Some("fullhd".into()),
+            speed: 1.0,
+            force: false,
+        };
+        let r = resolve_export_resolution(&args, 1920, 1080).unwrap();
+        assert_eq!(r, Some((1920, 1080)));
+    }
+
+    #[test]
+    fn resolve_export_resolution_nothing() {
+        let args = ExportArgs {
+            input: "test.toml".into(),
+            targets: None,
+            resolution: None,
+            aspect: None,
+            quality: None,
+            speed: 1.0,
+            force: false,
+        };
+        let r = resolve_export_resolution(&args, 1920, 1080).unwrap();
+        assert_eq!(r, None);
+    }
+}
