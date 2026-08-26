@@ -37,7 +37,12 @@ pub fn needs_stage(score: &Score) -> bool {
 /// Composite a multi-pane score from an already-captured terminal `rec`,
 /// emitting each composited canvas frame. Pure playback — the terminal pane comes
 /// from `rec` (never re-run); browser panes are captured here via Chromium.
-pub fn render_stage(rec: &Recording, score: &Score, mut on_frame: impl FnMut(&[u8])) -> Result<()> {
+/// Returns the fallback report.
+pub fn render_stage(
+    rec: &Recording,
+    score: &Score,
+    mut on_frame: impl FnMut(&[u8]),
+) -> Result<raster::FallbackReport> {
     let canvas_w = score.layout.width as usize;
     let canvas_h = score.layout.height as usize;
     let bg = score
@@ -69,6 +74,7 @@ pub fn render_stage(rec: &Recording, score: &Score, mut on_frame: impl FnMut(&[u
             20.0,
             font_name,
             crate::fonts::load_emoji(),
+            crate::fonts::load_last_resort(),
         )?)
     };
     let mut term_rec = rec.clone();
@@ -77,6 +83,7 @@ pub fn render_stage(rec: &Recording, score: &Score, mut on_frame: impl FnMut(&[u
     let (tw, th) = term_src.dims();
     let n = term_src.n_frames();
     let fps = score.layout.fps.max(1) as f64;
+    let mut fallback_report = term_src.take_fallback_report();
 
     // Browser panes captured up front (Chromium). Each reveals at the moment it
     // is first focused (recorded during the terminal run) — so it "opens" exactly
@@ -128,11 +135,17 @@ pub fn render_stage(rec: &Recording, score: &Score, mut on_frame: impl FnMut(&[u
         }
         let mut canvas = composite::composite(canvas_w, canvas_h, bg, &layers);
         if let Some(caption) = &mut caption {
-            caption.draw(&mut canvas, canvas_w, canvas_h, i as f64 / fps);
+            caption.draw(
+                &mut canvas,
+                canvas_w,
+                canvas_h,
+                i as f64 / fps,
+                &mut fallback_report,
+            );
         }
         on_frame(&canvas);
     }
-    Ok(())
+    Ok(fallback_report)
 }
 
 /// A browser pane's on-screen window `[reveal, hide)`. The recording's focus

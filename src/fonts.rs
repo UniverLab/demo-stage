@@ -82,6 +82,13 @@ pub fn load_emoji() -> Font {
         .expect("bundled emoji font failed to parse")
 }
 
+/// Load the last-resort fallback font (DejaVu Sans Mono).
+pub fn load_last_resort() -> Font {
+    const LAST_RESORT_BYTES: &[u8] = include_bytes!("../assets/DejaVuSansMono.ttf");
+    Font::from_bytes(LAST_RESORT_BYTES, FontSettings::default())
+        .expect("bundled DejaVu font failed to parse")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

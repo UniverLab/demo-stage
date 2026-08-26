@@ -97,54 +97,68 @@ pub fn render(rec: &Recording, score: &Score, target: Target) -> Result<PathBuf>
         Target::Gif => {
             let path = resolve_output(&score, "gif");
             ensure_parent(&path)?;
+            let mut report = raster::FallbackReport::new();
             if staged {
                 let mut n = 0usize;
                 gif::encode(&path, cw, ch, fps, |emit| {
-                    stage::render_stage(rec, &score, |f| {
+                    let r = stage::render_stage(rec, &score, |f| {
                         n += 1;
                         progress_bar("exporting gif", n, total_frames);
                         emit(f);
-                    })
+                    })?;
+                    report = r;
+                    Ok(())
                 })?;
                 progress_clear();
             } else {
                 let mut n = 0usize;
                 gif::encode(&path, cw, ch, fps, |emit| {
-                    raster::render_frames(rec, &score, |f| {
+                    let (_plan, r) = raster::render_frames(rec, &score, |f| {
                         n += 1;
                         progress_bar("exporting gif", n, total_frames);
                         emit(f);
-                    })
-                    .map(|_| ())
+                    })?;
+                    report = r;
+                    Ok(())
                 })?;
                 progress_clear();
+            }
+            for line in report.format(&score.demo.name) {
+                eprintln!("{line}");
             }
             Ok(path)
         }
         Target::Mp4 => {
             let path = resolve_output(&score, "mp4");
             ensure_parent(&path)?;
+            let mut report = raster::FallbackReport::new();
             if staged {
                 let mut n = 0usize;
                 mp4::encode(&path, cw, ch, fps, |emit| {
-                    stage::render_stage(rec, &score, |f| {
+                    let r = stage::render_stage(rec, &score, |f| {
                         n += 1;
                         progress_bar("exporting mp4", n, total_frames);
                         emit(f);
-                    })
+                    })?;
+                    report = r;
+                    Ok(())
                 })?;
                 progress_clear();
             } else {
                 let mut n = 0usize;
                 mp4::encode(&path, cw, ch, fps, |emit| {
-                    raster::render_frames(rec, &score, |f| {
+                    let (_plan, r) = raster::render_frames(rec, &score, |f| {
                         n += 1;
                         progress_bar("exporting mp4", n, total_frames);
                         emit(f);
-                    })
-                    .map(|_| ())
+                    })?;
+                    report = r;
+                    Ok(())
                 })?;
                 progress_clear();
+            }
+            for line in report.format(&score.demo.name) {
+                eprintln!("{line}");
             }
             Ok(path)
         }
