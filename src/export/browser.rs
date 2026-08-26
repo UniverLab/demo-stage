@@ -541,7 +541,7 @@ mod tests {
         let rgba = super::png_to_rgba(&png_bytes, 2, 2).unwrap();
         assert_eq!(rgba.len(), 2 * 2 * 4);
         // All alpha should be 255
-        for px in rgba.chunks_exact(4) {
+        for px in rgba.as_chunks::<4>().0 {
             assert_eq!(px[3], 255);
         }
     }

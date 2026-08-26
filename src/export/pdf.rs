@@ -55,7 +55,7 @@ pub fn capture_scene(
         // Pages render on an opaque white base, so premultiplied == straight;
         // force alpha anyway for the compositor.
         let mut rgba = pix.data_as_u8_slice().to_vec();
-        for px in rgba.chunks_exact_mut(4) {
+        for px in rgba.as_chunks_mut::<4>().0 {
             px[3] = 255;
         }
         pages.push((w, h, rgba));
@@ -71,7 +71,7 @@ pub fn capture_scene(
     let doc_w = pane_w;
     let doc_h = GAP + pages.iter().map(|(_, h, _)| h + GAP).sum::<usize>();
     let mut doc = vec![0u8; doc_w * doc_h * 4];
-    for px in doc.chunks_exact_mut(4) {
+    for px in doc.as_chunks_mut::<4>().0 {
         px.copy_from_slice(&BACKDROP);
     }
     let mut y = GAP;
@@ -89,7 +89,7 @@ pub fn capture_scene(
     // A viewport window of the document at vertical offset `off`.
     let slice_at = |off: usize| -> Vec<u8> {
         let mut out = vec![0u8; pane_w * pane_h * 4];
-        for px in out.chunks_exact_mut(4) {
+        for px in out.as_chunks_mut::<4>().0 {
             px.copy_from_slice(&BACKDROP);
         }
         let rows = pane_h.min(doc_h.saturating_sub(off));
