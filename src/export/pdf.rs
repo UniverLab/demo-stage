@@ -1,5 +1,5 @@
 //! Pure-Rust PDF pane capture: rasterize the pages with hayro, stack them on a
-//! viewer-style backdrop, and slice viewport windows at even scroll offsets.
+//! viewer-style backdrop, and slice viewport windows at per-frame offsets.
 //! No Chromium, no temp files, no HTTP server — a PDF pane renders in-process,
 //! so it starts instantly and scrolls through the whole document.
 
@@ -10,7 +10,6 @@ use hayro::hayro_syntax::Pdf;
 use hayro::vello_cpu::color::palette::css::WHITE;
 use hayro::{render, RenderCache, RenderSettings};
 
-use super::browser::Scene;
 use crate::error::{Error, Result};
 
 /// Backdrop behind/between pages (Chrome PDF viewer gray).
@@ -19,15 +18,125 @@ const BACKDROP: [u8; 4] = [0x52, 0x56, 0x59, 0xff];
 const GAP: usize = 12;
 /// Page width as a fraction of the pane width (fit-width with side margins).
 const PAGE_FRAC: f64 = 0.90;
+/// Lead-in at the top of the document before panning starts, in ms.
+const LEAD_IN_MS: f64 = 400.0;
+/// Maximum fraction of the pane's on-screen window the lead-in may occupy.
+const LEAD_IN_MAX_FRAC: f64 = 0.15;
 
-/// Capture a PDF as a browser-pane [`Scene`]: keyframe 0 shows the top of the
-/// document, and `scroll_keyframes` more pan evenly down to the last page.
+/// A PDF scene that computes viewport slices on demand, one per output frame.
+/// Holds the rasterized tall document image and produces a viewport window at
+/// the offset appropriate for the current progress, without precomputing every
+/// frame up front.
+pub struct PdfScene {
+    width: usize,
+    height: usize,
+    doc: Vec<u8>,
+    doc_w: usize,
+    doc_h: usize,
+    max_off: usize,
+    output_frames: usize,
+    lead_in: usize,
+    cached_frame: Vec<u8>,
+    cached_offset: Option<usize>,
+}
+
+impl PdfScene {
+    pub fn width(&self) -> usize {
+        self.width
+    }
+
+    pub fn height(&self) -> usize {
+        self.height
+    }
+
+    /// Return the viewport frame for the given timeline progress in `[0, 1]`.
+    pub fn frame_at(&mut self, progress: f64) -> &[u8] {
+        let idx = self.frame_index(progress);
+        let off = offset_for_frame(idx, self.lead_in, self.output_frames, self.max_off);
+        if self.cached_offset == Some(off) {
+            return &self.cached_frame;
+        }
+        self.cached_frame = self.slice_at(off);
+        self.cached_offset = Some(off);
+        &self.cached_frame
+    }
+
+    fn frame_index(&self, progress: f64) -> usize {
+        if self.output_frames <= 1 {
+            return 0;
+        }
+        let p = progress.clamp(0.0, 1.0);
+        (p * (self.output_frames - 1) as f64).round() as usize
+    }
+
+    fn slice_at(&self, off: usize) -> Vec<u8> {
+        let mut out = vec![0u8; self.width * self.height * 4];
+        for px in out.as_chunks_mut::<4>().0 {
+            px.copy_from_slice(&BACKDROP);
+        }
+        let rows = self.height.min(self.doc_h.saturating_sub(off));
+        for row in 0..rows {
+            let s = (off + row) * self.doc_w * 4;
+            let d = row * self.width * 4;
+            out[d..d + self.doc_w * 4].copy_from_slice(&self.doc[s..s + self.doc_w * 4]);
+        }
+        out
+    }
+}
+
+/// Compute the vertical offset for a given output frame index.
+///
+/// Frames `[0, lead_in)` sit at the top (offset 0). After the lead-in, the
+/// offset runs linearly from 0 to `max_off` across the remaining frames,
+/// inclusive at both ends.
+pub fn offset_for_frame(
+    frame_idx: usize,
+    lead_in: usize,
+    output_frames: usize,
+    max_off: usize,
+) -> usize {
+    if max_off == 0 || output_frames <= 1 {
+        return 0;
+    }
+    if frame_idx < lead_in {
+        return 0;
+    }
+    let pan_frames = output_frames.saturating_sub(lead_in);
+    if pan_frames <= 1 {
+        return 0;
+    }
+    let i = frame_idx - lead_in;
+    if i >= pan_frames - 1 {
+        return max_off;
+    }
+    ((max_off as f64) * (i as f64) / ((pan_frames - 1) as f64)).round() as usize
+}
+
+/// Compute the lead-in (in frames) before panning starts.
+///
+/// 400 ms worth of frames, clamped to at most 15% of the pane's on-screen
+/// window so a brief pane does not spend most of its life motionless.
+pub fn lead_in_frames(output_frames: usize, fps: f64) -> usize {
+    let lead_400 = (LEAD_IN_MS / 1000.0 * fps).round() as usize;
+    let max_lead = (LEAD_IN_MAX_FRAC * output_frames as f64).round() as usize;
+    lead_400.min(max_lead)
+}
+
+/// Capture a PDF as a [`PdfScene`]: the document is rasterized once into a
+/// tall image, and viewport slices are produced on demand — one distinct
+/// offset per output frame — rather than as a fixed set of keyframes.
+///
+/// `output_frames` is how many output frames the pane will be on screen.
+/// `should_scroll` is whether a scroll step is directed at this pane; when
+/// false, the scene is a single static frame at the top of the document.
 pub fn capture_scene(
     pdf_path: &Path,
     pane_w: usize,
     pane_h: usize,
-    scroll_keyframes: usize,
-) -> Result<Scene> {
+    output_frames: usize,
+    should_scroll: bool,
+    fps: f64,
+) -> Result<PdfScene> {
     let data = std::fs::read(pdf_path).map_err(|e| Error::io(pdf_path, e))?;
     let pdf = Pdf::new(data).map_err(|e| Error::Export(format!("read PDF: {e:?}")))?;
 
@@ -35,8 +144,7 @@ pub fn capture_scene(
     let cache = RenderCache::new();
     let settings = InterpreterSettings::default();
 
-    // Rasterize each page at fit-width scale.
-    let mut pages: Vec<(usize, usize, Vec<u8>)> = Vec::new(); // (w, h, rgba)
+    let mut pages: Vec<(usize, usize, Vec<u8>)> = Vec::new();
     for page in pdf.pages().iter() {
         let (pw, _) = page.render_dimensions();
         let scale = page_w as f32 / pw.max(1.0);
@@ -52,8 +160,6 @@ pub fn capture_scene(
             },
         );
         let (w, h) = (pix.width() as usize, pix.height() as usize);
-        // Pages render on an opaque white base, so premultiplied == straight;
-        // force alpha anyway for the compositor.
         let mut rgba = pix.data_as_u8_slice().to_vec();
         for px in rgba.as_chunks_mut::<4>().0 {
             px[3] = 255;
@@ -67,7 +173,6 @@ pub fn capture_scene(
         )));
     }
 
-    // Stack the pages, centered, into one tall document image.
     let doc_w = pane_w;
     let doc_h = GAP + pages.iter().map(|(_, h, _)| h + GAP).sum::<usize>();
     let mut doc = vec![0u8; doc_w * doc_h * 4];
@@ -86,30 +191,96 @@ pub fn capture_scene(
         y += h + GAP;
     }
 
-    // A viewport window of the document at vertical offset `off`.
-    let slice_at = |off: usize| -> Vec<u8> {
-        let mut out = vec![0u8; pane_w * pane_h * 4];
-        for px in out.as_chunks_mut::<4>().0 {
-            px.copy_from_slice(&BACKDROP);
-        }
-        let rows = pane_h.min(doc_h.saturating_sub(off));
-        for row in 0..rows {
-            let s = (off + row) * doc_w * 4;
-            let d = row * pane_w * 4;
-            out[d..d + doc_w * 4].copy_from_slice(&doc[s..s + doc_w * 4]);
-        }
-        out
+    let max_off = doc_h.saturating_sub(pane_h);
+    let effective_frames = if !should_scroll || max_off == 0 {
+        1
+    } else {
+        output_frames.max(1)
+    };
+    let lead = if effective_frames <= 1 {
+        0
+    } else {
+        lead_in_frames(effective_frames, fps)
     };
 
-    let max_off = doc_h.saturating_sub(pane_h);
-    let mut keyframes = vec![(0.0, slice_at(0))];
-    for i in 0..scroll_keyframes {
-        let frac = (i + 1) as f64 / scroll_keyframes as f64;
-        let off = (max_off as f64 * frac).round() as usize;
-        // Same progress mapping as browser scroll capture: hold the top for the
-        // first half of the pane's on-screen window, then pan.
-        keyframes.push((0.5 + 0.5 * frac, slice_at(off)));
+    Ok(PdfScene {
+        width: pane_w,
+        height: pane_h,
+        doc,
+        doc_w,
+        doc_h,
+        max_off,
+        output_frames: effective_frames,
+        lead_in: lead,
+        cached_frame: Vec::new(),
+        cached_offset: None,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn offset_first_frame_is_zero_last_is_max_off() {
+        let offsets: Vec<usize> = (0..20).map(|i| offset_for_frame(i, 3, 20, 500)).collect();
+        assert_eq!(offsets[0], 0);
+        assert_eq!(offsets[19], 500);
+        for i in 1..20 {
+            assert!(offsets[i] >= offsets[i - 1], "non-monotonic at {i}");
+        }
+        for i in 4..20 {
+            assert!(
+                offsets[i] > offsets[i - 1],
+                "strictly increasing after lead-in at {i}"
+            );
+        }
     }
 
-    Ok(Scene::from_keyframes(pane_w, pane_h, keyframes))
+    #[test]
+    fn lead_in_long_window_yields_400ms() {
+        let fps = 30.0;
+        let output_frames = 300;
+        let lead = lead_in_frames(output_frames, fps);
+        assert_eq!(lead, 12);
+    }
+
+    #[test]
+    fn lead_in_short_window_yields_15_percent() {
+        let fps = 30.0;
+        let output_frames = 10;
+        let lead = lead_in_frames(output_frames, fps);
+        assert_eq!(lead, 2);
+    }
+
+    #[test]
+    fn max_off_zero_yields_static() {
+        for i in 0..10 {
+            assert_eq!(offset_for_frame(i, 2, 10, 0), 0);
+        }
+    }
+
+    #[test]
+    fn no_half_hold() {
+        let offsets: Vec<usize> = (0..100)
+            .map(|i| offset_for_frame(i, lead_in_frames(100, 30.0), 100, 1000))
+            .collect();
+        let first_nonzero = offsets.iter().position(|&o| o > 0);
+        let lead = lead_in_frames(100, 30.0);
+        assert!(
+            first_nonzero.unwrap() <= lead + 1,
+            "panning should start shortly after lead-in ({lead} frames), \
+             but first nonzero offset is at frame {first_nonzero:?}"
+        );
+    }
+
+    #[test]
+    fn single_frame_no_panic() {
+        assert_eq!(offset_for_frame(0, 0, 1, 500), 0);
+    }
+
+    #[test]
+    fn lead_in_zero_frames() {
+        assert_eq!(lead_in_frames(0, 30.0), 0);
+    }
 }

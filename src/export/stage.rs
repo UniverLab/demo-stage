@@ -83,6 +83,7 @@ pub fn render_stage(
     let (tw, th) = term_src.dims();
     let n = term_src.n_frames();
     let fps = score.layout.fps.max(1) as f64;
+    let total = n as f64 / fps;
     let mut fallback_report = term_src.take_fallback_report();
 
     // Browser panes captured up front (Chromium). Each reveals at the moment it
@@ -97,10 +98,18 @@ pub fn render_stage(
     {
         let scrolls = scroll_keyframes_for(score, &pane.id);
         let (reveal_at, hide_at) = pane_window(pane, &rec.focuses);
-        scenes.push((pane, browser::capture(pane, scrolls)?, reveal_at, hide_at));
+        let window_end = hide_at.unwrap_or(total);
+        let window_dur = (window_end - reveal_at).max(0.0);
+        let output_frames = (window_dur * fps).round() as usize;
+        let should_scroll = pane_has_scroll(score, &pane.id);
+        scenes.push((
+            pane,
+            browser::capture(pane, scrolls, output_frames.max(1), should_scroll, fps)?,
+            reveal_at,
+            hide_at,
+        ));
     }
 
-    let total = n as f64 / fps;
     for i in 0..n {
         let t = i as f64 / fps;
         let term_frame = term_src.next_frame().unwrap_or_default();
@@ -192,6 +201,24 @@ fn scroll_keyframes_for(score: &Score, pane_id: &str) -> usize {
     ((ms / 700) as usize).clamp(0, 16)
 }
 
+/// Whether a browser pane has any scroll step directed at it (explicitly or via
+/// focus). A pane with no scroll step stays static — no panning.
+fn pane_has_scroll(score: &Score, pane_id: &str) -> bool {
+    let mut focused: Option<&str> = None;
+    for step in &score.timeline {
+        match step {
+            Step::Focus { pane } => {
+                focused = pane.as_deref();
+            }
+            Step::Scroll { pane, .. } if pane.as_deref().or(focused) == Some(pane_id) => {
+                return true;
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -265,6 +292,43 @@ height = 1080
 "#,
         );
         assert!(needs_stage(&centered));
+    }
+
+    #[test]
+    fn pane_has_scroll_for_the_focused_browser() {
+        let s = score(
+            r#"
+[demo]
+name = "t"
+[layout]
+width = 200
+height = 100
+  [[layout.panes]]
+  id = "c"
+  type = "terminal"
+  x = 0
+  y = 0
+  width = 100
+  height = 100
+  [[layout.panes]]
+  id = "p"
+  type = "browser"
+  x = 100
+  y = 0
+  width = 100
+  height = 100
+  url = "file:///x.pdf"
+[[timeline]]
+action = "focus"
+pane = "p"
+[[timeline]]
+action = "scroll"
+direction = "down"
+duration_ms = 2100
+"#,
+        );
+        assert!(pane_has_scroll(&s, "p"));
+        assert!(!pane_has_scroll(&s, "c"));
     }
 
     #[test]
@@ -456,6 +520,27 @@ height = 100
     }
 
     #[test]
+    fn pane_has_scroll_false_when_no_scroll() {
+        let s = score(
+            r#"
+[demo]
+name = "t"
+[layout]
+width = 100
+height = 100
+  [[layout.panes]]
+  id = "c"
+  type = "terminal"
+  x = 0
+  y = 0
+  width = 100
+  height = 100
+"#,
+        );
+        assert!(!pane_has_scroll(&s, "c"));
+    }
+
+    #[test]
     fn scroll_keyframes_for_zero_when_no_scroll() {
         let s = score(
             r#"
@@ -477,6 +562,32 @@ height = 100
     }
 
     #[test]
+    fn pane_has_scroll_true_when_scroll_steps_present() {
+        let toml_str = r#"
+[demo]
+name = "t"
+[layout]
+width = 100
+height = 100
+  [[layout.panes]]
+  id = "c"
+  type = "terminal"
+  x = 0
+  y = 0
+  width = 100
+  height = 100
+"#;
+        let mut s: Score = toml::from_str(toml_str).unwrap();
+        s.timeline.push(crate::model::Step::Scroll {
+            direction: crate::model::ScrollDirection::Down,
+            velocity: crate::model::Velocity::Constant,
+            duration_ms: 7000,
+            pane: Some("c".into()),
+        });
+        assert!(pane_has_scroll(&s, "c"));
+    }
+
+    #[test]
     fn scroll_keyframes_for_capped_at_16() {
         let toml_str = r#"
 [demo]
@@ -493,7 +604,6 @@ height = 100
   height = 100
 "#;
         let mut s: Score = toml::from_str(toml_str).unwrap();
-        // Add many scroll steps
         for _ in 0..20 {
             s.timeline.push(crate::model::Step::Scroll {
                 direction: crate::model::ScrollDirection::Down,

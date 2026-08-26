@@ -31,19 +31,6 @@ pub struct Scene {
 }
 
 impl Scene {
-    /// Build a scene from pre-computed keyframes (used by the native PDF path).
-    pub(crate) fn from_keyframes(
-        width: usize,
-        height: usize,
-        keyframes: Vec<(f64, Vec<u8>)>,
-    ) -> Self {
-        Self {
-            width,
-            height,
-            keyframes,
-        }
-    }
-
     /// The frame to show at `progress` (the latest keyframe at or before it).
     pub fn frame_at(&self, progress: f64) -> &[u8] {
         let mut chosen = &self.keyframes[0].1;
@@ -122,12 +109,13 @@ impl DirScene {
     }
 }
 
-/// A browser scene backed by either in-memory keyframes or a directory of
-/// PNGs decoded on demand. This is what `capture` returns and what `stage.rs`
-/// consumes.
+/// A browser scene backed by either in-memory keyframes, a directory of
+/// PNGs decoded on demand, or a native PDF scene that computes viewport
+/// slices on demand.
 pub enum AnyScene {
     Keyframe(Scene),
     Directory(DirScene),
+    Pdf(super::pdf::PdfScene),
 }
 
 impl AnyScene {
@@ -135,6 +123,7 @@ impl AnyScene {
         match self {
             Self::Keyframe(s) => s.width,
             Self::Directory(d) => d.width,
+            Self::Pdf(p) => p.width(),
         }
     }
 
@@ -142,6 +131,7 @@ impl AnyScene {
         match self {
             Self::Keyframe(s) => s.height,
             Self::Directory(d) => d.height,
+            Self::Pdf(p) => p.height(),
         }
     }
 
@@ -149,6 +139,7 @@ impl AnyScene {
         match self {
             Self::Keyframe(s) => s.frame_at(progress),
             Self::Directory(d) => d.frame_at(progress),
+            Self::Pdf(p) => p.frame_at(progress),
         }
     }
 }
@@ -159,9 +150,17 @@ impl From<Scene> for AnyScene {
     }
 }
 
-/// Render a browser pane's `url`, capturing `scroll_keyframes` extra frames while
-/// scrolling down (0 = a single static frame).
-pub fn capture(pane: &Pane, scroll_keyframes: usize) -> Result<AnyScene> {
+/// Render a browser pane's `url`, emitting a scene that covers `output_frames`
+/// of output. `scroll_keyframes` is the duration-derived Chromium scroll count
+/// (unchanged from before this spec). `should_scroll` controls whether a native
+/// PDF pane pans through its document (a pane with no scroll step stays static).
+pub fn capture(
+    pane: &Pane,
+    scroll_keyframes: usize,
+    output_frames: usize,
+    should_scroll: bool,
+    fps: f64,
+) -> Result<AnyScene> {
     let url = pane
         .url
         .as_deref()
@@ -179,9 +178,9 @@ pub fn capture(pane: &Pane, scroll_keyframes: usize) -> Result<AnyScene> {
     // and the scene starts instantly. Chrome's viewer is only a fallback.
     if url.to_lowercase().ends_with(".pdf") {
         match local_file_path(&url)
-            .and_then(|p| super::pdf::capture_scene(&p, w, h, scroll_keyframes))
+            .and_then(|p| super::pdf::capture_scene(&p, w, h, output_frames, should_scroll, fps))
         {
-            Ok(scene) => return Ok(AnyScene::Keyframe(scene)),
+            Ok(scene) => return Ok(AnyScene::Pdf(scene)),
             Err(e) => {
                 eprintln!("demo: native PDF render failed ({e}), falling back to Chrome viewer");
             }
@@ -572,7 +571,11 @@ mod tests {
 
     #[test]
     fn from_keyframes_builds_scene() {
-        let scene = Scene::from_keyframes(100, 200, vec![(0.0, vec![1, 2, 3])]);
+        let scene = Scene {
+            width: 100,
+            height: 200,
+            keyframes: vec![(0.0, vec![1, 2, 3])],
+        };
         assert_eq!(scene.width, 100);
         assert_eq!(scene.height, 200);
         assert_eq!(scene.frame_at(0.5), &[1, 2, 3]);
@@ -580,9 +583,11 @@ mod tests {
 
     #[test]
     fn from_keyframes_empty_keyframes() {
-        // Should not panic even with empty keyframes (frame_at would panic on empty)
-        let scene = Scene::from_keyframes(10, 10, vec![]);
-        // frame_at on empty keyframes would panic, but from_keyframes itself is fine
+        let scene = Scene {
+            width: 10,
+            height: 10,
+            keyframes: vec![],
+        };
         assert_eq!(scene.width, 10);
         assert_eq!(scene.height, 10);
     }
@@ -691,7 +696,11 @@ mod tests {
 
     #[test]
     fn scene_from_keyframes_preserves_dimensions() {
-        let scene = Scene::from_keyframes(640, 480, vec![]);
+        let scene = Scene {
+            width: 640,
+            height: 480,
+            keyframes: vec![],
+        };
         assert_eq!(scene.width, 640);
         assert_eq!(scene.height, 480);
     }
