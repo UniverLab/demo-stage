@@ -7,7 +7,7 @@
 //! suite or in the restricted dev sandbox; it is verified on a machine with
 //! Chromium available (or network to fetch it).
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -58,9 +58,110 @@ impl Scene {
     }
 }
 
+/// A frame source backed by a directory of PNGs decoded on demand.
+/// Keeps at most one frame decoded at a time; the consumer reads progress
+/// monotonically, so a one-frame cache plus re-decode is sufficient.
+#[derive(Debug)]
+pub struct DirScene {
+    width: usize,
+    height: usize,
+    files: Vec<PathBuf>,
+    progresses: Vec<f64>,
+    cached_index: Option<usize>,
+    cached_frame: Vec<u8>,
+    #[cfg(test)]
+    decode_count: usize,
+}
+
+impl DirScene {
+    fn new(width: usize, height: usize, files: Vec<PathBuf>, progresses: Vec<f64>) -> Self {
+        Self {
+            width,
+            height,
+            files,
+            progresses,
+            cached_index: None,
+            cached_frame: Vec::new(),
+            #[cfg(test)]
+            decode_count: 0,
+        }
+    }
+
+    fn frame_at(&mut self, progress: f64) -> &[u8] {
+        let idx = self.pick_index(progress);
+        if self.cached_index != Some(idx) {
+            let bytes = std::fs::read(&self.files[idx])
+                .unwrap_or_else(|e| panic!("read {}: {e}", self.files[idx].display()));
+            let rgba = png_to_rgba(&bytes, self.width, self.height)
+                .unwrap_or_else(|e| panic!("decode {}: {e}", self.files[idx].display()));
+            self.cached_index = Some(idx);
+            self.cached_frame = rgba;
+            #[cfg(test)]
+            {
+                self.decode_count += 1;
+            }
+        }
+        &self.cached_frame
+    }
+
+    fn pick_index(&self, progress: f64) -> usize {
+        let mut chosen = 0;
+        for (i, p) in self.progresses.iter().enumerate() {
+            if *p <= progress {
+                chosen = i;
+            } else {
+                break;
+            }
+        }
+        chosen
+    }
+
+    #[cfg(test)]
+    fn decode_count(&self) -> usize {
+        self.decode_count
+    }
+}
+
+/// A browser scene backed by either in-memory keyframes or a directory of
+/// PNGs decoded on demand. This is what `capture` returns and what `stage.rs`
+/// consumes.
+pub enum AnyScene {
+    Keyframe(Scene),
+    Directory(DirScene),
+}
+
+impl AnyScene {
+    pub fn width(&self) -> usize {
+        match self {
+            Self::Keyframe(s) => s.width,
+            Self::Directory(d) => d.width,
+        }
+    }
+
+    pub fn height(&self) -> usize {
+        match self {
+            Self::Keyframe(s) => s.height,
+            Self::Directory(d) => d.height,
+        }
+    }
+
+    pub fn frame_at(&mut self, progress: f64) -> &[u8] {
+        match self {
+            Self::Keyframe(s) => s.frame_at(progress),
+            Self::Directory(d) => d.frame_at(progress),
+        }
+    }
+}
+
+impl From<Scene> for AnyScene {
+    fn from(s: Scene) -> Self {
+        Self::Keyframe(s)
+    }
+}
+
 /// Render a browser pane's `url`, capturing `scroll_keyframes` extra frames while
 /// scrolling down (0 = a single static frame).
-pub fn capture(pane: &Pane, scroll_keyframes: usize) -> Result<Scene> {
+pub fn capture(pane: &Pane, scroll_keyframes: usize) -> Result<AnyScene> {
     let url = pane
         .url
         .as_deref()
@@ -69,7 +170,7 @@ pub fn capture(pane: &Pane, scroll_keyframes: usize) -> Result<Scene> {
 
     // A `--view` scene is already recorded — play its frames back, no Chromium.
     if let Some(dir) = view_frames_dir(url) {
-        return load_frames(Path::new(dir), w, h);
+        return load_frames(Path::new(dir), w, h).map(AnyScene::Directory);
     }
 
     let url = crate::paths::resolve_browser_url(url)?;
@@ -80,7 +181,7 @@ pub fn capture(pane: &Pane, scroll_keyframes: usize) -> Result<Scene> {
         match local_file_path(&url)
             .and_then(|p| super::pdf::capture_scene(&p, w, h, scroll_keyframes))
         {
-            Ok(scene) => return Ok(scene),
+            Ok(scene) => return Ok(AnyScene::Keyframe(scene)),
             Err(e) => {
                 eprintln!("demo: native PDF render failed ({e}), falling back to Chrome viewer");
             }
@@ -163,11 +264,11 @@ pub fn capture(pane: &Pane, scroll_keyframes: usize) -> Result<Scene> {
         keyframes.push((progress, shot(&tab, w, h)?));
     }
 
-    Ok(Scene {
+    Ok(AnyScene::Keyframe(Scene {
         width: w,
         height: h,
         keyframes,
-    })
+    }))
 }
 
 /// Record an **interactive** browsing session: open a real (headed) browser at
@@ -275,8 +376,9 @@ pub fn record_view(
 }
 
 /// Load a `--view` scene's pre-recorded PNG frames (`NNNN.png`, sorted) as a
-/// time-spread keyframe sequence sized to `tw`×`th`.
-fn load_frames(dir: &Path, tw: usize, th: usize) -> Result<Scene> {
+/// directory-backed frame source sized to `tw`×`th`. Frames are decoded on
+/// demand; only one frame is held decoded at a time.
+fn load_frames(dir: &Path, tw: usize, th: usize) -> Result<DirScene> {
     let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(dir)
         .map_err(|e| Error::io(dir, e))?
         .filter_map(|e| e.ok().map(|e| e.path()))
@@ -291,22 +393,16 @@ fn load_frames(dir: &Path, tw: usize, th: usize) -> Result<Scene> {
     }
 
     let count = files.len();
-    let mut keyframes = Vec::with_capacity(count);
-    for (i, f) in files.iter().enumerate() {
-        let bytes = std::fs::read(f).map_err(|e| Error::io(f, e))?;
-        let rgba = png_to_rgba(&bytes, tw, th)?;
-        let progress = if count > 1 {
-            i as f64 / (count - 1) as f64
-        } else {
-            0.0
-        };
-        keyframes.push((progress, rgba));
-    }
-    Ok(Scene {
-        width: tw,
-        height: th,
-        keyframes,
-    })
+    let progresses: Vec<f64> = (0..count)
+        .map(|i| {
+            if count > 1 {
+                i as f64 / (count - 1) as f64
+            } else {
+                0.0
+            }
+        })
+        .collect();
+    Ok(DirScene::new(tw, th, files, progresses))
 }
 
 /// Emulate `prefers-color-scheme` (`light`/`dark`) so theme-aware pages render the
@@ -608,5 +704,109 @@ mod tests {
             keyframes: vec![(0.0, vec![10]), (0.5, vec![20])],
         };
         assert_eq!(scene.frame_at(-1.0), &[10]);
+    }
+
+    fn make_test_png(r: u8, g: u8, b: u8) -> Vec<u8> {
+        let mut buf = std::io::Cursor::new(Vec::new());
+        {
+            let mut encoder = png::Encoder::new(&mut buf, 1, 1);
+            encoder.set_color(png::ColorType::Rgb);
+            encoder.set_depth(png::BitDepth::Eight);
+            let mut writer = encoder.write_header().unwrap();
+            writer.write_image_data(&[r, g, b]).unwrap();
+            writer.finish().unwrap();
+        }
+        buf.into_inner()
+    }
+
+    struct TmpDir(std::path::PathBuf);
+    impl Drop for TmpDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn make_dir_scene(n: usize) -> (TmpDir, super::DirScene) {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let id = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!(
+            "demostage_test_dir_scene_{}_{}",
+            std::process::id(),
+            id
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        for i in 0..n {
+            let png = make_test_png(i as u8, 0, 0);
+            let path = dir.join(format!("{:04}.png", i + 1));
+            std::fs::write(&path, &png).unwrap();
+        }
+        let scene = super::load_frames(&dir, 1, 1).unwrap();
+        (TmpDir(dir), scene)
+    }
+
+    #[test]
+    fn dir_scene_frame_at_several_progress_values() {
+        let (_dir, mut scene) = make_dir_scene(10);
+        // progress 0.0 → first frame (index 0, red=0)
+        let f = scene.frame_at(0.0);
+        assert_eq!(f[0], 0);
+        // progress at exact boundary (index 5, progress = 5/9 ≈ 0.555)
+        let f = scene.frame_at(5.0 / 9.0);
+        assert_eq!(f[0], 5);
+        // progress beyond 1.0 → last frame (index 9, red=9)
+        let f = scene.frame_at(2.0);
+        assert_eq!(f[0], 9);
+        // progress just before a boundary
+        let f = scene.frame_at(0.5);
+        // 0.5 < 5/9 ≈ 0.555, so index 4 (progress = 4/9 ≈ 0.444)
+        assert_eq!(f[0], 4);
+    }
+
+    #[test]
+    fn dir_scene_decode_count_is_bounded() {
+        let (_dir, mut scene) = make_dir_scene(100);
+        // Walk progress monotonically from 0 to 1 in 50 steps.
+        // We land on at most 50 unique frame indices, so decode count <= 50.
+        // Crucially, it is NOT 100 (we don't decode every frame).
+        for step in 0..50 {
+            let progress = step as f64 / 49.0;
+            let _ = scene.frame_at(progress);
+        }
+        let decodes = scene.decode_count();
+        assert!(
+            decodes <= 50,
+            "expected at most 50 decodes for 50 steps, got {decodes}"
+        );
+        assert!(decodes > 0, "expected at least one decode");
+    }
+
+    #[test]
+    fn dir_scene_empty_directory_errors() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let id = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!(
+            "demostage_test_empty_{}_{}",
+            std::process::id(),
+            id
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let result = super::load_frames(&dir, 100, 100);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("no recorded frames"));
+        assert!(err.contains("--view"));
+    }
+
+    #[test]
+    fn dir_scene_single_frame() {
+        let (_dir, mut scene) = make_dir_scene(1);
+        // Single frame: progress is always 0.0
+        let f = scene.frame_at(0.0);
+        assert_eq!(f[0], 0);
+        let f = scene.frame_at(1.0);
+        assert_eq!(f[0], 0);
     }
 }

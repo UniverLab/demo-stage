@@ -88,7 +88,7 @@ pub fn render_stage(
     // Browser panes captured up front (Chromium). Each reveals at the moment it
     // is first focused (recorded during the terminal run) — so it "opens" exactly
     // when the demo focuses it, e.g. once a server is up or a PDF has compiled.
-    let mut scenes: Vec<(&Pane, browser::Scene, f64, Option<f64>)> = Vec::new();
+    let mut scenes: Vec<(&Pane, browser::AnyScene, f64, Option<f64>)> = Vec::new();
     for pane in score
         .layout
         .panes
@@ -112,24 +112,24 @@ pub fn render_stage(
             h: th,
             rgba: &term_frame,
         }];
-        for (pane, scene, reveal_at, hide_at) in &scenes {
+        for (pane, scene, reveal_at, hide_at) in &mut scenes {
             if t < *reveal_at {
                 continue; // not revealed yet
             }
-            if hide_at.is_some_and(|h| t >= h) {
+            if (*hide_at).is_some_and(|h| t >= h) {
                 continue; // switched away — the pane beneath (terminal) shows again
             }
             // Scene-local progress: 0 at the reveal, 1 at the end of its window —
             // so a scene's scroll keyframes play across the time it's on screen,
             // not across the whole demo (which would mostly be before it opened).
-            let window_end = hide_at.unwrap_or(total);
-            let span = (window_end - reveal_at).max(1e-6);
-            let progress = ((t - reveal_at) / span).clamp(0.0, 1.0);
+            let window_end = (*hide_at).unwrap_or(total);
+            let span = (window_end - *reveal_at).max(1e-6);
+            let progress = ((t - *reveal_at) / span).clamp(0.0, 1.0);
             layers.push(composite::Layer {
                 x: pane.x as usize,
                 y: pane.y as usize,
-                w: scene.width,
-                h: scene.height,
+                w: scene.width(),
+                h: scene.height(),
                 rgba: scene.frame_at(progress),
             });
         }
