@@ -495,7 +495,7 @@ fn browser_pane(
 
 /// The `t_ms` at which the user started typing the final `demo stop` line, if the
 /// capture ended that way — so its echo (and the "stopping" message) is dropped.
-fn stop_cutoff_ms(raw: &RawMacro) -> Option<u64> {
+pub fn stop_cutoff_ms(raw: &RawMacro) -> Option<u64> {
     let mut line = String::new();
     let mut line_start: Option<u64> = None;
     let mut cutoff: Option<u64> = None;

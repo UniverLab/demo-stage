@@ -688,8 +688,6 @@ struct RouteOutcome {
     /// A `demo open`/`demo stop`/`demo focus` was just entered — its echo and any
     /// wizard/confirmation must be excised from the recording.
     mute_command: bool,
-    /// A normal command was just entered — arm any pending `--after` reveal.
-    arm_after: bool,
 }
 
 /// Forward a keystroke chunk to the PTY and track the current command line so the
@@ -704,7 +702,6 @@ fn route_input_chunk(
 ) -> RouteOutcome {
     let mut to_pty: Vec<u8> = Vec::with_capacity(chunk.len());
     let mut mute_command = false;
-    let mut arm_after = false;
     let mut i = 0;
     let n = chunk.len();
     // Mark the start of a fresh command line at its first printable char, so a
@@ -721,8 +718,6 @@ fn route_input_chunk(
             let t = cmd_line.trim_start();
             if is_meta_command(t) {
                 mute_command = true;
-            } else if !t.is_empty() {
-                arm_after = true;
             }
             cmd_line.clear();
             *cmd_start = None;
@@ -761,7 +756,6 @@ fn route_input_chunk(
     RouteOutcome {
         to_pty,
         mute_command,
-        arm_after,
     }
 }
 
@@ -912,8 +906,8 @@ pub fn run(args: CaptureArgs) -> Result<()> {
     // Browser reveals armed by `demo open --when <pat>`, fired by the output
     // thread when the pattern appears.
     let pending_opens: PendingWhen = Arc::new(Mutex::new(Vec::new()));
-    // Reveals armed by `demo open --after`: fired once the next foreground command
-    // produces output and then goes quiet (back at the prompt). `after_running`
+    // Reveals armed by `demo open --after`: fired when the current foreground command
+    // finishes (produces output and then goes quiet, back at the prompt). `after_running`
     // tracks that such a command is in flight; `after_last_out` its last output.
     let after_opens: PendingAfter = Arc::new(Mutex::new(Vec::new()));
     let after_running = Arc::new(AtomicBool::new(false));
@@ -1115,9 +1109,6 @@ pub fn run(args: CaptureArgs) -> Result<()> {
         let mute_since = mute_since.clone();
         let mute_start = mute_start.clone();
         let ready = ready.clone();
-        let after_opens = after_opens.clone();
-        let after_running = after_running.clone();
-        let after_last_out = after_last_out.clone();
         thread::spawn(move || {
             let mut buf = [0u8; 1024];
             let mut stdin = std::io::stdin();
@@ -1148,12 +1139,6 @@ pub fn run(args: CaptureArgs) -> Result<()> {
                             if s.is_none() {
                                 *s = Some(saved_cmd_start.unwrap_or_else(|| ms(t0)));
                             }
-                        } else if outcome.arm_after
-                            && !after_opens.lock().unwrap().is_empty()
-                            && !after_running.load(Ordering::SeqCst)
-                        {
-                            *after_last_out.lock().unwrap() = Instant::now();
-                            after_running.store(true, Ordering::SeqCst);
                         }
                         if !outcome.to_pty.is_empty() {
                             if writer.write_all(&outcome.to_pty).is_err() {
@@ -1226,6 +1211,8 @@ pub fn run(args: CaptureArgs) -> Result<()> {
             &events,
             &pending_opens,
             &after_opens,
+            &after_running,
+            &after_last_out,
             &muting,
             &mute_start,
             &mute_spans,
@@ -1283,6 +1270,45 @@ pub fn run(args: CaptureArgs) -> Result<()> {
     let _ = std::fs::remove_file(&control_abs);
     let _ = std::fs::remove_file(control_abs.with_file_name(control::SOURCES_FILE));
     let _ = std::fs::remove_file(control_abs.with_file_name(control::META_FILE));
+
+    let drain_summary = {
+        let mut evs = events.lock().unwrap();
+        let raw_for_cutoff = crate::model::RawMacro {
+            meta: crate::model::RawMeta {
+                shell: String::new(),
+                cols: 0,
+                rows: 0,
+                idle_timeout_ms: 0,
+                resolution: None,
+                fps: None,
+                stage: None,
+                mute_spans: Vec::new(),
+            },
+            events: evs.clone(),
+        };
+        let drain_ts = recording::stop_cutoff_ms(&raw_for_cutoff)
+            .map(|c| c.saturating_sub(1))
+            .unwrap_or_else(|| {
+                evs.iter()
+                    .filter_map(|e| match e {
+                        RawEvent::Output { t_ms, .. } => Some(*t_ms),
+                        _ => None,
+                    })
+                    .max()
+                    .unwrap_or(0)
+            });
+        drain_remaining_reveals(&after_opens, &pending_opens, &mut evs, drain_ts)
+    };
+    for pat in &drain_summary.when_unmatched {
+        eprintln!(
+            "warning: --when cue {pat:?} never matched during capture; reveal appended at end"
+        );
+    }
+    for summary in &drain_summary.after_summaries {
+        eprintln!(
+            "warning: --after reveal {summary} never fired during capture; reveal appended at end"
+        );
+    }
 
     let events = events.lock().unwrap().clone();
     let mut mute_spans = mute_spans.lock().unwrap().clone();
@@ -1478,6 +1504,39 @@ fn cue_matches(recent: &str, pattern: &str) -> bool {
     }
 }
 
+/// Summary of what the shutdown drain resolved from the pending queues.
+struct DrainSummary {
+    after_summaries: Vec<String>,
+    when_unmatched: Vec<String>,
+}
+
+/// Drain any remaining `--after` and `--when` queues at shutdown, emitting
+/// their reveals as events so they are recorded rather than silently dropped.
+/// Returns a summary of what was fired and which `--when` cues never matched.
+fn drain_remaining_reveals(
+    after_opens: &PendingAfter,
+    pending_opens: &PendingWhen,
+    events: &mut Vec<RawEvent>,
+    now: u64,
+) -> DrainSummary {
+    let after_remaining: Vec<Reveal> = after_opens.lock().unwrap().drain(..).collect();
+    let mut after_summaries = Vec::new();
+    for r in after_remaining {
+        after_summaries.push(r.summary());
+        events.push(r.to_event(now));
+    }
+    let mut when_unmatched = Vec::new();
+    let pending: Vec<(Reveal, String)> = pending_opens.lock().unwrap().drain(..).collect();
+    for (r, pat) in pending {
+        when_unmatched.push(pat.clone());
+        events.push(r.to_event(now));
+    }
+    DrainSummary {
+        after_summaries,
+        when_unmatched,
+    }
+}
+
 /// Read any new control-file commands (`demo focus`/`demo open`/`demo stop`).
 /// Records immediate reveals, arms `--when`/`--after` reveals, and returns
 /// `Some(reason)` on stop.
@@ -1488,6 +1547,8 @@ fn read_control(
     events: &Arc<Mutex<Vec<RawEvent>>>,
     pending: &PendingWhen,
     after: &PendingAfter,
+    after_running: &AtomicBool,
+    after_last_out: &Mutex<Instant>,
     muting: &Arc<AtomicBool>,
     mute_start: &Arc<Mutex<Option<u64>>>,
     mute_spans: &Arc<Mutex<Vec<(u64, u64)>>>,
@@ -1546,6 +1607,8 @@ fn read_control(
                         d.note(&format!("reveal armed: {} after command", reveal.summary()));
                     }
                     after.lock().unwrap().push(reveal);
+                    after_running.store(true, Ordering::SeqCst);
+                    *after_last_out.lock().unwrap() = Instant::now();
                 } else {
                     // Immediate reveal: use current time (when command finished)
                     if let Some(d) = debug {
@@ -3088,6 +3151,198 @@ mod tests {
         assert!(
             !secret_prompt_cleared.load(Ordering::SeqCst),
             "partial line at chunk end must not set secret_prompt_cleared"
+        );
+    }
+
+    fn test_reveal() -> Reveal {
+        Reveal {
+            panes: vec![RevealPane {
+                id: "main".into(),
+                url: Some("http://example.com".into()),
+                theme: None,
+            }],
+            orientation: Orientation::Horizontal,
+            hold_ms: None,
+            scroll: false,
+        }
+    }
+
+    #[test]
+    fn read_control_arms_after_running_when_queueing_after_reveal() {
+        let cpath = std::env::temp_dir().join(format!("demo-test-control-{}", std::process::id()));
+        let cmd = serde_json::json!({
+            "cmd": "reveal",
+            "after": true,
+            "panes": [{"id": "main", "url": "http://example.com"}],
+        });
+        std::fs::write(&cpath, serde_json::to_string(&cmd).unwrap()).unwrap();
+
+        let events: Arc<Mutex<Vec<RawEvent>>> = Arc::new(Mutex::new(Vec::new()));
+        let pending: PendingWhen = Arc::new(Mutex::new(Vec::new()));
+        let after: PendingAfter = Arc::new(Mutex::new(Vec::new()));
+        let after_running = AtomicBool::new(false);
+        let after_last_out = Mutex::new(Instant::now());
+        let muting = Arc::new(AtomicBool::new(false));
+        let mute_start: Arc<Mutex<Option<u64>>> = Arc::new(Mutex::new(None));
+        let mute_spans: Arc<Mutex<Vec<(u64, u64)>>> = Arc::new(Mutex::new(Vec::new()));
+        let t0 = Instant::now();
+        let mut read = 0u64;
+
+        let result = read_control(
+            &cpath,
+            &mut read,
+            &events,
+            &pending,
+            &after,
+            &after_running,
+            &after_last_out,
+            &muting,
+            &mute_start,
+            &mute_spans,
+            t0,
+            None,
+        );
+
+        assert!(result.is_none());
+        assert!(
+            after_running.load(Ordering::SeqCst),
+            "--after must arm after_running immediately so the current command is tracked"
+        );
+        assert_eq!(after.lock().unwrap().len(), 1);
+        assert!(events.lock().unwrap().is_empty(), "no immediate reveal");
+        let _ = std::fs::remove_file(&cpath);
+    }
+
+    #[test]
+    fn drain_remaining_reveals_emits_after_queue_as_events() {
+        let after: PendingAfter = Arc::new(Mutex::new(vec![test_reveal()]));
+        let pending: PendingWhen = Arc::new(Mutex::new(Vec::new()));
+        let mut events = Vec::new();
+
+        let summary = drain_remaining_reveals(&after, &pending, &mut events, 9999);
+
+        assert_eq!(summary.after_summaries.len(), 1);
+        assert!(summary.when_unmatched.is_empty());
+        assert_eq!(events.len(), 1);
+        assert!(after.lock().unwrap().is_empty());
+        match &events[0] {
+            RawEvent::Reveal { t_ms, .. } => assert_eq!(*t_ms, 9999),
+            other => panic!("expected Reveal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn drain_remaining_reveals_reports_unmatched_when_cues() {
+        let after: PendingAfter = Arc::new(Mutex::new(Vec::new()));
+        let pending: PendingWhen = Arc::new(Mutex::new(vec![(
+            test_reveal(),
+            "never-gonna-appear".into(),
+        )]));
+        let mut events = Vec::new();
+
+        let summary = drain_remaining_reveals(&after, &pending, &mut events, 5000);
+
+        assert_eq!(summary.after_summaries.len(), 0);
+        assert_eq!(
+            summary.when_unmatched,
+            vec!["never-gonna-appear".to_string()]
+        );
+        assert_eq!(events.len(), 1);
+        assert!(pending.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn drain_remaining_reveals_handles_both_queues_at_once() {
+        let after: PendingAfter = Arc::new(Mutex::new(vec![test_reveal()]));
+        let pending: PendingWhen = Arc::new(Mutex::new(vec![
+            (test_reveal(), "cue-alpha".into()),
+            (test_reveal(), "re:cue-beta".into()),
+        ]));
+        let mut events = Vec::new();
+
+        let summary = drain_remaining_reveals(&after, &pending, &mut events, 1000);
+
+        assert_eq!(summary.after_summaries.len(), 1);
+        assert_eq!(summary.when_unmatched.len(), 2);
+        assert_eq!(events.len(), 3);
+        assert!(after.lock().unwrap().is_empty());
+        assert!(pending.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn drained_reveal_survives_from_raw_after_demo_stop() {
+        let mut events = vec![
+            RawEvent::Output {
+                t_ms: 100,
+                data: "real output".into(),
+            },
+            RawEvent::Input {
+                t_ms: 2000,
+                bytes: "demo stop\r".into(),
+            },
+            RawEvent::Output {
+                t_ms: 2010,
+                data: "demo stop".into(),
+            },
+        ];
+        let after: PendingAfter = Arc::new(Mutex::new(vec![test_reveal()]));
+        let pending: PendingWhen =
+            Arc::new(Mutex::new(vec![(test_reveal(), "never-matched".into())]));
+        let raw_for_cutoff = crate::model::RawMacro {
+            meta: crate::model::RawMeta {
+                shell: String::new(),
+                cols: 0,
+                rows: 0,
+                idle_timeout_ms: 0,
+                resolution: None,
+                fps: None,
+                stage: None,
+                mute_spans: Vec::new(),
+            },
+            events: events.clone(),
+        };
+        let drain_ts = recording::stop_cutoff_ms(&raw_for_cutoff)
+            .map(|c| c.saturating_sub(1))
+            .unwrap_or_else(|| {
+                events
+                    .iter()
+                    .filter_map(|e| match e {
+                        RawEvent::Output { t_ms, .. } => Some(*t_ms),
+                        _ => None,
+                    })
+                    .max()
+                    .unwrap_or(0)
+            });
+        drain_remaining_reveals(&after, &pending, &mut events, drain_ts);
+        let raw = crate::model::RawMacro {
+            meta: crate::model::RawMeta {
+                shell: "/bin/bash".into(),
+                cols: 80,
+                rows: 24,
+                idle_timeout_ms: 0,
+                resolution: None,
+                fps: None,
+                stage: None,
+                mute_spans: Vec::new(),
+            },
+            events,
+        };
+        let (rec, layout, _) = recording::from_raw(&raw, "t");
+        assert!(
+            rec.events.iter().any(|(_, data)| data == "real output"),
+            "real output must survive"
+        );
+        assert!(
+            !layout.panes.is_empty(),
+            "drained reveal must survive normalization"
+        );
+        let has_browser = layout
+            .panes
+            .iter()
+            .any(|p| p.kind == crate::model::PaneKind::Browser);
+        assert!(
+            has_browser,
+            "drained --after reveal must produce a browser pane"
         );
     }
 }

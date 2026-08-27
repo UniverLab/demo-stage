@@ -523,6 +523,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::chunks_exact_to_as_chunks)]
     fn png_to_rgba_crops_to_target_size() {
         // Create a 4x4 RGB PNG
         let mut buf = std::io::Cursor::new(Vec::new());

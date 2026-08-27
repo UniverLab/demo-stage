@@ -16,6 +16,7 @@ pub struct Layer<'a> {
 
 /// Composite `layers` onto a `canvas_w`×`canvas_h` canvas filled with `bg`.
 /// Layers are drawn in order (later layers on top) and clipped to the canvas.
+#[allow(clippy::chunks_exact_to_as_chunks)]
 pub fn composite(canvas_w: usize, canvas_h: usize, bg: [u8; 3], layers: &[Layer]) -> Vec<u8> {
     let mut img = vec![0u8; canvas_w * canvas_h * 4];
     for px in img.chunks_exact_mut(4) {

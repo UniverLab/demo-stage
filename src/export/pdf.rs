@@ -22,6 +22,7 @@ const PAGE_FRAC: f64 = 0.90;
 
 /// Capture a PDF as a browser-pane [`Scene`]: keyframe 0 shows the top of the
 /// document, and `scroll_keyframes` more pan evenly down to the last page.
+#[allow(clippy::chunks_exact_to_as_chunks)]
 pub fn capture_scene(
     pdf_path: &Path,
     pane_w: usize,
