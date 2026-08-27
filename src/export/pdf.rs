@@ -11,6 +11,9 @@ use hayro::vello_cpu::color::palette::css::WHITE;
 use hayro::{render, RenderCache, RenderSettings};
 
 use crate::error::{Error, Result};
+use crate::model::{ScrollDirection, Velocity};
+
+use super::stage::ease;
 
 /// Backdrop behind/between pages (Chrome PDF viewer gray).
 const BACKDROP: [u8; 4] = [0x52, 0x56, 0x59, 0xff];
@@ -36,6 +39,8 @@ pub struct PdfScene {
     max_off: usize,
     output_frames: usize,
     lead_in: usize,
+    direction: ScrollDirection,
+    velocity: Velocity,
     cached_frame: Vec<u8>,
     cached_offset: Option<usize>,
 }
@@ -52,7 +57,14 @@ impl PdfScene {
     /// Return the viewport frame for the given timeline progress in `[0, 1]`.
     pub fn frame_at(&mut self, progress: f64) -> &[u8] {
         let idx = self.frame_index(progress);
-        let off = offset_for_frame(idx, self.lead_in, self.output_frames, self.max_off);
+        let off = offset_for_frame(
+            idx,
+            self.lead_in,
+            self.output_frames,
+            self.max_off,
+            self.direction,
+            self.velocity,
+        );
         if self.cached_offset == Some(off) {
             return &self.cached_frame;
         }
@@ -86,30 +98,51 @@ impl PdfScene {
 
 /// Compute the vertical offset for a given output frame index.
 ///
-/// Frames `[0, lead_in)` sit at the top (offset 0). After the lead-in, the
-/// offset runs linearly from 0 to `max_off` across the remaining frames,
-/// inclusive at both ends.
+/// Frames `[0, lead_in)` sit at the start position (top for `Down`, bottom for
+/// `Up`). After the lead-in, the offset runs from 0 to `max_off` (or `max_off`
+/// to 0 for `Up`) across the remaining frames, with easing applied per the
+/// velocity curve.
 pub fn offset_for_frame(
     frame_idx: usize,
     lead_in: usize,
     output_frames: usize,
     max_off: usize,
+    direction: ScrollDirection,
+    velocity: Velocity,
 ) -> usize {
     if max_off == 0 || output_frames <= 1 {
-        return 0;
+        return match direction {
+            ScrollDirection::Down => 0,
+            ScrollDirection::Up => max_off,
+        };
     }
     if frame_idx < lead_in {
-        return 0;
+        return match direction {
+            ScrollDirection::Down => 0,
+            ScrollDirection::Up => max_off,
+        };
     }
     let pan_frames = output_frames.saturating_sub(lead_in);
     if pan_frames <= 1 {
-        return 0;
+        return match direction {
+            ScrollDirection::Down => 0,
+            ScrollDirection::Up => max_off,
+        };
     }
     let i = frame_idx - lead_in;
     if i >= pan_frames - 1 {
-        return max_off;
+        return match direction {
+            ScrollDirection::Down => max_off,
+            ScrollDirection::Up => 0,
+        };
     }
-    ((max_off as f64) * (i as f64) / ((pan_frames - 1) as f64)).round() as usize
+    let t = i as f64 / (pan_frames - 1) as f64;
+    let eased = ease(t, velocity);
+    let offset = (max_off as f64 * eased).round() as usize;
+    match direction {
+        ScrollDirection::Down => offset,
+        ScrollDirection::Up => max_off.saturating_sub(offset),
+    }
 }
 
 /// Compute the lead-in (in frames) before panning starts.
@@ -129,6 +162,8 @@ pub fn lead_in_frames(output_frames: usize, fps: f64) -> usize {
 /// `output_frames` is how many output frames the pane will be on screen.
 /// `should_scroll` is whether a scroll step is directed at this pane; when
 /// false, the scene is a single static frame at the top of the document.
+/// `direction` and `velocity` control the scroll behavior.
+#[allow(clippy::too_many_arguments)]
 pub fn capture_scene(
     pdf_path: &Path,
     pane_w: usize,
@@ -136,6 +171,8 @@ pub fn capture_scene(
     output_frames: usize,
     should_scroll: bool,
     fps: f64,
+    direction: ScrollDirection,
+    velocity: Velocity,
 ) -> Result<PdfScene> {
     let data = std::fs::read(pdf_path).map_err(|e| Error::io(pdf_path, e))?;
     let pdf = Pdf::new(data).map_err(|e| Error::Export(format!("read PDF: {e:?}")))?;
@@ -212,6 +249,8 @@ pub fn capture_scene(
         max_off,
         output_frames: effective_frames,
         lead_in: lead,
+        direction,
+        velocity,
         cached_frame: Vec::new(),
         cached_offset: None,
     })
@@ -223,7 +262,9 @@ mod tests {
 
     #[test]
     fn offset_first_frame_is_zero_last_is_max_off() {
-        let offsets: Vec<usize> = (0..20).map(|i| offset_for_frame(i, 3, 20, 500)).collect();
+        let offsets: Vec<usize> = (0..20)
+            .map(|i| offset_for_frame(i, 3, 20, 500, ScrollDirection::Down, Velocity::Constant))
+            .collect();
         assert_eq!(offsets[0], 0);
         assert_eq!(offsets[19], 500);
         for i in 1..20 {
@@ -256,14 +297,26 @@ mod tests {
     #[test]
     fn max_off_zero_yields_static() {
         for i in 0..10 {
-            assert_eq!(offset_for_frame(i, 2, 10, 0), 0);
+            assert_eq!(
+                offset_for_frame(i, 2, 10, 0, ScrollDirection::Down, Velocity::Constant),
+                0
+            );
         }
     }
 
     #[test]
     fn no_half_hold() {
         let offsets: Vec<usize> = (0..100)
-            .map(|i| offset_for_frame(i, lead_in_frames(100, 30.0), 100, 1000))
+            .map(|i| {
+                offset_for_frame(
+                    i,
+                    lead_in_frames(100, 30.0),
+                    100,
+                    1000,
+                    ScrollDirection::Down,
+                    Velocity::Constant,
+                )
+            })
             .collect();
         let first_nonzero = offsets.iter().position(|&o| o > 0);
         let lead = lead_in_frames(100, 30.0);
@@ -276,11 +329,44 @@ mod tests {
 
     #[test]
     fn single_frame_no_panic() {
-        assert_eq!(offset_for_frame(0, 0, 1, 500), 0);
+        assert_eq!(
+            offset_for_frame(0, 0, 1, 500, ScrollDirection::Down, Velocity::Constant),
+            0
+        );
     }
 
     #[test]
     fn lead_in_zero_frames() {
         assert_eq!(lead_in_frames(0, 30.0), 0);
+    }
+
+    #[test]
+    fn offset_up_constant_starts_at_max_ends_at_zero() {
+        let offsets: Vec<usize> = (0..20)
+            .map(|i| offset_for_frame(i, 3, 20, 500, ScrollDirection::Up, Velocity::Constant))
+            .collect();
+        assert_eq!(offsets[0], 500);
+        assert_eq!(offsets[19], 0);
+        for i in 1..20 {
+            assert!(offsets[i] <= offsets[i - 1], "non-increasing at {i}");
+        }
+        for i in 4..20 {
+            assert!(
+                offsets[i] < offsets[i - 1],
+                "strictly decreasing after lead-in at {i}"
+            );
+        }
+    }
+
+    #[test]
+    fn offset_up_ease_in_out_starts_at_max_ends_at_zero() {
+        let offsets: Vec<usize> = (0..20)
+            .map(|i| offset_for_frame(i, 3, 20, 500, ScrollDirection::Up, Velocity::EaseInOut))
+            .collect();
+        assert_eq!(offsets[0], 500);
+        assert_eq!(offsets[19], 0);
+        for i in 1..20 {
+            assert!(offsets[i] <= offsets[i - 1], "non-increasing at {i}");
+        }
     }
 }

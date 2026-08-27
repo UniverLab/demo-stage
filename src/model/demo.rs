@@ -300,6 +300,7 @@ pub enum ScrollDirection {
 pub enum Velocity {
     #[default]
     Constant,
+    EaseInOut,
 }
 
 #[cfg(test)]
@@ -762,5 +763,38 @@ height = 1080
         assert_eq!(web.theme.as_deref(), Some("dark"));
         assert_eq!(web.reveal_at, Some(1.0));
         assert_eq!(web.hide_at, Some(5.0));
+    }
+
+    #[test]
+    fn velocity_ease_in_out_round_trips() {
+        let toml_str = r#"
+[demo]
+name = "test"
+[layout]
+width = 800
+height = 600
+  [[layout.panes]]
+  id = "b"
+  type = "browser"
+  x = 0
+  y = 0
+  width = 800
+  height = 600
+  url = "file:///x.pdf"
+[[timeline]]
+action = "scroll"
+direction = "down"
+velocity = "ease_in_out"
+duration_ms = 1000
+"#;
+        let score: Score = toml::from_str(toml_str).unwrap();
+        let rendered = score.to_toml().unwrap();
+        let reparsed: Score = toml::from_str(&rendered).unwrap();
+        assert_eq!(score, reparsed);
+        if let Step::Scroll { velocity, .. } = &reparsed.timeline[0] {
+            assert_eq!(*velocity, Velocity::EaseInOut);
+        } else {
+            panic!("expected Scroll step");
+        }
     }
 }

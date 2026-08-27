@@ -6,7 +6,57 @@
 use super::run::Recording;
 use super::{browser, composite, raster};
 use crate::error::{Error, Result};
-use crate::model::{Pane, PaneKind, Score, Step};
+use crate::model::{Pane, PaneKind, Score, ScrollDirection, Step, Velocity};
+
+/// Scroll parameters extracted from the first scroll step aimed at a pane.
+/// The first scroll step wins when several conflict; the rest are ignored
+/// and a diagnostic line is printed.
+pub struct ScrollParams {
+    pub direction: ScrollDirection,
+    pub velocity: Velocity,
+    pub ignored_count: usize,
+}
+
+/// Pure easing function: maps a normalized position in `[0, 1]` to a
+/// normalized offset in `[0, 1]`. Shared by both scroll paths (PDF and browser)
+/// so they cannot drift apart.
+///
+/// - `Constant`: identity (linear).
+/// - `EaseInOut`: smoothstep — accelerates from rest, decelerates to rest,
+///   passes through 0.5 at the midpoint, with `f(0) == 0` and `f(1) == 1`.
+pub fn ease(position: f64, velocity: Velocity) -> f64 {
+    let t = position.clamp(0.0, 1.0);
+    match velocity {
+        Velocity::Constant => t,
+        Velocity::EaseInOut => t * t * (3.0 - 2.0 * t),
+    }
+}
+
+/// Compute the absolute scroll offsets for `frames` output frames, given a
+/// maximum offset (`max_offset`), a direction, and a velocity curve.
+/// Returns a single-element vector `[0]` when the page is not scrollable or
+/// only one frame is requested.
+pub fn scroll_offsets_with_params(
+    max_offset: usize,
+    frames: usize,
+    direction: ScrollDirection,
+    velocity: Velocity,
+) -> Vec<usize> {
+    if max_offset == 0 || frames <= 1 {
+        return vec![0];
+    }
+    (0..frames)
+        .map(|i| {
+            let t = i as f64 / (frames - 1) as f64;
+            let eased = ease(t, velocity);
+            let offset = (max_offset as f64 * eased).round() as usize;
+            match direction {
+                ScrollDirection::Down => offset,
+                ScrollDirection::Up => max_offset.saturating_sub(offset),
+            }
+        })
+        .collect()
+}
 
 /// True when a score has more than one pane, any browser pane, or a terminal
 /// pane that doesn't fill the canvas (e.g. a capture with an explicit export
@@ -104,7 +154,24 @@ pub fn render_stage(
         let window_dur = (window_end - reveal_at).max(0.0);
         let output_frames = (window_dur * fps).round() as usize;
         let should_scroll = pane_has_scroll(score, &pane.id);
-        let result = browser::capture(pane, scrolls, output_frames.max(1), should_scroll, fps)?;
+        let params = scroll_params_for(score, &pane.id);
+        let direction = params
+            .as_ref()
+            .map(|p| p.direction)
+            .unwrap_or(ScrollDirection::Down);
+        let velocity = params
+            .as_ref()
+            .map(|p| p.velocity)
+            .unwrap_or(Velocity::Constant);
+        let result = browser::capture(
+            pane,
+            scrolls,
+            output_frames.max(1),
+            should_scroll,
+            fps,
+            direction,
+            velocity,
+        )?;
         if let Some(report) = result.report {
             browser_reports.push(report);
         }
@@ -219,6 +286,50 @@ fn pane_has_scroll(score: &Score, pane_id: &str) -> bool {
         }
     }
     false
+}
+
+/// Extract the scroll parameters (direction, velocity) from the first scroll
+/// step aimed at a pane. When several scroll steps target the same pane with
+/// conflicting directions, the first wins and the rest are ignored (a
+/// diagnostic line is printed).
+pub fn scroll_params_for(score: &Score, pane_id: &str) -> Option<ScrollParams> {
+    let mut focused: Option<&str> = None;
+    let mut first: Option<ScrollParams> = None;
+    let mut ignored_count = 0usize;
+    for step in &score.timeline {
+        match step {
+            Step::Focus { pane } => {
+                focused = pane.as_deref();
+            }
+            Step::Scroll {
+                direction,
+                velocity,
+                pane,
+                ..
+            } if pane.as_deref().or(focused) == Some(pane_id) => {
+                if first.is_none() {
+                    first = Some(ScrollParams {
+                        direction: *direction,
+                        velocity: *velocity,
+                        ignored_count: 0,
+                    });
+                } else {
+                    ignored_count += 1;
+                }
+            }
+            _ => {}
+        }
+    }
+    if ignored_count > 0 {
+        eprintln!(
+            "demo: pane '{}': {} scroll step(s) ignored (first scroll step wins)",
+            pane_id, ignored_count
+        );
+    }
+    first.map(|mut p| {
+        p.ignored_count = ignored_count;
+        p
+    })
 }
 
 #[cfg(test)]
@@ -628,5 +739,137 @@ height = 100
         let pane = browser_pane(None, None);
         let focuses = vec![(1.0, "b".to_string()), (3.0, "main".to_string())];
         assert_eq!(pane_window(&pane, &focuses), (1.0, Some(3.0)));
+    }
+
+    #[test]
+    fn ease_constant_is_identity() {
+        for i in 0..=100 {
+            let t = i as f64 / 100.0;
+            let result = ease(t, Velocity::Constant);
+            assert!(
+                (result - t).abs() < 1e-10,
+                "constant ease should be identity at {t}"
+            );
+        }
+    }
+
+    #[test]
+    fn ease_in_out_endpoints_exact() {
+        assert_eq!(ease(0.0, Velocity::EaseInOut), 0.0);
+        assert_eq!(ease(1.0, Velocity::EaseInOut), 1.0);
+    }
+
+    #[test]
+    fn ease_in_out_midpoint_at_half() {
+        let mid = ease(0.5, Velocity::EaseInOut);
+        assert!(
+            (mid - 0.5).abs() < 1e-10,
+            "ease_in_out should pass through 0.5 at midpoint"
+        );
+    }
+
+    #[test]
+    fn ease_in_out_monotonically_increasing() {
+        let mut prev = 0.0;
+        for i in 1..=100 {
+            let t = i as f64 / 100.0;
+            let result = ease(t, Velocity::EaseInOut);
+            assert!(
+                result >= prev,
+                "ease_in_out should be monotonically increasing at {t}"
+            );
+            prev = result;
+        }
+    }
+
+    #[test]
+    fn scroll_offsets_down_constant() {
+        let offsets =
+            scroll_offsets_with_params(1000, 11, ScrollDirection::Down, Velocity::Constant);
+        assert_eq!(offsets[0], 0);
+        assert_eq!(offsets[10], 1000);
+        for i in 1..11 {
+            assert!(
+                offsets[i] > offsets[i - 1],
+                "down+constant should be strictly increasing"
+            );
+        }
+    }
+
+    #[test]
+    fn scroll_offsets_down_ease_in_out() {
+        let offsets =
+            scroll_offsets_with_params(1000, 11, ScrollDirection::Down, Velocity::EaseInOut);
+        assert_eq!(offsets[0], 0);
+        assert_eq!(offsets[10], 1000);
+        for i in 1..11 {
+            assert!(
+                offsets[i] >= offsets[i - 1],
+                "down+ease_in_out should be non-decreasing"
+            );
+        }
+    }
+
+    #[test]
+    fn scroll_offsets_up_constant() {
+        let offsets = scroll_offsets_with_params(1000, 11, ScrollDirection::Up, Velocity::Constant);
+        assert_eq!(offsets[0], 1000);
+        assert_eq!(offsets[10], 0);
+        for i in 1..11 {
+            assert!(
+                offsets[i] < offsets[i - 1],
+                "up+constant should be strictly decreasing"
+            );
+        }
+    }
+
+    #[test]
+    fn scroll_offsets_up_ease_in_out() {
+        let offsets =
+            scroll_offsets_with_params(1000, 11, ScrollDirection::Up, Velocity::EaseInOut);
+        assert_eq!(offsets[0], 1000);
+        assert_eq!(offsets[10], 0);
+        for i in 1..11 {
+            assert!(
+                offsets[i] <= offsets[i - 1],
+                "up+ease_in_out should be non-increasing"
+            );
+        }
+    }
+
+    #[test]
+    fn scroll_params_for_picks_first_scroll_step() {
+        let toml_str = r#"
+[demo]
+name = "t"
+[layout]
+width = 100
+height = 100
+  [[layout.panes]]
+  id = "b"
+  type = "browser"
+  x = 0
+  y = 0
+  width = 100
+  height = 100
+  url = "file:///x.pdf"
+[[timeline]]
+action = "scroll"
+direction = "up"
+velocity = "ease_in_out"
+duration_ms = 1000
+pane = "b"
+[[timeline]]
+action = "scroll"
+direction = "down"
+velocity = "constant"
+duration_ms = 1000
+pane = "b"
+"#;
+        let s: Score = toml::from_str(toml_str).unwrap();
+        let params = scroll_params_for(&s, "b").expect("should have scroll params");
+        assert_eq!(params.direction, ScrollDirection::Up);
+        assert_eq!(params.velocity, Velocity::EaseInOut);
+        assert_eq!(params.ignored_count, 1);
     }
 }

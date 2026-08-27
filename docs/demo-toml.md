@@ -137,7 +137,7 @@ Steps share one timeline, each tagged by `action`:
 | `wait_for_screen` | `match`, `timeout_ms?` | Block until a pattern is visible on the rendered screen. |
 | `caption` | `text` | Show an on-canvas step label (empty `text` clears it). Rendered on `gif`/`mp4`. |
 | `secret` | `prompt` | Re-supply a secret at this point on `demo record` (the value is asked for, never stored). |
-| `scroll` | `direction`, `velocity?`, `duration_ms`, `pane?` | Scroll a browser pane. |
+| `scroll` | `direction`, `velocity?`, `duration_ms`, `pane?` | Scroll a browser pane. `direction` is `up` or `down` (default `down`); `up` starts at the bottom and pans to the top. `velocity` is `constant` (linear, default) or `ease_in_out` (smooth acceleration/deceleration). When several scroll steps target the same pane, the first wins. |
 | `terminate` | — | End the demo. |
 
 ```toml

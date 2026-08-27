@@ -16,8 +16,9 @@ use headless_chrome::protocol::cdp::Page::{CaptureScreenshotFormatOption, Naviga
 use headless_chrome::{Browser, LaunchOptions, Tab};
 
 use super::provision;
+use super::stage::scroll_offsets_with_params;
 use crate::error::{Error, Result};
-use crate::model::{view_frames_dir, Pane};
+use crate::model::{view_frames_dir, Pane, ScrollDirection, Velocity};
 
 /// Per-pane capture stats for headless web panes, printed at export end.
 pub struct BrowserCaptureReport {
@@ -49,12 +50,15 @@ pub struct CaptureResult {
 /// of `scroll_height` pixels and a viewport of `viewport_height` pixels.
 /// Returns a single-element vector `[0]` when the page is not scrollable or
 /// only one frame is requested.
-fn scroll_offsets(scroll_height: usize, viewport_height: usize, frames: usize) -> Vec<usize> {
+fn scroll_offsets(
+    scroll_height: usize,
+    viewport_height: usize,
+    frames: usize,
+    direction: ScrollDirection,
+    velocity: Velocity,
+) -> Vec<usize> {
     let max_offset = scroll_height.saturating_sub(viewport_height);
-    if max_offset == 0 || frames <= 1 {
-        return vec![0];
-    }
-    (0..frames).map(|i| max_offset * i / (frames - 1)).collect()
+    scroll_offsets_with_params(max_offset, frames, direction, velocity)
 }
 
 /// Frame rate an interactive `--view` session is recorded at.
@@ -192,13 +196,16 @@ impl From<Scene> for AnyScene {
 /// of output. For headless web panes, captures one screenshot per output frame
 /// with absolute scroll positions, writing PNGs to a temporary directory that
 /// is cleaned up when the returned guard is dropped. `should_scroll` controls
-/// whether a native PDF pane pans through its document.
+/// whether a native PDF pane pans through its document. `direction` and
+/// `velocity` control the scroll behavior.
 pub fn capture(
     pane: &Pane,
     scroll_keyframes: usize,
     output_frames: usize,
     should_scroll: bool,
     fps: f64,
+    direction: ScrollDirection,
+    velocity: Velocity,
 ) -> Result<CaptureResult> {
     let url = pane
         .url
@@ -221,9 +228,18 @@ pub fn capture(
     // PDFs render natively (hayro) — no Chromium launch, no blank-viewer risk,
     // and the scene starts instantly. Chrome's viewer is only a fallback.
     if url.to_lowercase().ends_with(".pdf") {
-        match local_file_path(&url)
-            .and_then(|p| super::pdf::capture_scene(&p, w, h, output_frames, should_scroll, fps))
-        {
+        match local_file_path(&url).and_then(|p| {
+            super::pdf::capture_scene(
+                &p,
+                w,
+                h,
+                output_frames,
+                should_scroll,
+                fps,
+                direction,
+                velocity,
+            )
+        }) {
             Ok(scene) => {
                 return Ok(CaptureResult {
                     scene: AnyScene::Pdf(scene),
@@ -319,7 +335,7 @@ pub fn capture(
         // Give the page a moment to paint.
         std::thread::sleep(Duration::from_millis(900));
 
-        capture_web_pane(&tab, pane, w, h, output_frames)
+        capture_web_pane(&tab, pane, w, h, output_frames, direction, velocity)
     }
 }
 
@@ -352,12 +368,14 @@ fn capture_web_pane(
     w: usize,
     h: usize,
     output_frames: usize,
+    direction: ScrollDirection,
+    velocity: Velocity,
 ) -> Result<CaptureResult> {
     let frames = output_frames.max(1);
 
     let scroll_height = js_usize(tab, "document.documentElement.scrollHeight")?;
     let viewport_height = js_usize(tab, "window.innerHeight")?;
-    let offsets = scroll_offsets(scroll_height, viewport_height, frames);
+    let offsets = scroll_offsets(scroll_height, viewport_height, frames, direction, velocity);
     let actual_frames = offsets.len();
 
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -637,6 +655,7 @@ fn png_to_rgba(bytes: &[u8], tw: usize, th: usize) -> Result<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::Scene;
+    use crate::model::{ScrollDirection, Velocity};
 
     #[test]
     fn frame_at_picks_the_latest_keyframe() {
@@ -968,7 +987,8 @@ mod tests {
 
     #[test]
     fn scroll_offsets_first_zero_last_max_strictly_increasing() {
-        let offsets = super::scroll_offsets(2000, 500, 10);
+        let offsets =
+            super::scroll_offsets(2000, 500, 10, ScrollDirection::Down, Velocity::Constant);
         assert_eq!(offsets.len(), 10);
         assert_eq!(*offsets.first().unwrap(), 0);
         assert_eq!(*offsets.last().unwrap(), 1500); // 2000 - 500
@@ -979,21 +999,25 @@ mod tests {
 
     #[test]
     fn scroll_offsets_page_not_scrollable_yields_single_frame() {
-        let offsets = super::scroll_offsets(500, 500, 300);
+        let offsets =
+            super::scroll_offsets(500, 500, 300, ScrollDirection::Down, Velocity::Constant);
         assert_eq!(offsets, vec![0]);
-        let offsets = super::scroll_offsets(300, 500, 300);
+        let offsets =
+            super::scroll_offsets(300, 500, 300, ScrollDirection::Down, Velocity::Constant);
         assert_eq!(offsets, vec![0]);
     }
 
     #[test]
     fn scroll_offsets_single_frame_request() {
-        let offsets = super::scroll_offsets(2000, 500, 1);
+        let offsets =
+            super::scroll_offsets(2000, 500, 1, ScrollDirection::Down, Velocity::Constant);
         assert_eq!(offsets, vec![0]);
     }
 
     #[test]
     fn scroll_offsets_two_frames() {
-        let offsets = super::scroll_offsets(2000, 500, 2);
+        let offsets =
+            super::scroll_offsets(2000, 500, 2, ScrollDirection::Down, Velocity::Constant);
         assert_eq!(offsets, vec![0, 1500]);
     }
 
