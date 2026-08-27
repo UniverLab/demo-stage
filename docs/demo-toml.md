@@ -15,7 +15,23 @@ the typing parameters, the canvas layout, and the timeline.
 [demo]
 name = "my-demo"          # used for the output filename
 output_dir = "./dist"     # default
+speed = "2x"              # how this demo is published; omit for 1x
+targets = ["gif", "mp4"]  # formats to build; omit for every supported format
 # prompt = "\[\e[32m\]❯\[\e[0m\] "   # custom prompt; omit for the default `$ `
+```
+
+`speed` and `targets` say **how this demo is meant to be exported**, so the next
+person to rebuild it gets the same result without knowing which flags you used.
+A demo is usually recorded at a comfortable pace and published faster, and
+without this the multiplier survives nowhere: the published file's duration is
+the only remaining evidence of it.
+
+Both are defaults, not locks — `--speed` and a positional target still win:
+
+```sh
+demo export demo.rec              # 2x and gif+mp4, per the score above
+demo export gif demo.rec          # 2x, gif only
+demo export demo.rec --speed 1x   # the recorded pace, both formats
 ```
 
 `prompt` is bash `PS1` syntax, so colours (`\[\e[36m\]…\[\e[0m\]`) and escapes

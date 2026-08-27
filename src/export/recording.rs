@@ -212,6 +212,8 @@ fn score_with_layout(name: &str, layout: Layout, timeline: Vec<Step>) -> Score {
             name: name.to_string(),
             output_dir: "./dist".into(),
             prompt: None,
+            speed: None,
+            targets: None,
         },
         env: None,
         typing: None,

@@ -57,6 +57,8 @@ pub fn normalize(raw: &RawMacro, name: &str, opts: &Options) -> Score {
             name: name.to_string(),
             output_dir: "./dist".into(),
             prompt: None,
+            speed: None,
+            targets: None,
         },
         env: None,
         typing: Some(typing(opts)),

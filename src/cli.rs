@@ -184,9 +184,10 @@ pub struct ExportArgs {
     pub input: PathBuf,
 
     /// Speed multiplier applied to typing and waits — e.g. `2x`, `3x`, `0.5x`
-    /// (a bare number works too). `1x` keeps the recorded pace.
-    #[arg(long, default_value = "1x", value_parser = parse_speed)]
-    pub speed: f64,
+    /// (a bare number works too). `1x` keeps the recorded pace. Omit it to use
+    /// the score's `[demo] speed`, and `1x` when the score doesn't set one.
+    #[arg(long, value_parser = parse_speed)]
+    pub speed: Option<f64>,
 
     /// Render a **faithful capture** as-is. By default `export` refuses one (its
     /// typing/idle aren't humanized) and points you at `demo record`; pass this to
@@ -245,7 +246,7 @@ fn parse_targets(s: &str) -> Result<TargetList, String> {
 }
 
 /// Parse a speed multiplier like `2x`, `3x`, `0.5x` or a bare `2`.
-fn parse_speed(s: &str) -> Result<f64, String> {
+pub fn parse_speed(s: &str) -> Result<f64, String> {
     let trimmed = s.trim();
     let value = trimmed.strip_suffix(['x', 'X']).unwrap_or(trimmed);
     let v: f64 = value

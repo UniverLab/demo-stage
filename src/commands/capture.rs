@@ -1525,6 +1525,8 @@ fn write_faithful_cast(
             name: name.to_string(),
             output_dir: "./dist".into(),
             prompt: None,
+            speed: None,
+            targets: None,
         }),
         env: None,
         typing: score.and_then(|s| s.typing.clone()),

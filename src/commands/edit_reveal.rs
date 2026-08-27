@@ -308,6 +308,8 @@ mod tests {
                 name: "t".into(),
                 output_dir: "./dist".into(),
                 prompt: None,
+                speed: None,
+                targets: None,
             },
             env: None,
             typing: None,
