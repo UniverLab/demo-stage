@@ -335,7 +335,10 @@ pub fn capture(
         // Give the page a moment to paint.
         std::thread::sleep(Duration::from_millis(900));
 
-        capture_web_pane(&tab, pane, w, h, output_frames, direction, velocity)
+        // The pane scrolls only when a `scroll` step asked it to; the direction
+        // and curve ride along with that decision so the two can't disagree.
+        let scroll = should_scroll.then_some((direction, velocity));
+        capture_web_pane(&tab, pane, w, h, output_frames, scroll)
     }
 }
 
@@ -368,14 +371,18 @@ fn capture_web_pane(
     w: usize,
     h: usize,
     output_frames: usize,
-    direction: ScrollDirection,
-    velocity: Velocity,
+    scroll: Option<(ScrollDirection, Velocity)>,
 ) -> Result<CaptureResult> {
     let frames = output_frames.max(1);
 
-    let scroll_height = js_usize(tab, "document.documentElement.scrollHeight")?;
-    let viewport_height = js_usize(tab, "window.innerHeight")?;
-    let offsets = scroll_offsets(scroll_height, viewport_height, frames, direction, velocity);
+    let page = match scroll {
+        Some(_) => Some((
+            js_usize(tab, "document.documentElement.scrollHeight")?,
+            js_usize(tab, "window.innerHeight")?,
+        )),
+        None => None,
+    };
+    let offsets = web_pane_offsets(page, frames, scroll);
     let actual_frames = offsets.len();
 
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -422,6 +429,26 @@ fn capture_web_pane(
         _guard: guard,
         report: Some(report),
     })
+}
+
+/// Frame offsets for a web pane: the scroll ramp when a `scroll` step asked for
+/// one, a single still otherwise.
+///
+/// A pane nobody scrolled is a still — one screenshot held for its whole window.
+/// Capturing one per output frame would spend a screenshot apiece photographing
+/// the same pixels, and any motion the page makes on its own (a spinner, a lazy
+/// image, a hover) would leak into a demo that never asked for it.
+fn web_pane_offsets(
+    page: Option<(usize, usize)>,
+    frames: usize,
+    scroll: Option<(ScrollDirection, Velocity)>,
+) -> Vec<usize> {
+    match (page, scroll) {
+        (Some((scroll_height, viewport_height)), Some((direction, velocity))) => {
+            scroll_offsets(scroll_height, viewport_height, frames, direction, velocity)
+        }
+        _ => vec![0],
+    }
 }
 
 /// Evaluate a JS expression that returns a number and extract it as `usize`.
@@ -654,7 +681,7 @@ fn png_to_rgba(bytes: &[u8], tw: usize, th: usize) -> Result<Vec<u8>> {
 
 #[cfg(test)]
 mod tests {
-    use super::Scene;
+    use super::{web_pane_offsets, Scene};
     use crate::model::{ScrollDirection, Velocity};
 
     #[test]
@@ -983,6 +1010,29 @@ mod tests {
         assert_eq!(f[0], 0);
         let f = scene.frame_at(1.0);
         assert_eq!(f[0], 0);
+    }
+
+    /// A browser pane that no `scroll` step targets must stay a still, however
+    /// tall the page is. Regression: the flag reached `capture`, was forwarded to
+    /// the PDF branch, and the Chrome branch ignored it — so the ghscaff demo,
+    /// whose score has no scroll step at all, went from 1 static frame to 141
+    /// scrolling ones and spent 41 s capturing them.
+    #[test]
+    fn a_pane_with_no_scroll_step_is_one_still_frame() {
+        let offsets = web_pane_offsets(None, 141, None);
+        assert_eq!(offsets, vec![0], "a pane nobody scrolled must not scroll");
+    }
+
+    #[test]
+    fn a_pane_with_a_scroll_step_still_ramps() {
+        let offsets = web_pane_offsets(
+            Some((20_000, 1080)),
+            141,
+            Some((ScrollDirection::Down, Velocity::Constant)),
+        );
+        assert_eq!(offsets.len(), 141);
+        assert_eq!(offsets[0], 0);
+        assert_eq!(*offsets.last().unwrap(), 20_000 - 1080);
     }
 
     #[test]
