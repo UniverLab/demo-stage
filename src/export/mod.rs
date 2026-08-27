@@ -100,16 +100,26 @@ pub fn render(rec: &Recording, score: &Score, target: Target) -> Result<PathBuf>
             let mut report = raster::FallbackReport::new();
             if staged {
                 let mut n = 0usize;
+                let mut browser_reports = Vec::new();
                 gif::encode(&path, cw, ch, fps, |emit| {
                     let r = stage::render_stage(rec, &score, |f| {
                         n += 1;
                         progress_bar("exporting gif", n, total_frames);
                         emit(f);
                     })?;
-                    report = r;
+                    report = r.0;
+                    browser_reports = r.1;
                     Ok(())
                 })?;
                 progress_clear();
+                for br in &browser_reports {
+                    eprintln!(
+                        "demo: browser pane '{}' — {} frames captured in {:.1}s",
+                        br.pane_id,
+                        br.frame_count,
+                        br.elapsed.as_secs_f64()
+                    );
+                }
             } else {
                 let mut n = 0usize;
                 gif::encode(&path, cw, ch, fps, |emit| {
@@ -134,16 +144,26 @@ pub fn render(rec: &Recording, score: &Score, target: Target) -> Result<PathBuf>
             let mut report = raster::FallbackReport::new();
             if staged {
                 let mut n = 0usize;
+                let mut browser_reports = Vec::new();
                 mp4::encode(&path, cw, ch, fps, |emit| {
                     let r = stage::render_stage(rec, &score, |f| {
                         n += 1;
                         progress_bar("exporting mp4", n, total_frames);
                         emit(f);
                     })?;
-                    report = r;
+                    report = r.0;
+                    browser_reports = r.1;
                     Ok(())
                 })?;
                 progress_clear();
+                for br in &browser_reports {
+                    eprintln!(
+                        "demo: browser pane '{}' — {} frames captured in {:.1}s",
+                        br.pane_id,
+                        br.frame_count,
+                        br.elapsed.as_secs_f64()
+                    );
+                }
             } else {
                 let mut n = 0usize;
                 mp4::encode(&path, cw, ch, fps, |emit| {

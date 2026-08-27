@@ -37,12 +37,12 @@ pub fn needs_stage(score: &Score) -> bool {
 /// Composite a multi-pane score from an already-captured terminal `rec`,
 /// emitting each composited canvas frame. Pure playback — the terminal pane comes
 /// from `rec` (never re-run); browser panes are captured here via Chromium.
-/// Returns the fallback report.
+/// Returns the fallback report and any browser capture reports for cost printing.
 pub fn render_stage(
     rec: &Recording,
     score: &Score,
     mut on_frame: impl FnMut(&[u8]),
-) -> Result<raster::FallbackReport> {
+) -> Result<(raster::FallbackReport, Vec<browser::BrowserCaptureReport>)> {
     let canvas_w = score.layout.width as usize;
     let canvas_h = score.layout.height as usize;
     let bg = score
@@ -90,6 +90,8 @@ pub fn render_stage(
     // is first focused (recorded during the terminal run) — so it "opens" exactly
     // when the demo focuses it, e.g. once a server is up or a PDF has compiled.
     let mut scenes: Vec<(&Pane, browser::AnyScene, f64, Option<f64>)> = Vec::new();
+    let mut _guards: Vec<browser::TempDirGuard> = Vec::new();
+    let mut browser_reports: Vec<browser::BrowserCaptureReport> = Vec::new();
     for pane in score
         .layout
         .panes
@@ -102,12 +104,12 @@ pub fn render_stage(
         let window_dur = (window_end - reveal_at).max(0.0);
         let output_frames = (window_dur * fps).round() as usize;
         let should_scroll = pane_has_scroll(score, &pane.id);
-        scenes.push((
-            pane,
-            browser::capture(pane, scrolls, output_frames.max(1), should_scroll, fps)?,
-            reveal_at,
-            hide_at,
-        ));
+        let result = browser::capture(pane, scrolls, output_frames.max(1), should_scroll, fps)?;
+        if let Some(report) = result.report {
+            browser_reports.push(report);
+        }
+        _guards.push(result._guard);
+        scenes.push((pane, result.scene, reveal_at, hide_at));
     }
 
     for i in 0..n {
@@ -154,7 +156,7 @@ pub fn render_stage(
         }
         on_frame(&canvas);
     }
-    Ok(fallback_report)
+    Ok((fallback_report, browser_reports))
 }
 
 /// A browser pane's on-screen window `[reveal, hide)`. The recording's focus
