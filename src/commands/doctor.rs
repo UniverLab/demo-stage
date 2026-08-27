@@ -518,6 +518,13 @@ MimeType=x-scheme-handler/http;x-scheme-handler/https;text/html;
 }
 
 /// Make a file executable (chmod +x).
+///
+/// Unix only: the whole browser-routing feature is (it detects WSL by reading
+/// `/proc/version` and registers a `.desktop` handler), but this helper was the
+/// one piece that failed to *compile* elsewhere — `std::os::unix` does not exist
+/// on Windows, and the release build only found out on the Windows runner, after
+/// the tag had already been cut.
+#[cfg(unix)]
 fn make_executable(path: &Path) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
     let mut perms = std::fs::metadata(path)
@@ -527,6 +534,13 @@ fn make_executable(path: &Path) -> Result<()> {
     perms.set_mode(mode);
     std::fs::set_permissions(path, perms)
         .map_err(|e| Error::Export(format!("chmod {}: {e}", path.display())))?;
+    Ok(())
+}
+
+/// On Windows there is no execute bit to set, so this is a no-op that keeps the
+/// callers compiling. The feature itself never runs there — `is_wsl()` is false.
+#[cfg(not(unix))]
+fn make_executable(_path: &Path) -> Result<()> {
     Ok(())
 }
 
