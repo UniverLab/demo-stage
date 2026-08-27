@@ -33,3 +33,6 @@ headless_chrome = { version = "1", features = ["fetch"] }
 png = "0.17"
 regex = "1"
 hayro = "0.7.1"
+
+[dev-dependencies]
+tempfile = "3"

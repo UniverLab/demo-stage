@@ -48,6 +48,11 @@ pub struct DoctorArgs {
     /// Without it, `doctor` only reports and prints the commands to run.
     #[arg(long)]
     pub fix: bool,
+
+    /// On WSL, route human-facing links (http/https) to the Windows browser
+    /// instead of the installed Linux one. Reachable without `--fix`.
+    #[arg(long)]
+    pub route_browser: bool,
 }
 
 #[derive(Debug, Args)]
