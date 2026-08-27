@@ -79,6 +79,35 @@ fn ms(t0: Instant) -> u64 {
     t0.elapsed().as_millis() as u64
 }
 
+/// If muting has been on for more than 90 seconds, close the stranded mute span,
+/// emit a diagnostic, and return true. Otherwise return false.
+fn maybe_close_safety_valve(
+    muting: &AtomicBool,
+    mute_since: &Mutex<Instant>,
+    mute_start: &Mutex<Option<u64>>,
+    mute_spans: &Mutex<Vec<(u64, u64)>>,
+    t0: Instant,
+    debug: Option<&DebugLog>,
+) -> bool {
+    if !muting.load(Ordering::SeqCst) {
+        return false;
+    }
+    if mute_since.lock().unwrap().elapsed() <= Duration::from_secs(90) {
+        return false;
+    }
+    muting.store(false, Ordering::SeqCst);
+    if let Some(start) = mute_start.lock().unwrap().take() {
+        mute_spans.lock().unwrap().push((start, ms(t0)));
+    }
+    eprintln!(
+        "⚠ safety valve: mute span closed after 90s — a meta-command (demo focus/open) failed to report back"
+    );
+    if let Some(d) = debug {
+        d.note("safety valve: 90s mute span closed — meta-command did not report back");
+    }
+    true
+}
+
 /// Track the current terminal line and detect a secret prompt at each line
 /// boundary (`\r` redraw or `\n`) — crucially BEFORE the boundary clears the line.
 /// `inquire` emits the prompt immediately followed by `\r` (`Vault passphrase:\r…`),
@@ -1239,15 +1268,14 @@ pub fn run(args: CaptureArgs) -> Result<()> {
         }
         // Safety: an abandoned `demo open` (wizard cancelled, command never sent)
         // shouldn't mute the rest of the demo forever.
-        if muting.load(Ordering::SeqCst)
-            && mute_since.lock().unwrap().elapsed() > Duration::from_secs(90)
-        {
-            muting.store(false, Ordering::SeqCst);
-            // Close a stranded open span so it doesn't swallow the rest of the demo.
-            if let Some(start) = mute_start.lock().unwrap().take() {
-                mute_spans.lock().unwrap().push((start, ms(t0)));
-            }
-        }
+        maybe_close_safety_valve(
+            &muting,
+            &mute_since,
+            &mute_start,
+            &mute_spans,
+            t0,
+            debug.as_deref(),
+        );
         // Safety: if the readiness marker never arrives (odd shell), start
         // recording anyway rather than capturing nothing.
         if !ready.load(Ordering::SeqCst) && t0.elapsed() > Duration::from_secs(4) {
@@ -1581,6 +1609,18 @@ fn read_control(
             Some("stop") => {
                 muting.store(false, Ordering::SeqCst);
                 stop = Some("demo stop");
+            }
+            Some("reveal_cancel") => {
+                // A meta-command failed/was cancelled → close the mute span
+                // without recording a reveal (the command leaves no trace).
+                muting.store(false, Ordering::SeqCst);
+                let mute_span_start = mute_start.lock().unwrap().take();
+                if let Some(start) = mute_span_start {
+                    mute_spans.lock().unwrap().push((start, ms(t0)));
+                }
+                if let Some(d) = debug {
+                    d.note("reveal_cancel — meta-command failed or was cancelled");
+                }
             }
             Some("reveal") => {
                 // The command finished → stop muting and close its excision span.
@@ -3343,6 +3383,236 @@ mod tests {
         assert!(
             has_browser,
             "drained --after reveal must produce a browser pane"
+        );
+    }
+
+    #[test]
+    fn reveal_cancel_closes_mute_span_without_recording_reveal() {
+        let cpath = std::env::temp_dir().join(format!("demo-test-cancel-{}", std::process::id()));
+        let cmd = serde_json::json!({ "cmd": "reveal_cancel" });
+        std::fs::write(&cpath, serde_json::to_string(&cmd).unwrap()).unwrap();
+
+        let events: Arc<Mutex<Vec<RawEvent>>> = Arc::new(Mutex::new(Vec::new()));
+        let pending: PendingWhen = Arc::new(Mutex::new(Vec::new()));
+        let after: PendingAfter = Arc::new(Mutex::new(Vec::new()));
+        let after_running = AtomicBool::new(false);
+        let after_last_out = Mutex::new(Instant::now());
+        let muting = Arc::new(AtomicBool::new(true));
+        let mute_start: Arc<Mutex<Option<u64>>> = Arc::new(Mutex::new(Some(1000)));
+        let mute_spans: Arc<Mutex<Vec<(u64, u64)>>> = Arc::new(Mutex::new(Vec::new()));
+        let t0 = Instant::now();
+        let mut read = 0u64;
+
+        let result = read_control(
+            &cpath,
+            &mut read,
+            &events,
+            &pending,
+            &after,
+            &after_running,
+            &after_last_out,
+            &muting,
+            &mute_start,
+            &mute_spans,
+            t0,
+            None,
+        );
+
+        assert!(result.is_none());
+        assert!(
+            !muting.load(Ordering::SeqCst),
+            "reveal_cancel must stop muting"
+        );
+        assert!(
+            mute_start.lock().unwrap().is_none(),
+            "reveal_cancel must take the mute_start"
+        );
+        assert_eq!(
+            mute_spans.lock().unwrap().len(),
+            1,
+            "reveal_cancel must close the span"
+        );
+        assert!(
+            events.lock().unwrap().is_empty(),
+            "reveal_cancel must not record a reveal event"
+        );
+        let _ = std::fs::remove_file(&cpath);
+    }
+
+    #[test]
+    fn reveal_closes_mute_span_and_records_event() {
+        let cpath =
+            std::env::temp_dir().join(format!("demo-test-reveal-close-{}", std::process::id()));
+        let cmd = serde_json::json!({
+            "cmd": "reveal",
+            "panes": [{"id": "main", "url": "http://example.com"}],
+        });
+        std::fs::write(&cpath, serde_json::to_string(&cmd).unwrap()).unwrap();
+
+        let events: Arc<Mutex<Vec<RawEvent>>> = Arc::new(Mutex::new(Vec::new()));
+        let pending: PendingWhen = Arc::new(Mutex::new(Vec::new()));
+        let after: PendingAfter = Arc::new(Mutex::new(Vec::new()));
+        let after_running = AtomicBool::new(false);
+        let after_last_out = Mutex::new(Instant::now());
+        let muting = Arc::new(AtomicBool::new(true));
+        let mute_start: Arc<Mutex<Option<u64>>> = Arc::new(Mutex::new(Some(1000)));
+        let mute_spans: Arc<Mutex<Vec<(u64, u64)>>> = Arc::new(Mutex::new(Vec::new()));
+        let t0 = Instant::now();
+        let mut read = 0u64;
+
+        let result = read_control(
+            &cpath,
+            &mut read,
+            &events,
+            &pending,
+            &after,
+            &after_running,
+            &after_last_out,
+            &muting,
+            &mute_start,
+            &mute_spans,
+            t0,
+            None,
+        );
+
+        assert!(result.is_none());
+        assert!(!muting.load(Ordering::SeqCst), "reveal must stop muting");
+        assert!(
+            mute_start.lock().unwrap().is_none(),
+            "reveal must take the mute_start"
+        );
+        assert_eq!(
+            mute_spans.lock().unwrap().len(),
+            1,
+            "reveal must close the span"
+        );
+        assert_eq!(
+            events.lock().unwrap().len(),
+            1,
+            "reveal must record a reveal event"
+        );
+        let _ = std::fs::remove_file(&cpath);
+    }
+
+    #[test]
+    fn double_close_is_safe() {
+        let cpath =
+            std::env::temp_dir().join(format!("demo-test-double-close-{}", std::process::id()));
+        // First cancel, then reveal — both try to close the same span.
+        let cmds = format!(
+            "{}\n{}",
+            serde_json::to_string(&serde_json::json!({ "cmd": "reveal_cancel" })).unwrap(),
+            serde_json::to_string(&serde_json::json!({
+                "cmd": "reveal",
+                "panes": [{"id": "main", "url": "http://example.com"}],
+            }))
+            .unwrap()
+        );
+        std::fs::write(&cpath, cmds).unwrap();
+
+        let events: Arc<Mutex<Vec<RawEvent>>> = Arc::new(Mutex::new(Vec::new()));
+        let pending: PendingWhen = Arc::new(Mutex::new(Vec::new()));
+        let after: PendingAfter = Arc::new(Mutex::new(Vec::new()));
+        let after_running = AtomicBool::new(false);
+        let after_last_out = Mutex::new(Instant::now());
+        let muting = Arc::new(AtomicBool::new(true));
+        let mute_start: Arc<Mutex<Option<u64>>> = Arc::new(Mutex::new(Some(1000)));
+        let mute_spans: Arc<Mutex<Vec<(u64, u64)>>> = Arc::new(Mutex::new(Vec::new()));
+        let t0 = Instant::now();
+        let mut read = 0u64;
+
+        let result = read_control(
+            &cpath,
+            &mut read,
+            &events,
+            &pending,
+            &after,
+            &after_running,
+            &after_last_out,
+            &muting,
+            &mute_start,
+            &mute_spans,
+            t0,
+            None,
+        );
+
+        assert!(result.is_none());
+        assert_eq!(
+            mute_spans.lock().unwrap().len(),
+            1,
+            "only the first close must record a span (second finds mute_start empty)"
+        );
+        assert_eq!(
+            events.lock().unwrap().len(),
+            1,
+            "reveal still records its event even after cancel closed the span"
+        );
+        let _ = std::fs::remove_file(&cpath);
+    }
+
+    #[test]
+    fn safety_valve_closes_span_and_emits_diagnostic() {
+        let t0 = Instant::now();
+        let muting = AtomicBool::new(true);
+        // Pretend muting started 91 seconds ago.
+        let mute_since = Mutex::new(t0 - Duration::from_secs(91));
+        let mute_start: Mutex<Option<u64>> = Mutex::new(Some(500));
+        let mute_spans: Mutex<Vec<(u64, u64)>> = Mutex::new(Vec::new());
+
+        let log_path = std::env::temp_dir().join(format!("demo-test-valve-{}", std::process::id()));
+        let debug = DebugLog::create(&log_path, t0).unwrap();
+
+        let fired = maybe_close_safety_valve(
+            &muting,
+            &mute_since,
+            &mute_start,
+            &mute_spans,
+            t0,
+            Some(&debug),
+        );
+
+        assert!(fired, "safety valve must report that it fired");
+        assert!(
+            !muting.load(Ordering::SeqCst),
+            "safety valve must stop muting"
+        );
+        assert!(
+            mute_start.lock().unwrap().is_none(),
+            "safety valve must take the mute_start"
+        );
+        assert_eq!(
+            mute_spans.lock().unwrap().len(),
+            1,
+            "safety valve must close the span into mute_spans"
+        );
+        let log_contents = std::fs::read_to_string(&log_path).unwrap();
+        assert!(
+            log_contents.contains("safety valve:"),
+            "safety valve must write its diagnostic to the debug log, got: {log_contents:?}"
+        );
+        let _ = std::fs::remove_file(&log_path);
+    }
+
+    #[test]
+    fn safety_valve_does_not_fire_before_90s() {
+        let t0 = Instant::now();
+        let muting = AtomicBool::new(true);
+        let mute_since = Mutex::new(t0 - Duration::from_secs(60));
+        let mute_start: Mutex<Option<u64>> = Mutex::new(Some(500));
+        let mute_spans: Mutex<Vec<(u64, u64)>> = Mutex::new(Vec::new());
+
+        let fired =
+            maybe_close_safety_valve(&muting, &mute_since, &mute_start, &mute_spans, t0, None);
+
+        assert!(!fired, "safety valve must not fire before 90s");
+        assert!(
+            muting.load(Ordering::SeqCst),
+            "muting must remain on when valve hasn't fired"
+        );
+        assert_eq!(
+            mute_spans.lock().unwrap().len(),
+            0,
+            "no span must be closed when valve hasn't fired"
         );
     }
 }
