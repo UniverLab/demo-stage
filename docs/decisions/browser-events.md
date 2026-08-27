@@ -1,3 +1,9 @@
+---
+title: Browser Events in the Timeline
+description: Decisions about browser events in the timeline
+order: 99
+---
+
 # Browser Events in the Timeline
 
 **Status:** proposed  
