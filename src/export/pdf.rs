@@ -22,14 +22,16 @@ const GAP: usize = 12;
 
 /// The fastest a PDF pane may pan, in pixels per second.
 ///
-/// Continuity was never the hard part — one offset per output frame is a
-/// memcpy. Legibility is: panning a 10-page document across a 9.7 s window
-/// measured 124 px per frame, replacing the whole viewport every 0.58 s, which
-/// reads as a blur however smooth it is. The speed used to fall out of the
-/// document's length, so a longer PDF panned *faster*. This caps it, and when
-/// the cap and a `scroll` step's `duration_ms` disagree, the cap wins: the pan
-/// covers less of the document rather than speeding up to finish it.
-const MAX_PAN_SPEED_PX_PER_SEC: f64 = 600.0;
+/// A PDF pane exists to show the document, so the pan always travels the whole
+/// thing. What this caps is how fast it may do it: the `scroll` step's
+/// `duration_ms` is a **floor** on the pan's length and this is a **ceiling** on
+/// its speed, so a short document given generous time simply pans slower, and a
+/// long one takes as long as it needs.
+///
+/// Measured before the cap existed: 10 pages crossed in 9.7 s is 124 px per
+/// frame, a whole new viewport every 0.58 s — unreadable however smooth. At this
+/// speed the same document takes 19.3 s and renews the viewport every 1.2 s.
+const MAX_PAN_SPEED_PX_PER_SEC: f64 = 900.0;
 /// Page width as a fraction of the pane width (fit-width with side margins).
 const PAGE_FRAC: f64 = 0.90;
 /// Lead-in at the top of the document before panning starts, in ms.
@@ -54,9 +56,12 @@ pub struct PdfScene {
     base_off: usize,
     /// Output frames the pane is on screen. Progress maps onto these.
     window_frames: usize,
-    /// Output frames the pan itself lasts, from the `scroll` step's duration.
-    /// Frames past it hold the last offset.
+    /// Output frames the pan itself lasts. Frames past it hold the last offset.
     output_frames: usize,
+    /// Seconds this pane needs on screen to show the whole document at or below
+    /// the speed cap, lead-in included. The stage uses it to give the pane the
+    /// time it needs rather than truncating the document.
+    needed_seconds: f64,
     lead_in: usize,
     direction: ScrollDirection,
     velocity: Velocity,
@@ -71,6 +76,22 @@ impl PdfScene {
 
     pub fn height(&self) -> usize {
         self.height
+    }
+
+    /// Seconds this pane needs on screen to show the whole document without
+    /// exceeding the speed cap. Zero when it does not pan.
+    pub fn needed_seconds(&self) -> f64 {
+        self.needed_seconds
+    }
+
+    /// Tell the scene how many output frames its pane is actually on screen for.
+    ///
+    /// The scene is built before the stage knows the final window: a pane may be
+    /// held longer so its document fits. Progress arrives normalized over the
+    /// real window, so the scene has to map it over that same window or the pan
+    /// stops short — it did, at 23% of the document, until this existed.
+    pub fn set_window_frames(&mut self, frames: usize) {
+        self.window_frames = frames.max(1);
     }
 
     /// Return the viewport frame for the given timeline progress in `[0, 1]`.
@@ -248,28 +269,27 @@ pub fn capture_scene(
 
     let doc_max_off = doc_h.saturating_sub(pane_h);
     let plan = pan.filter(|_| doc_max_off > 0).map(|p| {
-        let frames = pan_frames(p.seconds, output_frames.max(1), fps);
-        let lead = if frames <= 1 {
-            0
-        } else {
-            lead_in_frames(frames, fps)
-        };
-        let travel = capped_travel(doc_max_off, frames.saturating_sub(lead), fps);
-        (p, frames, lead, travel)
+        // The whole document, always. The only question is how long that takes.
+        let seconds = pan_seconds_for(doc_max_off, p.seconds);
+        let panning = ((seconds * fps.max(1.0)).round() as usize).max(2);
+        let lead = lead_in_frames(panning, fps);
+        (p, panning + lead, lead, seconds)
     });
 
-    let (max_off, base_off, effective_frames, lead, direction, velocity) = match plan {
-        Some((p, frames, lead, travel)) => {
-            let base = match p.direction {
-                ScrollDirection::Down => 0,
-                // An upward pan still starts at the end of the document, even
-                // when the cap means it cannot reach the beginning.
-                ScrollDirection::Up => doc_max_off - travel,
-            };
-            (travel, base, frames, lead, p.direction, p.velocity)
-        }
-        None => (0, 0, 1, 0, ScrollDirection::Down, Velocity::Constant),
+    let (max_off, effective_frames, lead, direction, velocity, needed_seconds) = match plan {
+        Some((p, frames, lead, seconds)) => (
+            doc_max_off,
+            frames,
+            lead,
+            p.direction,
+            p.velocity,
+            seconds + lead as f64 / fps.max(1.0),
+        ),
+        None => (0, 1, 0, ScrollDirection::Down, Velocity::Constant, 0.0),
     };
+    // The pan always covers the document, so `up` starts at its end and reaches
+    // the beginning; there is no partial window to offset into.
+    let base_off = 0;
 
     Ok(PdfScene {
         width: pane_w,
@@ -281,6 +301,7 @@ pub fn capture_scene(
         base_off,
         window_frames: output_frames.max(1),
         output_frames: effective_frames,
+        needed_seconds,
         lead_in: lead,
         direction,
         velocity,
@@ -289,83 +310,77 @@ pub fn capture_scene(
     })
 }
 
-/// How many output frames the pan itself lasts: the `scroll` step's declared
-/// duration, never longer than the pane is on screen and never shorter than one
-/// frame. Frames after it hold the last offset.
-fn pan_frames(seconds: f64, output_frames: usize, fps: f64) -> usize {
-    if seconds <= 0.0 {
-        return output_frames;
-    }
-    ((seconds * fps.max(1.0)).round() as usize).clamp(1, output_frames)
-}
-
-/// How far the pan may travel: the whole document, unless crossing it would
-/// exceed [`MAX_PAN_SPEED_PX_PER_SEC`], in which case it covers only what fits
-/// at that speed.
-fn capped_travel(doc_max_off: usize, panning_frames: usize, fps: f64) -> usize {
-    let seconds = panning_frames as f64 / fps.max(1.0);
-    let budget = (MAX_PAN_SPEED_PX_PER_SEC * seconds).round() as usize;
-    doc_max_off.min(budget.max(1))
+/// How long the pan must last to cross the whole document without exceeding
+/// [`MAX_PAN_SPEED_PX_PER_SEC`].
+///
+/// `requested` is the `scroll` step's `duration_ms` in seconds, and it acts as a
+/// floor: asking for more time than the cap needs makes the pan slower, never
+/// longer than asked makes it faster. Zero means "no preference".
+pub fn pan_seconds_for(doc_max_off: usize, requested: f64) -> f64 {
+    let at_full_speed = doc_max_off as f64 / MAX_PAN_SPEED_PX_PER_SEC;
+    at_full_speed.max(requested.max(0.0))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// The measured case that motivated the cap: 10 pages (~17 400 px of travel)
-    /// across a 9.7 s window at 15 fps panned 124 px per frame — a new viewport
-    /// every 0.58 s, unreadable however smooth. The cap must cut the travel, not
-    /// the time.
+    /// The measured case: 10 pages (~17 400 px) crossed in a 9.7 s window is
+    /// 124 px per frame — a whole new viewport every 0.58 s, unreadable however
+    /// smooth. The pane must show the whole document, so what gives is the time,
+    /// never the speed and never the document.
     #[test]
-    fn a_long_document_pans_at_the_capped_speed_not_faster() {
-        let (doc_max_off, fps) = (17_392usize, 15.0);
-        let frames = pan_frames(8.0, 146, fps); // duration_ms = 8000 in the score
-        let lead = lead_in_frames(frames, fps);
-        let travel = capped_travel(doc_max_off, frames - lead, fps);
-        let seconds = (frames - lead) as f64 / fps;
-        let speed = travel as f64 / seconds;
+    fn a_long_document_takes_the_time_it_needs_and_is_crossed_whole() {
+        let doc = 17_392usize;
+        let asked = 8.0; // the score's duration_ms = 8000
+        let seconds = pan_seconds_for(doc, asked);
+        assert!(
+            seconds > asked,
+            "a document that cannot be crossed in {asked}s must take longer, got {seconds:.1}s"
+        );
+        let speed = doc as f64 / seconds;
         assert!(
             speed <= MAX_PAN_SPEED_PX_PER_SEC + 1.0,
             "panned at {speed:.0} px/s, cap is {MAX_PAN_SPEED_PX_PER_SEC}"
         );
+    }
+
+    /// `duration_ms` is a floor, not a ceiling: a short document given generous
+    /// time pans slower rather than finishing early and holding.
+    #[test]
+    fn a_short_document_given_time_pans_slower_not_faster() {
+        let doc = 1_200usize;
+        let seconds = pan_seconds_for(doc, 10.0);
+        assert_eq!(seconds, 10.0, "the requested time is a floor");
+        let speed = doc as f64 / seconds;
         assert!(
-            travel < doc_max_off,
-            "a long document must not be crossed whole"
+            speed < MAX_PAN_SPEED_PX_PER_SEC,
+            "{speed:.0} px/s should be well under the cap"
         );
-        let per_frame = travel as f64 / (frames - lead) as f64;
-        assert!(per_frame < 45.0, "{per_frame:.0} px/frame is still a blur");
     }
 
-    /// A document short enough to cross under the cap is crossed whole — the cap
-    /// is a ceiling, not a target.
+    /// Asking for less time than the cap allows must not speed the pan up.
     #[test]
-    fn a_short_document_is_still_crossed_completely() {
-        let travel = capped_travel(1_200, 90, 15.0); // 6 s of budget = 3600 px
-        assert_eq!(travel, 1_200);
+    fn the_cap_wins_when_the_requested_time_is_too_short() {
+        let doc = 17_392usize;
+        let hurried = pan_seconds_for(doc, 1.0);
+        let generous = pan_seconds_for(doc, 60.0);
+        assert!(
+            hurried > 1.0,
+            "the cap must override an impossible duration"
+        );
+        assert_eq!(generous, 60.0, "a generous duration is honored as a floor");
+        assert!(generous > hurried);
     }
 
-    /// The cap wins over the declared duration: asking for the whole document in
-    /// less time buys less document, never more speed.
+    /// No `duration_ms` at all means the cap alone decides.
     #[test]
-    fn the_cap_wins_when_it_collides_with_the_declared_duration() {
-        let fps = 15.0;
-        let long = capped_travel(17_392, pan_frames(8.0, 146, fps), fps);
-        let longer = capped_travel(17_392, pan_frames(20.0, 300, fps), fps);
-        assert!(longer > long, "more time must buy more document");
-        assert!(long < 17_392 && longer < 17_392);
-    }
-
-    /// `duration_ms` bounds the pan, and the pane window bounds `duration_ms`.
-    #[test]
-    fn pan_never_outlasts_the_pane_window() {
-        assert_eq!(pan_frames(8.0, 146, 15.0), 120);
-        assert_eq!(pan_frames(60.0, 146, 15.0), 146, "clamped to the window");
+    fn without_a_requested_duration_the_cap_decides() {
+        let doc = 9_000usize;
         assert_eq!(
-            pan_frames(0.0, 146, 15.0),
-            146,
-            "no duration means the window"
+            pan_seconds_for(doc, 0.0),
+            doc as f64 / MAX_PAN_SPEED_PX_PER_SEC
         );
-        assert_eq!(pan_frames(8.0, 1, 15.0), 1);
     }
 
     #[test]

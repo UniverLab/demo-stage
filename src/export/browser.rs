@@ -166,6 +166,25 @@ pub enum AnyScene {
 }
 
 impl AnyScene {
+    /// Seconds this scene needs on screen to show everything it has, at or below
+    /// its speed cap. Only the native PDF path asks for time; the others are
+    /// content-agnostic and take whatever window they are given.
+    pub fn needed_seconds(&self) -> f64 {
+        match self {
+            Self::Pdf(p) => p.needed_seconds(),
+            _ => 0.0,
+        }
+    }
+
+    /// Tell a scene the real number of output frames its pane is on screen for.
+    /// Only the PDF path cares; the others already map progress over whatever
+    /// window they are given.
+    pub fn set_window_frames(&mut self, frames: usize) {
+        if let Self::Pdf(p) = self {
+            p.set_window_frames(frames);
+        }
+    }
+
     pub fn width(&self) -> usize {
         match self {
             Self::Keyframe(s) => s.width,

@@ -177,9 +177,62 @@ pub fn render_stage(
         scenes.push((pane, result.scene, reveal_at, hide_at));
     }
 
+    // A PDF pane exists to show its document, so it may need more time on screen
+    // than the recording gives it. When such a pane runs to the end of the demo,
+    // the demo waits for it: the terminal underneath holds its last frame while
+    // the pan finishes. A pane that hides mid-demo cannot be extended without
+    // shifting everything after it, so that one is reported instead of silently
+    // truncating the document.
+    let mut n = n;
+    let mut total = total;
+    for (pane, scene, reveal_at, hide_at) in &scenes {
+        let needed = scene.needed_seconds();
+        if needed <= 0.0 {
+            continue;
+        }
+        let have = hide_at.unwrap_or(total) - reveal_at;
+        if needed <= have + 1e-6 {
+            continue;
+        }
+        match hide_at {
+            None => {
+                let end = reveal_at + needed;
+                n = (end * fps).ceil() as usize + 1;
+                total = n as f64 / fps;
+                eprintln!(
+                    "demo: pane '{}' — held {:.1}s longer so the whole document is shown",
+                    pane.id,
+                    needed - have
+                );
+            }
+            Some(_) => eprintln!(
+                "demo: pane '{}' — the document needs {:.1}s and the pane is on screen {:.1}s; \
+                 the rest of it is not shown. Give the pane more time before it switches away.",
+                pane.id, needed, have
+            ),
+        }
+    }
+
+    // The window may have grown above; every scene maps progress over the window
+    // it is actually given, so tell them the final one.
+    for (_, scene, reveal_at, hide_at) in scenes.iter_mut() {
+        let window = (hide_at.unwrap_or(total) - *reveal_at).max(0.0);
+        scene.set_window_frames((window * fps).round() as usize);
+    }
+
+    let mut held_term_frame: Vec<u8> = Vec::new();
     for i in 0..n {
         let t = i as f64 / fps;
-        let term_frame = term_src.next_frame().unwrap_or_default();
+        // Past the end of the recording the terminal holds its last frame rather
+        // than going blank — that is what lets a PDF pane finish panning.
+        let term_frame = match term_src.next_frame() {
+            Some(f) => {
+                held_term_frame = f;
+                &held_term_frame
+            }
+            None => &held_term_frame,
+        }
+        .clone();
 
         let mut layers = vec![composite::Layer {
             x: term_pane.x as usize,
