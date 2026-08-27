@@ -7,17 +7,64 @@
 //! suite or in the restricted dev sandbox; it is verified on a machine with
 //! Chromium available (or network to fetch it).
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use headless_chrome::protocol::cdp::Emulation::{MediaFeature, SetEmulatedMedia};
 use headless_chrome::protocol::cdp::Page::{CaptureScreenshotFormatOption, Navigate};
 use headless_chrome::{Browser, LaunchOptions, Tab};
 
 use super::provision;
+use super::stage::{scroll_offsets_with_params, ScrollParams};
 use crate::error::{Error, Result};
-use crate::model::{view_frames_dir, Pane};
+use crate::model::{view_frames_dir, Pane, ScrollDirection, Velocity};
+
+/// Screenshots per second of pane time for a headless web pane. One CDP
+/// screenshot measured ~291 ms on this machine, so a 10 s pane at one capture
+/// per output frame costs ~87 s; at this rate it costs ~12 s.
+const MAX_CAPTURES_PER_SECOND: f64 = 4.0;
+
+/// Per-pane capture stats for headless web panes, printed at export end.
+pub struct BrowserCaptureReport {
+    pub pane_id: String,
+    pub frame_count: usize,
+    pub elapsed: Duration,
+}
+
+/// Guard that removes a temporary directory on drop.
+pub struct TempDirGuard(Option<PathBuf>);
+
+impl Drop for TempDirGuard {
+    fn drop(&mut self) {
+        if let Some(dir) = &self.0 {
+            let _ = std::fs::remove_dir_all(dir);
+        }
+    }
+}
+
+/// Result of a headless browser capture: the scene, a guard that cleans up the
+/// temporary frames directory, and optional capture stats for cost reporting.
+pub struct CaptureResult {
+    pub scene: AnyScene,
+    pub _guard: TempDirGuard,
+    pub report: Option<BrowserCaptureReport>,
+}
+
+/// Compute the absolute scroll offsets for `frames` output frames, given a page
+/// of `scroll_height` pixels and a viewport of `viewport_height` pixels.
+/// Returns a single-element vector `[0]` when the page is not scrollable or
+/// only one frame is requested.
+fn scroll_offsets(
+    scroll_height: usize,
+    viewport_height: usize,
+    frames: usize,
+    direction: ScrollDirection,
+    velocity: Velocity,
+) -> Vec<usize> {
+    let max_offset = scroll_height.saturating_sub(viewport_height);
+    scroll_offsets_with_params(max_offset, frames, direction, velocity)
+}
 
 /// Frame rate an interactive `--view` session is recorded at.
 pub const VIEW_FPS: u32 = 8;
@@ -31,19 +78,6 @@ pub struct Scene {
 }
 
 impl Scene {
-    /// Build a scene from pre-computed keyframes (used by the native PDF path).
-    pub(crate) fn from_keyframes(
-        width: usize,
-        height: usize,
-        keyframes: Vec<(f64, Vec<u8>)>,
-    ) -> Self {
-        Self {
-            width,
-            height,
-            keyframes,
-        }
-    }
-
     /// The frame to show at `progress` (the latest keyframe at or before it).
     pub fn frame_at(&self, progress: f64) -> &[u8] {
         let mut chosen = &self.keyframes[0].1;
@@ -58,9 +92,146 @@ impl Scene {
     }
 }
 
-/// Render a browser pane's `url`, capturing `scroll_keyframes` extra frames while
-/// scrolling down (0 = a single static frame).
-pub fn capture(pane: &Pane, scroll_keyframes: usize) -> Result<Scene> {
+/// A frame source backed by a directory of PNGs decoded on demand.
+/// Keeps at most one frame decoded at a time; the consumer reads progress
+/// monotonically, so a one-frame cache plus re-decode is sufficient.
+#[derive(Debug)]
+pub struct DirScene {
+    width: usize,
+    height: usize,
+    files: Vec<PathBuf>,
+    progresses: Vec<f64>,
+    cached_index: Option<usize>,
+    cached_frame: Vec<u8>,
+    #[cfg(test)]
+    decode_count: usize,
+}
+
+impl DirScene {
+    fn new(width: usize, height: usize, files: Vec<PathBuf>, progresses: Vec<f64>) -> Self {
+        Self {
+            width,
+            height,
+            files,
+            progresses,
+            cached_index: None,
+            cached_frame: Vec::new(),
+            #[cfg(test)]
+            decode_count: 0,
+        }
+    }
+
+    fn frame_at(&mut self, progress: f64) -> &[u8] {
+        let idx = self.pick_index(progress);
+        if self.cached_index != Some(idx) {
+            let bytes = std::fs::read(&self.files[idx])
+                .unwrap_or_else(|e| panic!("read {}: {e}", self.files[idx].display()));
+            let rgba = png_to_rgba(&bytes, self.width, self.height)
+                .unwrap_or_else(|e| panic!("decode {}: {e}", self.files[idx].display()));
+            self.cached_index = Some(idx);
+            self.cached_frame = rgba;
+            #[cfg(test)]
+            {
+                self.decode_count += 1;
+            }
+        }
+        &self.cached_frame
+    }
+
+    fn pick_index(&self, progress: f64) -> usize {
+        let mut chosen = 0;
+        for (i, p) in self.progresses.iter().enumerate() {
+            if *p <= progress {
+                chosen = i;
+            } else {
+                break;
+            }
+        }
+        chosen
+    }
+
+    #[cfg(test)]
+    fn decode_count(&self) -> usize {
+        self.decode_count
+    }
+}
+
+/// A browser scene backed by either in-memory keyframes, a directory of
+/// PNGs decoded on demand, or a native PDF scene that computes viewport
+/// slices on demand.
+pub enum AnyScene {
+    Keyframe(Scene),
+    Directory(DirScene),
+    Pdf(super::pdf::PdfScene),
+}
+
+impl AnyScene {
+    /// Seconds this scene needs on screen to show everything it has, at or below
+    /// its speed cap. Only the native PDF path asks for time; the others are
+    /// content-agnostic and take whatever window they are given.
+    pub fn needed_seconds(&self) -> f64 {
+        match self {
+            Self::Pdf(p) => p.needed_seconds(),
+            _ => 0.0,
+        }
+    }
+
+    /// Tell a scene the real number of output frames its pane is on screen for.
+    /// Only the PDF path cares; the others already map progress over whatever
+    /// window they are given.
+    pub fn set_window_frames(&mut self, frames: usize) {
+        if let Self::Pdf(p) = self {
+            p.set_window_frames(frames);
+        }
+    }
+
+    pub fn width(&self) -> usize {
+        match self {
+            Self::Keyframe(s) => s.width,
+            Self::Directory(d) => d.width,
+            Self::Pdf(p) => p.width(),
+        }
+    }
+
+    pub fn height(&self) -> usize {
+        match self {
+            Self::Keyframe(s) => s.height,
+            Self::Directory(d) => d.height,
+            Self::Pdf(p) => p.height(),
+        }
+    }
+
+    pub fn frame_at(&mut self, progress: f64) -> &[u8] {
+        match self {
+            Self::Keyframe(s) => s.frame_at(progress),
+            Self::Directory(d) => d.frame_at(progress),
+            Self::Pdf(p) => p.frame_at(progress),
+        }
+    }
+}
+
+impl From<Scene> for AnyScene {
+    fn from(s: Scene) -> Self {
+        Self::Keyframe(s)
+    }
+}
+
+/// Render a browser pane's `url`, emitting a scene that covers `output_frames`
+/// of output. For headless web panes, captures one screenshot per output frame
+/// with absolute scroll positions, writing PNGs to a temporary directory that
+/// is cleaned up when the returned guard is dropped. `should_scroll` controls
+/// whether a native PDF pane pans through its document. `direction` and
+/// `velocity` control the scroll behavior. `effective_speed` is the export
+/// speed multiplier (1.0 for panes with `ignore_speed`), threaded through to
+/// the PDF pan path.
+pub fn capture(
+    pane: &Pane,
+    scroll_keyframes: usize,
+    output_frames: usize,
+    fps: f64,
+    pan: Option<ScrollParams>,
+    effective_speed: f64,
+) -> Result<CaptureResult> {
     let url = pane
         .url
         .as_deref()
@@ -69,7 +240,12 @@ pub fn capture(pane: &Pane, scroll_keyframes: usize) -> Result<Scene> {
 
     // A `--view` scene is already recorded — play its frames back, no Chromium.
     if let Some(dir) = view_frames_dir(url) {
-        return load_frames(Path::new(dir), w, h);
+        let scene = load_frames(Path::new(dir), w, h).map(AnyScene::Directory)?;
+        return Ok(CaptureResult {
+            scene,
+            _guard: TempDirGuard(None),
+            report: None,
+        });
     }
 
     let url = crate::paths::resolve_browser_url(url)?;
@@ -77,10 +253,16 @@ pub fn capture(pane: &Pane, scroll_keyframes: usize) -> Result<Scene> {
     // PDFs render natively (hayro) — no Chromium launch, no blank-viewer risk,
     // and the scene starts instantly. Chrome's viewer is only a fallback.
     if url.to_lowercase().ends_with(".pdf") {
-        match local_file_path(&url)
-            .and_then(|p| super::pdf::capture_scene(&p, w, h, scroll_keyframes))
-        {
-            Ok(scene) => return Ok(scene),
+        match local_file_path(&url).and_then(|p| {
+            super::pdf::capture_scene(&p, w, h, output_frames, fps, pan, effective_speed)
+        }) {
+            Ok(scene) => {
+                return Ok(CaptureResult {
+                    scene: AnyScene::Pdf(scene),
+                    _guard: TempDirGuard(None),
+                    report: None,
+                })
+            }
             Err(e) => {
                 eprintln!("demo: native PDF render failed ({e}), falling back to Chrome viewer");
             }
@@ -141,33 +323,172 @@ pub fn capture(pane: &Pane, scroll_keyframes: usize) -> Result<Scene> {
             referrer_policy: None,
         });
         std::thread::sleep(Duration::from_millis(3000));
+
+        let mut keyframes = vec![(0.0, shot(&tab, w, h)?)];
+        for i in 0..scroll_keyframes {
+            let _ = tab.evaluate(
+                "window.scrollBy(0, Math.round(window.innerHeight * 0.85));",
+                false,
+            );
+            let _ = tab.press_key("PageDown");
+            std::thread::sleep(Duration::from_millis(350));
+            let progress = 0.5 + 0.5 * ((i + 1) as f64 / scroll_keyframes as f64);
+            keyframes.push((progress, shot(&tab, w, h)?));
+        }
+        Ok(CaptureResult {
+            scene: AnyScene::Keyframe(Scene {
+                width: w,
+                height: h,
+                keyframes,
+            }),
+            _guard: TempDirGuard(None),
+            report: None,
+        })
     } else {
         tab.navigate_to(&url)
             .and_then(|t| t.wait_until_navigated())
             .map_err(|e| Error::Export(format!("navigate to {url}: {e}")))?;
         // Give the page a moment to paint.
         std::thread::sleep(Duration::from_millis(900));
+
+        capture_web_pane(&tab, pane, w, h, output_frames, fps, pan)
     }
+}
 
-    let mut keyframes = vec![(0.0, shot(&tab, w, h)?)];
-
-    for i in 0..scroll_keyframes {
-        // window.scrollBy for web pages; PageDown also drives Chrome's PDF viewer.
-        let _ = tab.evaluate(
-            "window.scrollBy(0, Math.round(window.innerHeight * 0.85));",
-            false,
-        );
-        let _ = tab.press_key("PageDown");
-        std::thread::sleep(Duration::from_millis(350));
-        let progress = 0.5 + 0.5 * ((i + 1) as f64 / scroll_keyframes as f64);
-        keyframes.push((progress, shot(&tab, w, h)?));
+/// Capture frames to a directory using the given offsets and screenshot function.
+/// Each offset triggers a screenshot call; the resulting PNG is written to disk.
+/// Returns the list of file paths on success, or an error (the temp directory
+/// is cleaned up by the caller's guard).
+fn capture_frames_to_dir(
+    offsets: &[usize],
+    target_dir: &Path,
+    screenshot: impl Fn(usize) -> Result<Vec<u8>>,
+) -> Result<Vec<PathBuf>> {
+    let mut files = Vec::with_capacity(offsets.len());
+    for (i, &offset) in offsets.iter().enumerate() {
+        let png = screenshot(i)
+            .map_err(|e| Error::Export(format!("screenshot frame {i} at offset {offset}: {e}")))?;
+        let path = target_dir.join(format!("{:04}.png", i + 1));
+        std::fs::write(&path, &png).map_err(|e| Error::Export(format!("write frame {i}: {e}")))?;
+        files.push(path);
     }
+    Ok(files)
+}
 
-    Ok(Scene {
-        width: w,
-        height: h,
-        keyframes,
+/// Capture a web pane as one PNG per output frame, with absolute scroll
+/// positions derived from the page's own dimensions. Frames land in a temp
+/// directory and the scene reads them back on demand.
+fn capture_web_pane(
+    tab: &Arc<Tab>,
+    pane: &Pane,
+    w: usize,
+    h: usize,
+    output_frames: usize,
+    fps: f64,
+    pan: Option<ScrollParams>,
+) -> Result<CaptureResult> {
+    // A browser frame costs a CDP screenshot round-trip — measured at ~291 ms,
+    // four orders of magnitude more than a PDF frame, which is a memcpy. So this
+    // path captures at a bounded rate and holds each frame, while the PDF path
+    // renders one per output frame. Same feature, opposite economics.
+    let frames = capture_budget(output_frames.max(1), fps);
+
+    let page = match pan {
+        Some(_) => Some((
+            js_usize(tab, "document.documentElement.scrollHeight")?,
+            js_usize(tab, "window.innerHeight")?,
+        )),
+        None => None,
+    };
+    let offsets = web_pane_offsets(page, frames, pan.map(|p| (p.direction, p.velocity)));
+    let actual_frames = offsets.len();
+
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let id = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let tmp_dir =
+        std::env::temp_dir().join(format!("demostage_browser_{}_{}", std::process::id(), id));
+    std::fs::create_dir_all(&tmp_dir)
+        .map_err(|e| Error::Export(format!("create temp frames dir: {e}")))?;
+    let guard = TempDirGuard(Some(tmp_dir.clone()));
+
+    let start = Instant::now();
+    let url_for_err = pane.url.clone();
+    let files = capture_frames_to_dir(&offsets, &tmp_dir, |i| {
+        let js = format!("window.scrollTo(0, {});", offsets[i]);
+        let _ = tab.evaluate(&js, false);
+        tab.capture_screenshot(CaptureScreenshotFormatOption::Png, None, None, true)
+            .map_err(|e| {
+                Error::Export(format!(
+                    "frame {} for {}: {e}",
+                    i,
+                    url_for_err.as_deref().unwrap_or("?")
+                ))
+            })
+    })?;
+    let elapsed = start.elapsed();
+
+    let progresses: Vec<f64> = if actual_frames > 1 {
+        (0..actual_frames)
+            .map(|i| i as f64 / (actual_frames - 1) as f64)
+            .collect()
+    } else {
+        vec![0.0]
+    };
+
+    let scene = AnyScene::Directory(DirScene::new(w, h, files, progresses));
+    let report = BrowserCaptureReport {
+        pane_id: pane.id.clone(),
+        frame_count: actual_frames,
+        elapsed,
+    };
+    Ok(CaptureResult {
+        scene,
+        _guard: guard,
+        report: Some(report),
     })
+}
+
+/// How many screenshots a web pane is worth: at most [`MAX_CAPTURES_PER_SECOND`]
+/// per second of pane time, never more than one per output frame.
+///
+/// The scene holds each captured frame until the next, so a lower budget reads
+/// as a coarser scroll — not as a shorter one.
+fn capture_budget(output_frames: usize, fps: f64) -> usize {
+    let seconds = output_frames as f64 / fps.max(1.0);
+    let capped = (seconds * MAX_CAPTURES_PER_SECOND).ceil() as usize;
+    capped.clamp(1, output_frames)
+}
+
+/// Frame offsets for a web pane: the scroll ramp when a `scroll` step asked for
+/// one, a single still otherwise.
+///
+/// A pane nobody scrolled is a still — one screenshot held for its whole window.
+/// Capturing one per output frame would spend a screenshot apiece photographing
+/// the same pixels, and any motion the page makes on its own (a spinner, a lazy
+/// image, a hover) would leak into a demo that never asked for it.
+fn web_pane_offsets(
+    page: Option<(usize, usize)>,
+    frames: usize,
+    scroll: Option<(ScrollDirection, Velocity)>,
+) -> Vec<usize> {
+    match (page, scroll) {
+        (Some((scroll_height, viewport_height)), Some((direction, velocity))) => {
+            scroll_offsets(scroll_height, viewport_height, frames, direction, velocity)
+        }
+        _ => vec![0],
+    }
+}
+
+/// Evaluate a JS expression that returns a number and extract it as `usize`.
+fn js_usize(tab: &Arc<Tab>, expr: &str) -> Result<usize> {
+    let result = tab
+        .evaluate(expr, false)
+        .map_err(|e| Error::Export(format!("evaluate '{expr}': {e}")))?;
+    result
+        .value
+        .and_then(|v| v.as_f64().map(|f| f as usize))
+        .ok_or_else(|| Error::Export(format!("'{expr}' did not return a number")))
 }
 
 /// Record an **interactive** browsing session: open a real (headed) browser at
@@ -275,8 +596,9 @@ pub fn record_view(
 }
 
 /// Load a `--view` scene's pre-recorded PNG frames (`NNNN.png`, sorted) as a
-/// time-spread keyframe sequence sized to `tw`×`th`.
-fn load_frames(dir: &Path, tw: usize, th: usize) -> Result<Scene> {
+/// directory-backed frame source sized to `tw`×`th`. Frames are decoded on
+/// demand; only one frame is held decoded at a time.
+fn load_frames(dir: &Path, tw: usize, th: usize) -> Result<DirScene> {
     let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(dir)
         .map_err(|e| Error::io(dir, e))?
         .filter_map(|e| e.ok().map(|e| e.path()))
@@ -291,22 +613,16 @@ fn load_frames(dir: &Path, tw: usize, th: usize) -> Result<Scene> {
     }
 
     let count = files.len();
-    let mut keyframes = Vec::with_capacity(count);
-    for (i, f) in files.iter().enumerate() {
-        let bytes = std::fs::read(f).map_err(|e| Error::io(f, e))?;
-        let rgba = png_to_rgba(&bytes, tw, th)?;
-        let progress = if count > 1 {
-            i as f64 / (count - 1) as f64
-        } else {
-            0.0
-        };
-        keyframes.push((progress, rgba));
-    }
-    Ok(Scene {
-        width: tw,
-        height: th,
-        keyframes,
-    })
+    let progresses: Vec<f64> = (0..count)
+        .map(|i| {
+            if count > 1 {
+                i as f64 / (count - 1) as f64
+            } else {
+                0.0
+            }
+        })
+        .collect();
+    Ok(DirScene::new(tw, th, files, progresses))
 }
 
 /// Emulate `prefers-color-scheme` (`light`/`dark`) so theme-aware pages render the
@@ -394,7 +710,8 @@ fn png_to_rgba(bytes: &[u8], tw: usize, th: usize) -> Result<Vec<u8>> {
 
 #[cfg(test)]
 mod tests {
-    use super::Scene;
+    use super::{capture_budget, web_pane_offsets, Scene};
+    use crate::model::{ScrollDirection, Velocity};
 
     #[test]
     fn frame_at_picks_the_latest_keyframe() {
@@ -476,7 +793,11 @@ mod tests {
 
     #[test]
     fn from_keyframes_builds_scene() {
-        let scene = Scene::from_keyframes(100, 200, vec![(0.0, vec![1, 2, 3])]);
+        let scene = Scene {
+            width: 100,
+            height: 200,
+            keyframes: vec![(0.0, vec![1, 2, 3])],
+        };
         assert_eq!(scene.width, 100);
         assert_eq!(scene.height, 200);
         assert_eq!(scene.frame_at(0.5), &[1, 2, 3]);
@@ -484,9 +805,11 @@ mod tests {
 
     #[test]
     fn from_keyframes_empty_keyframes() {
-        // Should not panic even with empty keyframes (frame_at would panic on empty)
-        let scene = Scene::from_keyframes(10, 10, vec![]);
-        // frame_at on empty keyframes would panic, but from_keyframes itself is fine
+        let scene = Scene {
+            width: 10,
+            height: 10,
+            keyframes: vec![],
+        };
         assert_eq!(scene.width, 10);
         assert_eq!(scene.height, 10);
     }
@@ -541,7 +864,7 @@ mod tests {
         let rgba = super::png_to_rgba(&png_bytes, 2, 2).unwrap();
         assert_eq!(rgba.len(), 2 * 2 * 4);
         // All alpha should be 255
-        for px in rgba.chunks_exact(4) {
+        for px in rgba.as_chunks::<4>().0 {
             assert_eq!(px[3], 255);
         }
     }
@@ -595,7 +918,11 @@ mod tests {
 
     #[test]
     fn scene_from_keyframes_preserves_dimensions() {
-        let scene = Scene::from_keyframes(640, 480, vec![]);
+        let scene = Scene {
+            width: 640,
+            height: 480,
+            keyframes: vec![],
+        };
         assert_eq!(scene.width, 640);
         assert_eq!(scene.height, 480);
     }
@@ -608,5 +935,277 @@ mod tests {
             keyframes: vec![(0.0, vec![10]), (0.5, vec![20])],
         };
         assert_eq!(scene.frame_at(-1.0), &[10]);
+    }
+
+    fn make_test_png(r: u8, g: u8, b: u8) -> Vec<u8> {
+        let mut buf = std::io::Cursor::new(Vec::new());
+        {
+            let mut encoder = png::Encoder::new(&mut buf, 1, 1);
+            encoder.set_color(png::ColorType::Rgb);
+            encoder.set_depth(png::BitDepth::Eight);
+            let mut writer = encoder.write_header().unwrap();
+            writer.write_image_data(&[r, g, b]).unwrap();
+            writer.finish().unwrap();
+        }
+        buf.into_inner()
+    }
+
+    struct TmpDir(std::path::PathBuf);
+    impl Drop for TmpDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn make_dir_scene(n: usize) -> (TmpDir, super::DirScene) {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let id = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!(
+            "demostage_test_dir_scene_{}_{}",
+            std::process::id(),
+            id
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        for i in 0..n {
+            let png = make_test_png(i as u8, 0, 0);
+            let path = dir.join(format!("{:04}.png", i + 1));
+            std::fs::write(&path, &png).unwrap();
+        }
+        let scene = super::load_frames(&dir, 1, 1).unwrap();
+        (TmpDir(dir), scene)
+    }
+
+    #[test]
+    fn dir_scene_frame_at_several_progress_values() {
+        let (_dir, mut scene) = make_dir_scene(10);
+        // progress 0.0 → first frame (index 0, red=0)
+        let f = scene.frame_at(0.0);
+        assert_eq!(f[0], 0);
+        // progress at exact boundary (index 5, progress = 5/9 ≈ 0.555)
+        let f = scene.frame_at(5.0 / 9.0);
+        assert_eq!(f[0], 5);
+        // progress beyond 1.0 → last frame (index 9, red=9)
+        let f = scene.frame_at(2.0);
+        assert_eq!(f[0], 9);
+        // progress just before a boundary
+        let f = scene.frame_at(0.5);
+        // 0.5 < 5/9 ≈ 0.555, so index 4 (progress = 4/9 ≈ 0.444)
+        assert_eq!(f[0], 4);
+    }
+
+    #[test]
+    fn dir_scene_decode_count_is_bounded() {
+        let (_dir, mut scene) = make_dir_scene(100);
+        // Walk progress monotonically from 0 to 1 in 50 steps.
+        // We land on at most 50 unique frame indices, so decode count <= 50.
+        // Crucially, it is NOT 100 (we don't decode every frame).
+        for step in 0..50 {
+            let progress = step as f64 / 49.0;
+            let _ = scene.frame_at(progress);
+        }
+        let decodes = scene.decode_count();
+        assert!(
+            decodes <= 50,
+            "expected at most 50 decodes for 50 steps, got {decodes}"
+        );
+        assert!(decodes > 0, "expected at least one decode");
+    }
+
+    #[test]
+    fn dir_scene_empty_directory_errors() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let id = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!(
+            "demostage_test_empty_{}_{}",
+            std::process::id(),
+            id
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let result = super::load_frames(&dir, 100, 100);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("no recorded frames"));
+        assert!(err.contains("--view"));
+    }
+
+    #[test]
+    fn dir_scene_single_frame() {
+        let (_dir, mut scene) = make_dir_scene(1);
+        // Single frame: progress is always 0.0
+        let f = scene.frame_at(0.0);
+        assert_eq!(f[0], 0);
+        let f = scene.frame_at(1.0);
+        assert_eq!(f[0], 0);
+    }
+
+    /// A browser frame costs a CDP screenshot (~291 ms measured), a PDF frame a
+    /// memcpy. The budget is what keeps the expensive path from paying the cheap
+    /// path's price: a 10 s pane drops from ~300 captures to ~40.
+    #[test]
+    fn a_web_pane_captures_at_a_bounded_rate() {
+        let ten_seconds_at_30fps = 300;
+        let budget = capture_budget(ten_seconds_at_30fps, 30.0);
+        assert_eq!(budget, 40);
+        assert!(budget < ten_seconds_at_30fps);
+    }
+
+    #[test]
+    fn the_budget_never_exceeds_the_frames_available() {
+        // 2 frames at 1 fps is 2 s of pane, which the rate would price at 8
+        // captures — but there are only 2 frames to capture.
+        assert_eq!(capture_budget(2, 1.0), 2);
+        assert_eq!(capture_budget(1, 30.0), 1);
+        // A tenth of a second is worth one frame, never zero.
+        assert_eq!(capture_budget(3, 30.0), 1);
+    }
+
+    /// A browser pane that no `scroll` step targets must stay a still, however
+    /// tall the page is. Regression: the flag reached `capture`, was forwarded to
+    /// the PDF branch, and the Chrome branch ignored it — so the ghscaff demo,
+    /// whose score has no scroll step at all, went from 1 static frame to 141
+    /// scrolling ones and spent 41 s capturing them.
+    #[test]
+    fn a_pane_with_no_scroll_step_is_one_still_frame() {
+        let offsets = web_pane_offsets(None, 141, None);
+        assert_eq!(offsets, vec![0], "a pane nobody scrolled must not scroll");
+    }
+
+    #[test]
+    fn a_pane_with_a_scroll_step_still_ramps() {
+        let offsets = web_pane_offsets(
+            Some((20_000, 1080)),
+            141,
+            Some((ScrollDirection::Down, Velocity::Constant)),
+        );
+        assert_eq!(offsets.len(), 141);
+        assert_eq!(offsets[0], 0);
+        assert_eq!(*offsets.last().unwrap(), 20_000 - 1080);
+    }
+
+    #[test]
+    fn scroll_offsets_first_zero_last_max_strictly_increasing() {
+        let offsets =
+            super::scroll_offsets(2000, 500, 10, ScrollDirection::Down, Velocity::Constant);
+        assert_eq!(offsets.len(), 10);
+        assert_eq!(*offsets.first().unwrap(), 0);
+        assert_eq!(*offsets.last().unwrap(), 1500); // 2000 - 500
+        for w in offsets.windows(2) {
+            assert!(w[1] > w[0], "offsets must be strictly increasing");
+        }
+    }
+
+    #[test]
+    fn scroll_offsets_page_not_scrollable_yields_single_frame() {
+        let offsets =
+            super::scroll_offsets(500, 500, 300, ScrollDirection::Down, Velocity::Constant);
+        assert_eq!(offsets, vec![0]);
+        let offsets =
+            super::scroll_offsets(300, 500, 300, ScrollDirection::Down, Velocity::Constant);
+        assert_eq!(offsets, vec![0]);
+    }
+
+    #[test]
+    fn scroll_offsets_single_frame_request() {
+        let offsets =
+            super::scroll_offsets(2000, 500, 1, ScrollDirection::Down, Velocity::Constant);
+        assert_eq!(offsets, vec![0]);
+    }
+
+    #[test]
+    fn scroll_offsets_two_frames() {
+        let offsets =
+            super::scroll_offsets(2000, 500, 2, ScrollDirection::Down, Velocity::Constant);
+        assert_eq!(offsets, vec![0, 1500]);
+    }
+
+    #[test]
+    fn temp_dir_guard_removes_directory_on_drop() {
+        let dir = std::env::temp_dir().join(format!(
+            "demostage_test_guard_{}_{}",
+            std::process::id(),
+            999
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let sentinel = dir.join("sentinel.txt");
+        std::fs::write(&sentinel, b"x").unwrap();
+        assert!(dir.exists());
+        {
+            let _guard = super::TempDirGuard(Some(dir.clone()));
+            assert!(dir.exists());
+        }
+        assert!(!dir.exists());
+    }
+
+    #[test]
+    fn temp_dir_guard_none_is_noop() {
+        let _guard = super::TempDirGuard(None);
+    }
+
+    #[test]
+    fn capture_frames_to_dir_success_writes_all_frames() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let id = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!(
+            "demostage_test_capture_ok_{}_{}",
+            std::process::id(),
+            id
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let _cleanup = super::TempDirGuard(Some(dir.clone()));
+
+        let offsets = vec![0, 500, 1000, 1500];
+        let files =
+            super::capture_frames_to_dir(&offsets, &dir, |i| Ok(make_test_png(i as u8, 0, 0)))
+                .unwrap();
+
+        assert_eq!(files.len(), 4);
+        for (i, path) in files.iter().enumerate() {
+            assert!(path.exists(), "frame {i} should exist");
+            assert!(path.starts_with(&dir));
+            assert_eq!(
+                path.file_name().unwrap().to_str().unwrap(),
+                format!("{:04}.png", i + 1)
+            );
+        }
+    }
+
+    #[test]
+    fn capture_frames_to_dir_failure_returns_error_and_cleanup_removes_dir() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let id = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!(
+            "demostage_test_capture_fail_{}_{}",
+            std::process::id(),
+            id
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let guard = super::TempDirGuard(Some(dir.clone()));
+
+        let offsets = vec![0, 500, 1000];
+        let result = super::capture_frames_to_dir(&offsets, &dir, |i| {
+            if i == 1 {
+                Err(crate::error::Error::Export(format!(
+                    "simulated screenshot failure at frame {i}"
+                )))
+            } else {
+                Ok(make_test_png(i as u8, 0, 0))
+            }
+        });
+
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("screenshot frame 1"));
+        assert!(err.contains("simulated screenshot failure"));
+
+        drop(guard);
+        assert!(
+            !dir.exists(),
+            "temp directory should be removed after failure path"
+        );
     }
 }

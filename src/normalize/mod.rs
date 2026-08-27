@@ -57,6 +57,8 @@ pub fn normalize(raw: &RawMacro, name: &str, opts: &Options) -> Score {
             name: name.to_string(),
             output_dir: "./dist".into(),
             prompt: None,
+            speed: None,
+            targets: None,
         },
         env: None,
         typing: Some(typing(opts)),
@@ -464,6 +466,7 @@ fn layout_with_reveals(raw: &RawMacro, reveals: &[Reveal]) -> Layout {
         theme: None,
         reveal_at: None,
         hide_at: None,
+        ignore_speed: false,
     }];
     for (i, r) in reveals.iter().enumerate() {
         let reveal_at = r.t_ms as f64 / 1000.0;
@@ -487,6 +490,7 @@ fn layout_with_reveals(raw: &RawMacro, reveals: &[Reveal]) -> Layout {
                 theme: p.theme.clone(),
                 reveal_at: Some(reveal_at),
                 hide_at,
+                ignore_speed: false,
             });
         }
     }
@@ -544,6 +548,7 @@ fn default_layout(raw: &RawMacro) -> Layout {
             theme: None,
             reveal_at: None,
             hide_at: None,
+            ignore_speed: false,
         }],
     }
 }

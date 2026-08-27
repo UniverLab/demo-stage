@@ -212,6 +212,8 @@ fn score_with_layout(name: &str, layout: Layout, timeline: Vec<Step>) -> Score {
             name: name.to_string(),
             output_dir: "./dist".into(),
             prompt: None,
+            speed: None,
+            targets: None,
         },
         env: None,
         typing: None,
@@ -465,6 +467,7 @@ fn terminal_pane(x: u32, y: u32, width: u32, height: u32) -> Pane {
         theme: None,
         reveal_at: None,
         hide_at: None,
+        ignore_speed: false,
     }
 }
 
@@ -490,6 +493,7 @@ fn browser_pane(
         theme,
         reveal_at: None,
         hide_at: None,
+        ignore_speed: false,
     }
 }
 
