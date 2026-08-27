@@ -84,22 +84,33 @@ fn ms(t0: Instant) -> u64 {
 /// `inquire` emits the prompt immediately followed by `\r` (`Vault passphrase:\r…`),
 /// so checking only at the chunk end (after the `\r` cleared it) missed it and the
 /// secret leaked. Latches `sensitive` and records the prompt label when found.
+/// When a completed non-secret line is seen, sets `secret_prompt_cleared` to
+/// signal the input thread that the dedup guard can be cleared. Only set on
+/// completed lines (at `\n`/`\r`), not on partial lines at chunk boundaries,
+/// to avoid spurious clears when a prompt label is split across PTY reads.
 fn track_and_detect(
     line: &mut String,
     text: &str,
     sensitive: &AtomicBool,
     secret_prompt: &Mutex<Option<String>>,
+    secret_prompt_cleared: &AtomicBool,
 ) {
-    let check = |line: &str| {
+    let detect_secret = |line: &str| {
         if is_secret_prompt(line) {
             sensitive.store(true, Ordering::SeqCst);
             *secret_prompt.lock().unwrap() = Some(clean_prompt(line));
         }
     };
+    let mark_cleared = |line: &str| {
+        if !is_secret_prompt(line) && !line.is_empty() {
+            secret_prompt_cleared.store(true, Ordering::SeqCst);
+        }
+    };
     for ch in text.chars() {
         match ch {
             '\n' | '\r' => {
-                check(line);
+                detect_secret(line);
+                mark_cleared(line);
                 line.clear();
             }
             c if c.is_control() => {}
@@ -115,7 +126,8 @@ fn track_and_detect(
         }
     }
     // The prompt may sit at the chunk end with no trailing newline yet.
-    check(line);
+    // Only detect secrets here; don't set the cleared flag on partial lines.
+    detect_secret(line);
 }
 
 /// Longest a terminal line can be and still count as a secret prompt. Real
@@ -161,6 +173,34 @@ fn clean_prompt(s: &str) -> String {
         .trim_start_matches(['?', '>', '◆', '●', '*', ' '])
         .trim()
         .to_string()
+}
+
+/// Decide whether a submitted secret prompt should produce a `Secret` event.
+/// Returns true when the caller must record one.
+///
+/// `prompt_left_screen` is true when the output thread has observed a completed
+/// non-secret line since the last submission, meaning the prompt has left the
+/// screen and the dedup guard should be cleared before checking.
+///
+/// The dedup covers only redraws of the prompt currently being answered: once
+/// `prompt_left_screen` is true the guard is cleared, so the same prompt text
+/// detected later records a new event. Two consecutive detections of the same
+/// prompt with no submission in between still collapse into one.
+fn secret_step_on_submit(
+    last_secret_prompt: &mut Option<String>,
+    prompt_left_screen: bool,
+    prompt: &str,
+) -> bool {
+    if prompt_left_screen {
+        *last_secret_prompt = None;
+    }
+    let is_dup = last_secret_prompt.as_ref().map(|s| s.as_str()) == Some(prompt);
+    if !is_dup {
+        *last_secret_prompt = Some(prompt.to_string());
+        true
+    } else {
+        false
+    }
 }
 
 /// Heuristic: does this line look like a program prompting for a secret? Matches
@@ -864,6 +904,11 @@ pub fn run(args: CaptureArgs) -> Result<()> {
     // captured so a `Secret` event can record WHICH secret was entered — never the
     // value. Set by the output thread, consumed by the input thread on Enter.
     let secret_prompt: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+    // Set by the output thread when a non-secret line is seen after a secret prompt
+    // was detected. The input thread reads this on Enter to decide whether to clear
+    // the dedup guard: if true, the prompt has left the screen and the same prompt
+    // text detected later should record a new Secret event.
+    let secret_prompt_cleared = Arc::new(AtomicBool::new(false));
     // Browser reveals armed by `demo open --when <pat>`, fired by the output
     // thread when the pattern appears.
     let pending_opens: PendingWhen = Arc::new(Mutex::new(Vec::new()));
@@ -948,6 +993,7 @@ pub fn run(args: CaptureArgs) -> Result<()> {
         let exited = shell_exited.clone();
         let sensitive = sensitive.clone();
         let secret_prompt = secret_prompt.clone();
+        let secret_prompt_cleared = secret_prompt_cleared.clone();
         let debug = debug.clone();
         let pending_opens = pending_opens.clone();
         let muting = muting.clone();
@@ -988,7 +1034,13 @@ pub fn run(args: CaptureArgs) -> Result<()> {
                         // Detect the secret prompt at each line boundary and LATCH
                         // the flag (only set here; the input thread clears it on
                         // Enter), so the masked redraws can't unset it mid-secret.
-                        track_and_detect(&mut line, &text, &sensitive, &secret_prompt);
+                        track_and_detect(
+                            &mut line,
+                            &text,
+                            &sensitive,
+                            &secret_prompt,
+                            &secret_prompt_cleared,
+                        );
                         // Pre-roll: discard prompt-setup output until the readiness
                         // marker; record only what follows it (the clean prompt).
                         if !ready.load(Ordering::SeqCst) {
@@ -1057,6 +1109,7 @@ pub fn run(args: CaptureArgs) -> Result<()> {
         let stop = stop.clone();
         let sensitive = sensitive.clone();
         let secret_prompt = secret_prompt.clone();
+        let secret_prompt_cleared = secret_prompt_cleared.clone();
         let debug = debug.clone();
         let muting = muting.clone();
         let mute_since = mute_since.clone();
@@ -1121,11 +1174,15 @@ pub fn run(args: CaptureArgs) -> Result<()> {
                         if masked {
                             if outcome.to_pty.iter().any(|b| *b == b'\r' || *b == b'\n') {
                                 sensitive.store(false, Ordering::SeqCst);
+                                let prompt_left_screen =
+                                    secret_prompt_cleared.swap(false, Ordering::SeqCst);
                                 let prompt =
                                     secret_prompt.lock().unwrap().take().unwrap_or_default();
-                                let is_dup = last_secret_prompt.as_ref() == Some(&prompt);
-                                if !is_dup {
-                                    last_secret_prompt = Some(prompt.clone());
+                                if secret_step_on_submit(
+                                    &mut last_secret_prompt,
+                                    prompt_left_screen,
+                                    &prompt,
+                                ) {
                                     events.lock().unwrap().push(RawEvent::Secret {
                                         t_ms: ms(t0),
                                         prompt,
@@ -1648,6 +1705,7 @@ mod tests {
         // detection must fire on the prompt BEFORE the `\r` clears the line.
         let sensitive = AtomicBool::new(false);
         let secret_prompt = Mutex::new(None);
+        let secret_prompt_cleared = AtomicBool::new(false);
         let mut line = String::new();
         // `\x1b` (ESC) is a control char; `[?25h` is the residue after it.
         track_and_detect(
@@ -1655,6 +1713,7 @@ mod tests {
             " Vault passphrase:\r\x1b[?25h",
             &sensitive,
             &secret_prompt,
+            &secret_prompt_cleared,
         );
         assert!(
             sensitive.load(Ordering::SeqCst),
@@ -1701,8 +1760,15 @@ mod tests {
 
         let sensitive = AtomicBool::new(false);
         let secret_prompt = Mutex::new(None);
+        let secret_prompt_cleared = AtomicBool::new(false);
         let mut line = String::new();
-        track_and_detect(&mut line, &huge, &sensitive, &secret_prompt);
+        track_and_detect(
+            &mut line,
+            &huge,
+            &sensitive,
+            &secret_prompt,
+            &secret_prompt_cleared,
+        );
         assert!(!sensitive.load(Ordering::SeqCst));
         assert!(secret_prompt.lock().unwrap().is_none());
         // And the tracker's memory stays bounded while the paint streams on.
@@ -2210,8 +2276,15 @@ mod tests {
     fn track_and_detect_multiple_lines() {
         let sensitive = AtomicBool::new(false);
         let secret_prompt = Mutex::new(None);
+        let secret_prompt_cleared = AtomicBool::new(false);
         let mut line = String::new();
-        track_and_detect(&mut line, "hello\nworld\n", &sensitive, &secret_prompt);
+        track_and_detect(
+            &mut line,
+            "hello\nworld\n",
+            &sensitive,
+            &secret_prompt,
+            &secret_prompt_cleared,
+        );
         assert!(!sensitive.load(Ordering::SeqCst));
         assert_eq!(line, "");
     }
@@ -2220,8 +2293,15 @@ mod tests {
     fn track_and_detect_partial_line() {
         let sensitive = AtomicBool::new(false);
         let secret_prompt = Mutex::new(None);
+        let secret_prompt_cleared = AtomicBool::new(false);
         let mut line = String::new();
-        track_and_detect(&mut line, "partial", &sensitive, &secret_prompt);
+        track_and_detect(
+            &mut line,
+            "partial",
+            &sensitive,
+            &secret_prompt,
+            &secret_prompt_cleared,
+        );
         assert!(!sensitive.load(Ordering::SeqCst));
         assert_eq!(line, "partial");
     }
@@ -2230,12 +2310,14 @@ mod tests {
     fn track_and_detect_csi_residue_in_line() {
         let sensitive = AtomicBool::new(false);
         let secret_prompt = Mutex::new(None);
+        let secret_prompt_cleared = AtomicBool::new(false);
         let mut line = String::new();
         track_and_detect(
             &mut line,
             "Vault passphrase:\r\x1b[?25h",
             &sensitive,
             &secret_prompt,
+            &secret_prompt_cleared,
         );
         assert!(sensitive.load(Ordering::SeqCst));
     }
@@ -2244,8 +2326,15 @@ mod tests {
     fn track_and_detect_control_chars_ignored() {
         let sensitive = AtomicBool::new(false);
         let secret_prompt = Mutex::new(None);
+        let secret_prompt_cleared = AtomicBool::new(false);
         let mut line = String::new();
-        track_and_detect(&mut line, "abc\x01\x02\x03def", &sensitive, &secret_prompt);
+        track_and_detect(
+            &mut line,
+            "abc\x01\x02\x03def",
+            &sensitive,
+            &secret_prompt,
+            &secret_prompt_cleared,
+        );
         assert_eq!(line, "abcdef");
     }
 
@@ -2515,8 +2604,15 @@ mod tests {
     fn track_and_detect_secret_at_newline_boundary() {
         let sensitive = AtomicBool::new(false);
         let secret_prompt = Mutex::new(None);
+        let secret_prompt_cleared = AtomicBool::new(false);
         let mut line = String::new();
-        track_and_detect(&mut line, "Password:\n", &sensitive, &secret_prompt);
+        track_and_detect(
+            &mut line,
+            "Password:\n",
+            &sensitive,
+            &secret_prompt,
+            &secret_prompt_cleared,
+        );
         assert!(sensitive.load(Ordering::SeqCst));
     }
 
@@ -2524,8 +2620,15 @@ mod tests {
     fn track_and_detect_no_secret_without_colon() {
         let sensitive = AtomicBool::new(false);
         let secret_prompt = Mutex::new(None);
+        let secret_prompt_cleared = AtomicBool::new(false);
         let mut line = String::new();
-        track_and_detect(&mut line, "Password\n", &sensitive, &secret_prompt);
+        track_and_detect(
+            &mut line,
+            "Password\n",
+            &sensitive,
+            &secret_prompt,
+            &secret_prompt_cleared,
+        );
         assert!(!sensitive.load(Ordering::SeqCst));
     }
 
@@ -2533,10 +2636,17 @@ mod tests {
     fn track_and_detect_long_line_not_truncated() {
         let sensitive = AtomicBool::new(false);
         let secret_prompt = Mutex::new(None);
+        let secret_prompt_cleared = AtomicBool::new(false);
         let mut line = String::new();
         // Line under MAX_PROMPT_LINE should be kept
         let short = "a".repeat(100);
-        track_and_detect(&mut line, &short, &sensitive, &secret_prompt);
+        track_and_detect(
+            &mut line,
+            &short,
+            &sensitive,
+            &secret_prompt,
+            &secret_prompt_cleared,
+        );
         assert_eq!(line.len(), 100);
     }
 
@@ -2544,10 +2654,17 @@ mod tests {
     fn track_and_detect_long_line_truncated() {
         let sensitive = AtomicBool::new(false);
         let secret_prompt = Mutex::new(None);
+        let secret_prompt_cleared = AtomicBool::new(false);
         let mut line = String::new();
         // Line over MAX_PROMPT_LINE should be truncated
         let long = "a".repeat(300);
-        track_and_detect(&mut line, &long, &sensitive, &secret_prompt);
+        track_and_detect(
+            &mut line,
+            &long,
+            &sensitive,
+            &secret_prompt,
+            &secret_prompt_cleared,
+        );
         assert!(line.len() <= MAX_PROMPT_LINE);
     }
 
@@ -2738,5 +2855,239 @@ mod tests {
         assert!(!is_meta_command(""));
         assert!(!is_meta_command("demo"));
         assert!(!is_meta_command("demo "));
+    }
+
+    #[test]
+    fn secret_step_on_submit_no_guard_records() {
+        let mut last: Option<String> = None;
+        assert!(secret_step_on_submit(&mut last, false, "Password:"));
+        assert_eq!(last.as_deref(), Some("Password:"));
+    }
+
+    #[test]
+    fn secret_step_on_submit_same_prompt_is_dup() {
+        let mut last = Some("Password:".to_string());
+        assert!(!secret_step_on_submit(&mut last, false, "Password:"));
+    }
+
+    #[test]
+    fn secret_step_on_submit_different_prompt_records() {
+        let mut last = Some("Password:".to_string());
+        assert!(secret_step_on_submit(&mut last, false, "Token:"));
+        assert_eq!(last.as_deref(), Some("Token:"));
+    }
+
+    #[test]
+    fn secret_step_on_submit_clears_guard_when_prompt_left_screen() {
+        let mut last = Some("Password:".to_string());
+        assert!(secret_step_on_submit(&mut last, true, "Password:"));
+        assert_eq!(last.as_deref(), Some("Password:"));
+    }
+
+    #[test]
+    fn secret_dedup_same_prompt_with_submission_produces_two_events() {
+        let sensitive = AtomicBool::new(false);
+        let secret_prompt = Mutex::new(None);
+        let secret_prompt_cleared = AtomicBool::new(false);
+        let mut last_secret_prompt: Option<String> = None;
+        let mut events = Vec::new();
+
+        let mut line = String::new();
+        track_and_detect(
+            &mut line,
+            "Password:\n",
+            &sensitive,
+            &secret_prompt,
+            &secret_prompt_cleared,
+        );
+        let prompt = secret_prompt.lock().unwrap().take().unwrap();
+        let cleared = secret_prompt_cleared.swap(false, Ordering::SeqCst);
+        if secret_step_on_submit(&mut last_secret_prompt, cleared, &prompt) {
+            events.push(prompt);
+        }
+        sensitive.store(false, Ordering::SeqCst);
+
+        let mut line = String::new();
+        track_and_detect(
+            &mut line,
+            "Welcome to sudo\n",
+            &sensitive,
+            &secret_prompt,
+            &secret_prompt_cleared,
+        );
+        assert!(secret_prompt_cleared.load(Ordering::SeqCst));
+
+        let mut line = String::new();
+        track_and_detect(
+            &mut line,
+            "Password:\n",
+            &sensitive,
+            &secret_prompt,
+            &secret_prompt_cleared,
+        );
+        let prompt = secret_prompt.lock().unwrap().take().unwrap();
+        let cleared = secret_prompt_cleared.swap(false, Ordering::SeqCst);
+        if secret_step_on_submit(&mut last_secret_prompt, cleared, &prompt) {
+            events.push(prompt);
+        }
+
+        assert_eq!(events.len(), 2);
+    }
+
+    #[test]
+    fn secret_dedup_same_prompt_no_submission_produces_one_event() {
+        let sensitive = AtomicBool::new(false);
+        let secret_prompt = Mutex::new(None);
+        let secret_prompt_cleared = AtomicBool::new(false);
+        let mut last_secret_prompt: Option<String> = None;
+        let mut events = Vec::new();
+
+        let mut line = String::new();
+        track_and_detect(
+            &mut line,
+            "Password:\n",
+            &sensitive,
+            &secret_prompt,
+            &secret_prompt_cleared,
+        );
+
+        let mut line = String::new();
+        track_and_detect(
+            &mut line,
+            "Password:\n",
+            &sensitive,
+            &secret_prompt,
+            &secret_prompt_cleared,
+        );
+
+        let prompt = secret_prompt.lock().unwrap().take().unwrap();
+        let cleared = secret_prompt_cleared.swap(false, Ordering::SeqCst);
+        if secret_step_on_submit(&mut last_secret_prompt, cleared, &prompt) {
+            events.push(prompt);
+        }
+
+        assert_eq!(events.len(), 1);
+    }
+
+    #[test]
+    fn secret_dedup_different_prompts_produce_two_events() {
+        let sensitive = AtomicBool::new(false);
+        let secret_prompt = Mutex::new(None);
+        let secret_prompt_cleared = AtomicBool::new(false);
+        let mut last_secret_prompt: Option<String> = None;
+        let mut events = Vec::new();
+
+        let mut line = String::new();
+        track_and_detect(
+            &mut line,
+            "Password:\n",
+            &sensitive,
+            &secret_prompt,
+            &secret_prompt_cleared,
+        );
+        let prompt = secret_prompt.lock().unwrap().take().unwrap();
+        let cleared = secret_prompt_cleared.swap(false, Ordering::SeqCst);
+        if secret_step_on_submit(&mut last_secret_prompt, cleared, &prompt) {
+            events.push(prompt);
+        }
+        sensitive.store(false, Ordering::SeqCst);
+
+        let mut line = String::new();
+        track_and_detect(
+            &mut line,
+            "Some output\n",
+            &sensitive,
+            &secret_prompt,
+            &secret_prompt_cleared,
+        );
+
+        let mut line = String::new();
+        track_and_detect(
+            &mut line,
+            "Token:\n",
+            &sensitive,
+            &secret_prompt,
+            &secret_prompt_cleared,
+        );
+        let prompt = secret_prompt.lock().unwrap().take().unwrap();
+        let cleared = secret_prompt_cleared.swap(false, Ordering::SeqCst);
+        if secret_step_on_submit(&mut last_secret_prompt, cleared, &prompt) {
+            events.push(prompt);
+        }
+
+        assert_eq!(events.len(), 2);
+    }
+
+    #[test]
+    fn secret_dedup_guard_must_be_cleared_by_prompt_leaving_screen() {
+        // Exercises the extracted helper directly: same prompt submitted twice
+        // with prompt_left_screen=true between them must produce two events.
+        // If the guard were capture-wide (prompt_left_screen ignored), the
+        // second call would return false and this test would fail.
+        let mut last: Option<String> = None;
+        assert!(secret_step_on_submit(&mut last, false, "Password:"));
+        assert!(secret_step_on_submit(&mut last, true, "Password:"));
+    }
+
+    #[test]
+    fn secret_dedup_immediate_redraw_after_enter_is_suppressed() {
+        let sensitive = AtomicBool::new(false);
+        let secret_prompt = Mutex::new(None);
+        let secret_prompt_cleared = AtomicBool::new(false);
+        let mut last_secret_prompt: Option<String> = None;
+        let mut events = Vec::new();
+
+        let mut line = String::new();
+        track_and_detect(
+            &mut line,
+            "Password:\n",
+            &sensitive,
+            &secret_prompt,
+            &secret_prompt_cleared,
+        );
+        let prompt = secret_prompt.lock().unwrap().take().unwrap();
+        let cleared = secret_prompt_cleared.swap(false, Ordering::SeqCst);
+        if secret_step_on_submit(&mut last_secret_prompt, cleared, &prompt) {
+            events.push(prompt);
+        }
+        sensitive.store(false, Ordering::SeqCst);
+
+        let mut line = String::new();
+        track_and_detect(
+            &mut line,
+            "Password:\n",
+            &sensitive,
+            &secret_prompt,
+            &secret_prompt_cleared,
+        );
+        let prompt = secret_prompt.lock().unwrap().take().unwrap();
+        let cleared = secret_prompt_cleared.swap(false, Ordering::SeqCst);
+        if secret_step_on_submit(&mut last_secret_prompt, cleared, &prompt) {
+            events.push(prompt);
+        }
+
+        assert_eq!(events.len(), 1);
+    }
+
+    #[test]
+    fn secret_prompt_cleared_not_set_on_partial_line() {
+        // A prompt split across PTY reads must not spuriously set the cleared
+        // flag: "[sudo] password for " at chunk end (no newline) is a partial
+        // line, not a completed non-secret line.
+        let sensitive = AtomicBool::new(false);
+        let secret_prompt = Mutex::new(None);
+        let secret_prompt_cleared = AtomicBool::new(false);
+        let mut line = String::new();
+        track_and_detect(
+            &mut line,
+            "[sudo] password for ",
+            &sensitive,
+            &secret_prompt,
+            &secret_prompt_cleared,
+        );
+        assert!(
+            !secret_prompt_cleared.load(Ordering::SeqCst),
+            "partial line at chunk end must not set secret_prompt_cleared"
+        );
     }
 }
