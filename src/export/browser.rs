@@ -221,13 +221,16 @@ impl From<Scene> for AnyScene {
 /// with absolute scroll positions, writing PNGs to a temporary directory that
 /// is cleaned up when the returned guard is dropped. `should_scroll` controls
 /// whether a native PDF pane pans through its document. `direction` and
-/// `velocity` control the scroll behavior.
+/// `velocity` control the scroll behavior. `effective_speed` is the export
+/// speed multiplier (1.0 for panes with `ignore_speed`), threaded through to
+/// the PDF pan path.
 pub fn capture(
     pane: &Pane,
     scroll_keyframes: usize,
     output_frames: usize,
     fps: f64,
     pan: Option<ScrollParams>,
+    effective_speed: f64,
 ) -> Result<CaptureResult> {
     let url = pane
         .url
@@ -250,9 +253,9 @@ pub fn capture(
     // PDFs render natively (hayro) — no Chromium launch, no blank-viewer risk,
     // and the scene starts instantly. Chrome's viewer is only a fallback.
     if url.to_lowercase().ends_with(".pdf") {
-        match local_file_path(&url)
-            .and_then(|p| super::pdf::capture_scene(&p, w, h, output_frames, fps, pan))
-        {
+        match local_file_path(&url).and_then(|p| {
+            super::pdf::capture_scene(&p, w, h, output_frames, fps, pan, effective_speed)
+        }) {
             Ok(scene) => {
                 return Ok(CaptureResult {
                     scene: AnyScene::Pdf(scene),

@@ -467,6 +467,7 @@ fn terminal_pane(x: u32, y: u32, width: u32, height: u32) -> Pane {
         theme: None,
         reveal_at: None,
         hide_at: None,
+        ignore_speed: false,
     }
 }
 
@@ -492,6 +493,7 @@ fn browser_pane(
         theme,
         reveal_at: None,
         hide_at: None,
+        ignore_speed: false,
     }
 }
 

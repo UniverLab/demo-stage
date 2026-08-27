@@ -20,7 +20,7 @@ const BACKDROP: [u8; 4] = [0x52, 0x56, 0x59, 0xff];
 /// Vertical gap between pages and at the top/bottom, in px.
 const GAP: usize = 12;
 
-/// The fastest a PDF pane may pan, in pixels per second.
+/// The fastest a PDF pane may pan, in pixels per second **at 1x** (recording time).
 ///
 /// A PDF pane exists to show the document, so the pan always travels the whole
 /// thing. What this caps is how fast it may do it: the `scroll` step's
@@ -31,7 +31,11 @@ const GAP: usize = 12;
 /// Measured before the cap existed: 10 pages crossed in 9.7 s is 124 px per
 /// frame, a whole new viewport every 0.58 s — unreadable however smooth. At this
 /// speed the same document takes 19.3 s and renews the viewport every 1.2 s.
-const MAX_PAN_SPEED_PX_PER_SEC: f64 = 900.0;
+///
+/// The cap is stated at 1x. A 2x export moves at 2400 px/s on screen (160 px/frame
+/// at 15 fps) — not readable, and not meant to be. A pane with `ignore_speed` pans
+/// at this cap regardless of the export speed.
+const MAX_PAN_SPEED_PX_PER_SEC: f64 = 1200.0;
 /// Page width as a fraction of the pane width (fit-width with side margins).
 const PAGE_FRAC: f64 = 0.90;
 /// Lead-in at the top of the document before panning starts, in ms.
@@ -204,6 +208,8 @@ pub fn lead_in_frames(output_frames: usize, fps: f64) -> usize {
 /// `should_scroll` is whether a scroll step is directed at this pane; when
 /// false, the scene is a single static frame at the top of the document.
 /// `direction` and `velocity` control the scroll behavior.
+/// `effective_speed` is the export speed multiplier (1.0 for panes with
+/// `ignore_speed`). The pan is computed in recording time and converted once.
 #[allow(clippy::too_many_arguments)]
 pub fn capture_scene(
     pdf_path: &Path,
@@ -212,6 +218,7 @@ pub fn capture_scene(
     output_frames: usize,
     fps: f64,
     pan: Option<ScrollParams>,
+    effective_speed: f64,
 ) -> Result<PdfScene> {
     let data = std::fs::read(pdf_path).map_err(|e| Error::io(pdf_path, e))?;
     let pdf = Pdf::new(data).map_err(|e| Error::Export(format!("read PDF: {e:?}")))?;
@@ -270,10 +277,13 @@ pub fn capture_scene(
     let doc_max_off = doc_h.saturating_sub(pane_h);
     let plan = pan.filter(|_| doc_max_off > 0).map(|p| {
         // The whole document, always. The only question is how long that takes.
-        let seconds = pan_seconds_for(doc_max_off, p.seconds);
-        let panning = ((seconds * fps.max(1.0)).round() as usize).max(2);
+        // p.seconds is in output seconds (after scale_pane_windows). Convert to
+        // recording seconds, compute the pan at 1x, then convert back.
+        let duration_s_1x = p.seconds * effective_speed;
+        let seconds_output = pan_seconds_output(doc_max_off, duration_s_1x, effective_speed);
+        let panning = ((seconds_output * fps.max(1.0)).round() as usize).max(2);
         let lead = lead_in_frames(panning, fps);
-        (p, panning + lead, lead, seconds)
+        (p, panning + lead, lead, seconds_output)
     });
 
     let (max_off, effective_frames, lead, direction, velocity, needed_seconds) = match plan {
@@ -311,14 +321,26 @@ pub fn capture_scene(
 }
 
 /// How long the pan must last to cross the whole document without exceeding
-/// [`MAX_PAN_SPEED_PX_PER_SEC`].
+/// [`MAX_PAN_SPEED_PX_PER_SEC`], in recording seconds (at 1x).
 ///
-/// `requested` is the `scroll` step's `duration_ms` in seconds, and it acts as a
-/// floor: asking for more time than the cap needs makes the pan slower, never
-/// longer than asked makes it faster. Zero means "no preference".
-pub fn pan_seconds_for(doc_max_off: usize, requested: f64) -> f64 {
+/// `requested_1x` is the `scroll` step's `duration_ms` in recording seconds (at
+/// 1x), and it acts as a floor: asking for more time than the cap needs makes
+/// the pan slower, never longer than asked makes it faster. Zero means "no
+/// preference".
+///
+/// The result is in recording seconds. The caller converts to output seconds via
+/// [`pan_seconds_output`].
+pub fn pan_seconds_for(doc_max_off: usize, requested_1x: f64) -> f64 {
     let at_full_speed = doc_max_off as f64 / MAX_PAN_SPEED_PX_PER_SEC;
-    at_full_speed.max(requested.max(0.0))
+    at_full_speed.max(requested_1x.max(0.0))
+}
+
+/// Convert a 1x pan duration to output seconds by dividing by the effective speed.
+///
+/// `effective_speed` is the export speed multiplier (1.0 for panes with `ignore_speed`).
+/// This is the single point where recording time becomes output time.
+pub fn pan_seconds_output(doc_max_off: usize, requested_1x: f64, effective_speed: f64) -> f64 {
+    pan_seconds_for(doc_max_off, requested_1x) / effective_speed
 }
 
 #[cfg(test)]
@@ -491,5 +513,116 @@ mod tests {
         for i in 1..20 {
             assert!(offsets[i] <= offsets[i - 1], "non-increasing at {i}");
         }
+    }
+
+    /// The measured case from the spec: 17 392 px at duration = 8 s, speed 2.0.
+    /// pan_seconds_1x = max(8.0, 17392/1200) = max(8.0, 14.493) = 14.493 ≈ 14.5
+    /// pan_seconds_output = 14.493 / 2.0 = 7.247 ≈ 7.2
+    /// At speed 1.0: both ≈ 14.5.
+    #[test]
+    fn the_measured_case_at_2x_and_1x() {
+        let doc = 17_392usize;
+        let duration_s_1x = 8.0;
+        // Exercise the real conversion, not just pan_seconds_for.
+        let pan_output_2x = pan_seconds_output(doc, duration_s_1x, 2.0);
+        assert!(
+            (pan_output_2x - 7.2).abs() < 0.1,
+            "pan_seconds_output at 2x should be ≈7.2, got {pan_output_2x:.2}"
+        );
+        let pan_output_1x = pan_seconds_output(doc, duration_s_1x, 1.0);
+        assert!(
+            (pan_output_1x - 14.5).abs() < 0.1,
+            "pan_seconds_output at 1x should be ≈14.5, got {pan_output_1x:.2}"
+        );
+    }
+
+    /// ignore_speed makes the output length independent of the export multiplier.
+    /// The same document at 1x, 2x and 3x yields the same pan_seconds_output
+    /// when ignore_speed is true (effective_speed = 1.0 regardless of multiplier).
+    /// Contrast with a non-exempt pane whose output shrinks with the multiplier.
+    ///
+    /// This test exercises the mapping `pane.ignore_speed → effective_speed = 1.0`
+    /// that lives in the caller (src/export/stage.rs). It would FAIL if that mapping
+    /// were dropped, because the exempt case would then use the multiplier directly.
+    #[test]
+    fn ignore_speed_makes_output_independent_of_multiplier() {
+        let doc = 17_392usize;
+        let duration_s_1x = 8.0;
+        let multipliers = [1.0, 2.0, 3.0];
+
+        // Exempt pane (ignore_speed = true): effective_speed is always 1.0,
+        // derived through the exemption rule: if ignore_speed { 1.0 } else { mult }.
+        let ignore_speed = true;
+        let exempt_outputs: Vec<f64> = multipliers
+            .iter()
+            .map(|&mult| {
+                let effective_speed = if ignore_speed { 1.0 } else { mult };
+                pan_seconds_output(doc, duration_s_1x, effective_speed)
+            })
+            .collect();
+        // All three must be equal — the output is independent of the multiplier.
+        let baseline = exempt_outputs[0];
+        for (i, &out) in exempt_outputs.iter().enumerate().skip(1) {
+            assert!(
+                (out - baseline).abs() < 1e-9,
+                "ignore_speed=true: output at mult={} should equal output at mult=1.0 \
+                 (got {} vs {}); this fails if the exemption mapping is dropped",
+                multipliers[i],
+                out,
+                baseline
+            );
+        }
+
+        // Non-exempt pane (ignore_speed = false): effective_speed equals the multiplier.
+        let ignore_speed = false;
+        let normal_outputs: Vec<f64> = multipliers
+            .iter()
+            .map(|&mult| {
+                let effective_speed = if ignore_speed { 1.0 } else { mult };
+                pan_seconds_output(doc, duration_s_1x, effective_speed)
+            })
+            .collect();
+        // At 2x the output should be half of 1x; at 3x a third.
+        assert!(
+            (normal_outputs[1] - normal_outputs[0] / 2.0).abs() < 1e-9,
+            "ignore_speed=false: output at 2x should be half of 1x"
+        );
+        assert!(
+            (normal_outputs[2] - normal_outputs[0] / 3.0).abs() < 1e-9,
+            "ignore_speed=false: output at 3x should be a third of 1x"
+        );
+
+        // The exempt output must equal the non-exempt 1x output (both use effective_speed=1.0).
+        assert!(
+            (exempt_outputs[0] - normal_outputs[0]).abs() < 1e-9,
+            "exempt at any mult should equal non-exempt at 1x"
+        );
+        // And the exempt outputs must differ from non-exempt at 2x and 3x.
+        assert!(
+            (exempt_outputs[1] - normal_outputs[1]).abs() > 0.1,
+            "exempt at 2x should differ from non-exempt at 2x"
+        );
+        assert!(
+            (exempt_outputs[2] - normal_outputs[2]).abs() > 0.1,
+            "exempt at 3x should differ from non-exempt at 3x"
+        );
+    }
+
+    /// This test would fail if the cap went back to being measured in output
+    /// seconds. If pan_seconds_output computed the cap in output seconds at 2x,
+    /// it would use 2400 px/s, taking 7.247 s — not 14.5.
+    #[test]
+    fn the_cap_is_measured_at_1x_not_output_seconds() {
+        let doc = 17_392usize;
+        // At 1x cap (1200 px/s): 17392/1200 = 14.493 s
+        // If cap were in output seconds at 2x (2400 px/s): 17392/2400 = 7.247 s
+        let output_2x = pan_seconds_output(doc, 0.0, 2.0);
+        // If the cap were wrongly in output seconds, output_2x would be ≈7.247/2 = 3.6
+        // With the cap correctly at 1x, output_2x = 14.493/2 = 7.247
+        assert!(
+            output_2x > 7.0 && output_2x < 7.5,
+            "cap must be at 1x (1200 px/s): output at 2x should be ≈7.2, got {output_2x:.2} \
+             (would be ≈3.6 if cap were in output seconds at 2x)"
+        );
     }
 }

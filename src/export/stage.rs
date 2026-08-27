@@ -93,9 +93,12 @@ pub fn needs_stage(score: &Score) -> bool {
 /// emitting each composited canvas frame. Pure playback — the terminal pane comes
 /// from `rec` (never re-run); browser panes are captured here via Chromium.
 /// Returns the fallback report and any browser capture reports for cost printing.
+/// `speed` is the resolved export speed multiplier, threaded through to the PDF
+/// pan path.
 pub fn render_stage(
     rec: &Recording,
     score: &Score,
+    speed: f64,
     mut on_frame: impl FnMut(&[u8]),
 ) -> Result<(raster::FallbackReport, Vec<browser::BrowserCaptureReport>)> {
     let canvas_w = score.layout.width as usize;
@@ -169,7 +172,15 @@ pub fn render_stage(
             }
             p
         });
-        let result = browser::capture(pane, scrolls, output_frames.max(1), fps, pan)?;
+        let effective_speed = if pane.ignore_speed { 1.0 } else { speed };
+        let result = browser::capture(
+            pane,
+            scrolls,
+            output_frames.max(1),
+            fps,
+            pan,
+            effective_speed,
+        )?;
         if let Some(report) = result.report {
             browser_reports.push(report);
         }
@@ -530,6 +541,7 @@ duration_ms = 2100
             theme: None,
             reveal_at,
             hide_at,
+            ignore_speed: false,
         }
     }
 

@@ -341,6 +341,7 @@ mod tests {
                         theme: None,
                         reveal_at: None,
                         hide_at: None,
+                        ignore_speed: false,
                     },
                     Pane {
                         id: "pdf-r1".into(),
@@ -355,6 +356,7 @@ mod tests {
                         theme: None,
                         reveal_at: Some(1.0),
                         hide_at: None,
+                        ignore_speed: false,
                     },
                 ],
             },
@@ -444,6 +446,7 @@ mod tests {
             theme: None,
             reveal_at: None,
             hide_at: None,
+            ignore_speed: false,
         }
     }
 

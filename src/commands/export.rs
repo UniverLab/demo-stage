@@ -68,7 +68,7 @@ pub fn run(args: ExportArgs) -> Result<()> {
         None => resolve_targets(score.demo.targets.as_deref())?,
     };
     for target in targets {
-        let path = render(&rec, &score, target)?;
+        let path = render(&rec, &score, target, speed)?;
         println!("exported {} → {}", args.input.display(), path.display());
     }
     Ok(())
@@ -283,6 +283,7 @@ mod tests {
                         theme: None,
                         reveal_at: None,
                         hide_at: None,
+                        ignore_speed: false,
                     },
                     crate::model::Pane {
                         id: "browser".into(),
@@ -297,6 +298,7 @@ mod tests {
                         theme: None,
                         reveal_at: None,
                         hide_at: None,
+                        ignore_speed: false,
                     },
                 ],
             },

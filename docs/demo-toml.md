@@ -134,6 +134,23 @@ always-on background and each browser pane overlays it only inside its window �
 this is what a live `demo focus` records, and how switching views (or going back
 to the terminal) renders.
 
+`ignore_speed` (browser panes, optional, default `false`) exempts a pane from the
+export speed multiplier. A PDF pane with `ignore_speed = true` pans at the 1x cap
+(1200 px/s) regardless of `--speed`, while the rest of the demo still accelerates.
+Use it for a document that should remain readable at any export speed.
+
+```toml
+  [[layout.panes]]
+  id = "pdf-r1"
+  type = "browser"
+  x = 0
+  y = 0
+  width = 960
+  height = 1080
+  url = "file:///tmp/demo-sandbox/output.pdf"
+  ignore_speed = true   # pan at the 1x cap even when the demo is exported at 2x
+```
+
 `line_height` (optional, default `1.2`) is the line spacing as a multiple of the
 font size. `1.0` makes box-drawing characters (`│ ─ ┌ ┘ …`) join into continuous
 lines for TUIs; raise it (e.g. `1.25`) for airier, prose-style spacing.

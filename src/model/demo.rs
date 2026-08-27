@@ -220,6 +220,11 @@ pub struct Pane {
     /// switched away). `None` = stays to the end.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hide_at: Option<f64>,
+    /// When true, this pane's pan (for a PDF) ignores the export speed multiplier
+    /// and pans at the 1x cap. The rest of the demo still accelerates. Useful for
+    /// a document that should remain readable at any export speed.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub ignore_speed: bool,
 }
 
 /// The kind of renderer backing a pane.
@@ -807,5 +812,56 @@ duration_ms = 1000
         } else {
             panic!("expected Scroll step");
         }
+    }
+
+    /// A score with ignore_speed = true round-trips through serialization.
+    #[test]
+    fn ignore_speed_round_trips_through_serialization() {
+        let toml_str = r#"
+[demo]
+name = "test"
+[layout]
+width = 800
+height = 600
+  [[layout.panes]]
+  id = "b"
+  type = "browser"
+  x = 0
+  y = 0
+  width = 800
+  height = 600
+  url = "file:///x.pdf"
+  ignore_speed = true
+"#;
+        let score: Score = toml::from_str(toml_str).unwrap();
+        assert!(score.layout.panes[0].ignore_speed);
+        let rendered = score.to_toml().unwrap();
+        assert!(rendered.contains("ignore_speed = true"));
+        let reparsed: Score = toml::from_str(&rendered).unwrap();
+        assert_eq!(score, reparsed);
+    }
+
+    /// ignore_speed defaults to false and is absent from serialization when false.
+    #[test]
+    fn ignore_speed_defaults_to_false_and_is_absent_when_false() {
+        let toml_str = r#"
+[demo]
+name = "test"
+[layout]
+width = 800
+height = 600
+  [[layout.panes]]
+  id = "b"
+  type = "browser"
+  x = 0
+  y = 0
+  width = 800
+  height = 600
+  url = "file:///x.pdf"
+"#;
+        let score: Score = toml::from_str(toml_str).unwrap();
+        assert!(!score.layout.panes[0].ignore_speed);
+        let rendered = score.to_toml().unwrap();
+        assert!(!rendered.contains("ignore_speed"));
     }
 }
