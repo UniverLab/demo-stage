@@ -11,10 +11,15 @@ use crate::model::{Pane, PaneKind, Score, ScrollDirection, Step, Velocity};
 /// Scroll parameters extracted from the first scroll step aimed at a pane.
 /// The first scroll step wins when several conflict; the rest are ignored
 /// and a diagnostic line is printed.
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ScrollParams {
     pub direction: ScrollDirection,
     pub velocity: Velocity,
     pub ignored_count: usize,
+    /// How long the pan should last, from the winning `scroll` step's
+    /// `duration_ms`. Clamped to the pane's on-screen window by the caller: a
+    /// pane cannot pan for longer than it is visible.
+    pub seconds: f64,
 }
 
 /// Pure easing function: maps a normalized position in `[0, 1]` to a
@@ -153,25 +158,18 @@ pub fn render_stage(
         let window_end = hide_at.unwrap_or(total);
         let window_dur = (window_end - reveal_at).max(0.0);
         let output_frames = (window_dur * fps).round() as usize;
-        let should_scroll = pane_has_scroll(score, &pane.id);
-        let params = scroll_params_for(score, &pane.id);
-        let direction = params
-            .as_ref()
-            .map(|p| p.direction)
-            .unwrap_or(ScrollDirection::Down);
-        let velocity = params
-            .as_ref()
-            .map(|p| p.velocity)
-            .unwrap_or(Velocity::Constant);
-        let result = browser::capture(
-            pane,
-            scrolls,
-            output_frames.max(1),
-            should_scroll,
-            fps,
-            direction,
-            velocity,
-        )?;
+        // One value decides everything about the pan: whether it happens at all,
+        // which way, with what curve, and for how long. Keeping "does it scroll"
+        // apart from "how does it scroll" is what let the Chrome path scroll a
+        // pane nobody asked to scroll.
+        let pan = scroll_params_for(score, &pane.id).map(|mut p| {
+            // A pane cannot pan for longer than it is on screen.
+            if p.seconds <= 0.0 || p.seconds > window_dur {
+                p.seconds = window_dur;
+            }
+            p
+        });
+        let result = browser::capture(pane, scrolls, output_frames.max(1), fps, pan)?;
         if let Some(report) = result.report {
             browser_reports.push(report);
         }
@@ -270,24 +268,6 @@ fn scroll_keyframes_for(score: &Score, pane_id: &str) -> usize {
     ((ms / 700) as usize).clamp(0, 16)
 }
 
-/// Whether a browser pane has any scroll step directed at it (explicitly or via
-/// focus). A pane with no scroll step stays static — no panning.
-fn pane_has_scroll(score: &Score, pane_id: &str) -> bool {
-    let mut focused: Option<&str> = None;
-    for step in &score.timeline {
-        match step {
-            Step::Focus { pane } => {
-                focused = pane.as_deref();
-            }
-            Step::Scroll { pane, .. } if pane.as_deref().or(focused) == Some(pane_id) => {
-                return true;
-            }
-            _ => {}
-        }
-    }
-    false
-}
-
 /// Extract the scroll parameters (direction, velocity) from the first scroll
 /// step aimed at a pane. When several scroll steps target the same pane with
 /// conflicting directions, the first wins and the rest are ignored (a
@@ -304,14 +284,15 @@ pub fn scroll_params_for(score: &Score, pane_id: &str) -> Option<ScrollParams> {
             Step::Scroll {
                 direction,
                 velocity,
+                duration_ms,
                 pane,
-                ..
             } if pane.as_deref().or(focused) == Some(pane_id) => {
                 if first.is_none() {
                     first = Some(ScrollParams {
                         direction: *direction,
                         velocity: *velocity,
                         ignored_count: 0,
+                        seconds: *duration_ms as f64 / 1000.0,
                     });
                 } else {
                     ignored_count += 1;
@@ -408,7 +389,7 @@ height = 1080
     }
 
     #[test]
-    fn pane_has_scroll_for_the_focused_browser() {
+    fn scroll_params_found_for_the_focused_browser() {
         let s = score(
             r#"
 [demo]
@@ -440,8 +421,8 @@ direction = "down"
 duration_ms = 2100
 "#,
         );
-        assert!(pane_has_scroll(&s, "p"));
-        assert!(!pane_has_scroll(&s, "c"));
+        assert!(scroll_params_for(&s, "p").is_some());
+        assert!(scroll_params_for(&s, "c").is_none());
     }
 
     #[test]
@@ -633,7 +614,7 @@ height = 100
     }
 
     #[test]
-    fn pane_has_scroll_false_when_no_scroll() {
+    fn scroll_params_none_when_no_scroll() {
         let s = score(
             r#"
 [demo]
@@ -650,7 +631,7 @@ height = 100
   height = 100
 "#,
         );
-        assert!(!pane_has_scroll(&s, "c"));
+        assert!(scroll_params_for(&s, "c").is_none());
     }
 
     #[test]
@@ -675,7 +656,7 @@ height = 100
     }
 
     #[test]
-    fn pane_has_scroll_true_when_scroll_steps_present() {
+    fn scroll_params_some_when_scroll_steps_present() {
         let toml_str = r#"
 [demo]
 name = "t"
@@ -697,7 +678,7 @@ height = 100
             duration_ms: 7000,
             pane: Some("c".into()),
         });
-        assert!(pane_has_scroll(&s, "c"));
+        assert!(scroll_params_for(&s, "c").is_some());
     }
 
     #[test]

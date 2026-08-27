@@ -16,9 +16,14 @@ use headless_chrome::protocol::cdp::Page::{CaptureScreenshotFormatOption, Naviga
 use headless_chrome::{Browser, LaunchOptions, Tab};
 
 use super::provision;
-use super::stage::scroll_offsets_with_params;
+use super::stage::{scroll_offsets_with_params, ScrollParams};
 use crate::error::{Error, Result};
 use crate::model::{view_frames_dir, Pane, ScrollDirection, Velocity};
+
+/// Screenshots per second of pane time for a headless web pane. One CDP
+/// screenshot measured ~291 ms on this machine, so a 10 s pane at one capture
+/// per output frame costs ~87 s; at this rate it costs ~12 s.
+const MAX_CAPTURES_PER_SECOND: f64 = 4.0;
 
 /// Per-pane capture stats for headless web panes, printed at export end.
 pub struct BrowserCaptureReport {
@@ -202,10 +207,8 @@ pub fn capture(
     pane: &Pane,
     scroll_keyframes: usize,
     output_frames: usize,
-    should_scroll: bool,
     fps: f64,
-    direction: ScrollDirection,
-    velocity: Velocity,
+    pan: Option<ScrollParams>,
 ) -> Result<CaptureResult> {
     let url = pane
         .url
@@ -228,18 +231,9 @@ pub fn capture(
     // PDFs render natively (hayro) — no Chromium launch, no blank-viewer risk,
     // and the scene starts instantly. Chrome's viewer is only a fallback.
     if url.to_lowercase().ends_with(".pdf") {
-        match local_file_path(&url).and_then(|p| {
-            super::pdf::capture_scene(
-                &p,
-                w,
-                h,
-                output_frames,
-                should_scroll,
-                fps,
-                direction,
-                velocity,
-            )
-        }) {
+        match local_file_path(&url)
+            .and_then(|p| super::pdf::capture_scene(&p, w, h, output_frames, fps, pan))
+        {
             Ok(scene) => {
                 return Ok(CaptureResult {
                     scene: AnyScene::Pdf(scene),
@@ -335,10 +329,7 @@ pub fn capture(
         // Give the page a moment to paint.
         std::thread::sleep(Duration::from_millis(900));
 
-        // The pane scrolls only when a `scroll` step asked it to; the direction
-        // and curve ride along with that decision so the two can't disagree.
-        let scroll = should_scroll.then_some((direction, velocity));
-        capture_web_pane(&tab, pane, w, h, output_frames, scroll)
+        capture_web_pane(&tab, pane, w, h, output_frames, fps, pan)
     }
 }
 
@@ -371,18 +362,23 @@ fn capture_web_pane(
     w: usize,
     h: usize,
     output_frames: usize,
-    scroll: Option<(ScrollDirection, Velocity)>,
+    fps: f64,
+    pan: Option<ScrollParams>,
 ) -> Result<CaptureResult> {
-    let frames = output_frames.max(1);
+    // A browser frame costs a CDP screenshot round-trip — measured at ~291 ms,
+    // four orders of magnitude more than a PDF frame, which is a memcpy. So this
+    // path captures at a bounded rate and holds each frame, while the PDF path
+    // renders one per output frame. Same feature, opposite economics.
+    let frames = capture_budget(output_frames.max(1), fps);
 
-    let page = match scroll {
+    let page = match pan {
         Some(_) => Some((
             js_usize(tab, "document.documentElement.scrollHeight")?,
             js_usize(tab, "window.innerHeight")?,
         )),
         None => None,
     };
-    let offsets = web_pane_offsets(page, frames, scroll);
+    let offsets = web_pane_offsets(page, frames, pan.map(|p| (p.direction, p.velocity)));
     let actual_frames = offsets.len();
 
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -429,6 +425,17 @@ fn capture_web_pane(
         _guard: guard,
         report: Some(report),
     })
+}
+
+/// How many screenshots a web pane is worth: at most [`MAX_CAPTURES_PER_SECOND`]
+/// per second of pane time, never more than one per output frame.
+///
+/// The scene holds each captured frame until the next, so a lower budget reads
+/// as a coarser scroll — not as a shorter one.
+fn capture_budget(output_frames: usize, fps: f64) -> usize {
+    let seconds = output_frames as f64 / fps.max(1.0);
+    let capped = (seconds * MAX_CAPTURES_PER_SECOND).ceil() as usize;
+    capped.clamp(1, output_frames)
 }
 
 /// Frame offsets for a web pane: the scroll ramp when a `scroll` step asked for
@@ -681,7 +688,7 @@ fn png_to_rgba(bytes: &[u8], tw: usize, th: usize) -> Result<Vec<u8>> {
 
 #[cfg(test)]
 mod tests {
-    use super::{web_pane_offsets, Scene};
+    use super::{capture_budget, web_pane_offsets, Scene};
     use crate::model::{ScrollDirection, Velocity};
 
     #[test]
@@ -1010,6 +1017,27 @@ mod tests {
         assert_eq!(f[0], 0);
         let f = scene.frame_at(1.0);
         assert_eq!(f[0], 0);
+    }
+
+    /// A browser frame costs a CDP screenshot (~291 ms measured), a PDF frame a
+    /// memcpy. The budget is what keeps the expensive path from paying the cheap
+    /// path's price: a 10 s pane drops from ~300 captures to ~40.
+    #[test]
+    fn a_web_pane_captures_at_a_bounded_rate() {
+        let ten_seconds_at_30fps = 300;
+        let budget = capture_budget(ten_seconds_at_30fps, 30.0);
+        assert_eq!(budget, 40);
+        assert!(budget < ten_seconds_at_30fps);
+    }
+
+    #[test]
+    fn the_budget_never_exceeds_the_frames_available() {
+        // 2 frames at 1 fps is 2 s of pane, which the rate would price at 8
+        // captures — but there are only 2 frames to capture.
+        assert_eq!(capture_budget(2, 1.0), 2);
+        assert_eq!(capture_budget(1, 30.0), 1);
+        // A tenth of a second is worth one frame, never zero.
+        assert_eq!(capture_budget(3, 30.0), 1);
     }
 
     /// A browser pane that no `scroll` step targets must stay a still, however

@@ -13,12 +13,23 @@ use hayro::{render, RenderCache, RenderSettings};
 use crate::error::{Error, Result};
 use crate::model::{ScrollDirection, Velocity};
 
-use super::stage::ease;
+use super::stage::{ease, ScrollParams};
 
 /// Backdrop behind/between pages (Chrome PDF viewer gray).
 const BACKDROP: [u8; 4] = [0x52, 0x56, 0x59, 0xff];
 /// Vertical gap between pages and at the top/bottom, in px.
 const GAP: usize = 12;
+
+/// The fastest a PDF pane may pan, in pixels per second.
+///
+/// Continuity was never the hard part — one offset per output frame is a
+/// memcpy. Legibility is: panning a 10-page document across a 9.7 s window
+/// measured 124 px per frame, replacing the whole viewport every 0.58 s, which
+/// reads as a blur however smooth it is. The speed used to fall out of the
+/// document's length, so a longer PDF panned *faster*. This caps it, and when
+/// the cap and a `scroll` step's `duration_ms` disagree, the cap wins: the pan
+/// covers less of the document rather than speeding up to finish it.
+const MAX_PAN_SPEED_PX_PER_SEC: f64 = 600.0;
 /// Page width as a fraction of the pane width (fit-width with side margins).
 const PAGE_FRAC: f64 = 0.90;
 /// Lead-in at the top of the document before panning starts, in ms.
@@ -37,6 +48,14 @@ pub struct PdfScene {
     doc_w: usize,
     doc_h: usize,
     max_off: usize,
+    /// Where the pan starts. Zero panning down; for an upward pan of a document
+    /// too long to cross at the capped speed, the bottom of the travel window,
+    /// so `up` still starts at the end of the document.
+    base_off: usize,
+    /// Output frames the pane is on screen. Progress maps onto these.
+    window_frames: usize,
+    /// Output frames the pan itself lasts, from the `scroll` step's duration.
+    /// Frames past it hold the last offset.
     output_frames: usize,
     lead_in: usize,
     direction: ScrollDirection,
@@ -57,14 +76,15 @@ impl PdfScene {
     /// Return the viewport frame for the given timeline progress in `[0, 1]`.
     pub fn frame_at(&mut self, progress: f64) -> &[u8] {
         let idx = self.frame_index(progress);
-        let off = offset_for_frame(
-            idx,
-            self.lead_in,
-            self.output_frames,
-            self.max_off,
-            self.direction,
-            self.velocity,
-        );
+        let off = self.base_off
+            + offset_for_frame(
+                idx,
+                self.lead_in,
+                self.output_frames,
+                self.max_off,
+                self.direction,
+                self.velocity,
+            );
         if self.cached_offset == Some(off) {
             return &self.cached_frame;
         }
@@ -74,11 +94,11 @@ impl PdfScene {
     }
 
     fn frame_index(&self, progress: f64) -> usize {
-        if self.output_frames <= 1 {
+        if self.window_frames <= 1 {
             return 0;
         }
         let p = progress.clamp(0.0, 1.0);
-        (p * (self.output_frames - 1) as f64).round() as usize
+        (p * (self.window_frames - 1) as f64).round() as usize
     }
 
     fn slice_at(&self, off: usize) -> Vec<u8> {
@@ -169,10 +189,8 @@ pub fn capture_scene(
     pane_w: usize,
     pane_h: usize,
     output_frames: usize,
-    should_scroll: bool,
     fps: f64,
-    direction: ScrollDirection,
-    velocity: Velocity,
+    pan: Option<ScrollParams>,
 ) -> Result<PdfScene> {
     let data = std::fs::read(pdf_path).map_err(|e| Error::io(pdf_path, e))?;
     let pdf = Pdf::new(data).map_err(|e| Error::Export(format!("read PDF: {e:?}")))?;
@@ -228,16 +246,29 @@ pub fn capture_scene(
         y += h + GAP;
     }
 
-    let max_off = doc_h.saturating_sub(pane_h);
-    let effective_frames = if !should_scroll || max_off == 0 {
-        1
-    } else {
-        output_frames.max(1)
-    };
-    let lead = if effective_frames <= 1 {
-        0
-    } else {
-        lead_in_frames(effective_frames, fps)
+    let doc_max_off = doc_h.saturating_sub(pane_h);
+    let plan = pan.filter(|_| doc_max_off > 0).map(|p| {
+        let frames = pan_frames(p.seconds, output_frames.max(1), fps);
+        let lead = if frames <= 1 {
+            0
+        } else {
+            lead_in_frames(frames, fps)
+        };
+        let travel = capped_travel(doc_max_off, frames.saturating_sub(lead), fps);
+        (p, frames, lead, travel)
+    });
+
+    let (max_off, base_off, effective_frames, lead, direction, velocity) = match plan {
+        Some((p, frames, lead, travel)) => {
+            let base = match p.direction {
+                ScrollDirection::Down => 0,
+                // An upward pan still starts at the end of the document, even
+                // when the cap means it cannot reach the beginning.
+                ScrollDirection::Up => doc_max_off - travel,
+            };
+            (travel, base, frames, lead, p.direction, p.velocity)
+        }
+        None => (0, 0, 1, 0, ScrollDirection::Down, Velocity::Constant),
     };
 
     Ok(PdfScene {
@@ -247,6 +278,8 @@ pub fn capture_scene(
         doc_w,
         doc_h,
         max_off,
+        base_off,
+        window_frames: output_frames.max(1),
         output_frames: effective_frames,
         lead_in: lead,
         direction,
@@ -256,9 +289,84 @@ pub fn capture_scene(
     })
 }
 
+/// How many output frames the pan itself lasts: the `scroll` step's declared
+/// duration, never longer than the pane is on screen and never shorter than one
+/// frame. Frames after it hold the last offset.
+fn pan_frames(seconds: f64, output_frames: usize, fps: f64) -> usize {
+    if seconds <= 0.0 {
+        return output_frames;
+    }
+    ((seconds * fps.max(1.0)).round() as usize).clamp(1, output_frames)
+}
+
+/// How far the pan may travel: the whole document, unless crossing it would
+/// exceed [`MAX_PAN_SPEED_PX_PER_SEC`], in which case it covers only what fits
+/// at that speed.
+fn capped_travel(doc_max_off: usize, panning_frames: usize, fps: f64) -> usize {
+    let seconds = panning_frames as f64 / fps.max(1.0);
+    let budget = (MAX_PAN_SPEED_PX_PER_SEC * seconds).round() as usize;
+    doc_max_off.min(budget.max(1))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The measured case that motivated the cap: 10 pages (~17 400 px of travel)
+    /// across a 9.7 s window at 15 fps panned 124 px per frame — a new viewport
+    /// every 0.58 s, unreadable however smooth. The cap must cut the travel, not
+    /// the time.
+    #[test]
+    fn a_long_document_pans_at_the_capped_speed_not_faster() {
+        let (doc_max_off, fps) = (17_392usize, 15.0);
+        let frames = pan_frames(8.0, 146, fps); // duration_ms = 8000 in the score
+        let lead = lead_in_frames(frames, fps);
+        let travel = capped_travel(doc_max_off, frames - lead, fps);
+        let seconds = (frames - lead) as f64 / fps;
+        let speed = travel as f64 / seconds;
+        assert!(
+            speed <= MAX_PAN_SPEED_PX_PER_SEC + 1.0,
+            "panned at {speed:.0} px/s, cap is {MAX_PAN_SPEED_PX_PER_SEC}"
+        );
+        assert!(
+            travel < doc_max_off,
+            "a long document must not be crossed whole"
+        );
+        let per_frame = travel as f64 / (frames - lead) as f64;
+        assert!(per_frame < 45.0, "{per_frame:.0} px/frame is still a blur");
+    }
+
+    /// A document short enough to cross under the cap is crossed whole — the cap
+    /// is a ceiling, not a target.
+    #[test]
+    fn a_short_document_is_still_crossed_completely() {
+        let travel = capped_travel(1_200, 90, 15.0); // 6 s of budget = 3600 px
+        assert_eq!(travel, 1_200);
+    }
+
+    /// The cap wins over the declared duration: asking for the whole document in
+    /// less time buys less document, never more speed.
+    #[test]
+    fn the_cap_wins_when_it_collides_with_the_declared_duration() {
+        let fps = 15.0;
+        let long = capped_travel(17_392, pan_frames(8.0, 146, fps), fps);
+        let longer = capped_travel(17_392, pan_frames(20.0, 300, fps), fps);
+        assert!(longer > long, "more time must buy more document");
+        assert!(long < 17_392 && longer < 17_392);
+    }
+
+    /// `duration_ms` bounds the pan, and the pane window bounds `duration_ms`.
+    #[test]
+    fn pan_never_outlasts_the_pane_window() {
+        assert_eq!(pan_frames(8.0, 146, 15.0), 120);
+        assert_eq!(pan_frames(60.0, 146, 15.0), 146, "clamped to the window");
+        assert_eq!(
+            pan_frames(0.0, 146, 15.0),
+            146,
+            "no duration means the window"
+        );
+        assert_eq!(pan_frames(8.0, 1, 15.0), 1);
+    }
 
     #[test]
     fn offset_first_frame_is_zero_last_is_max_off() {
