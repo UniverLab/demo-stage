@@ -1437,6 +1437,7 @@ fps = 0
     }
 
     #[test]
+    #[allow(clippy::chunks_exact_to_as_chunks)]
     fn blit_glyph_clips_at_top() {
         let mut img_clipped = vec![0u8; 20 * 20 * 4];
         let mut img_full = vec![0u8; 20 * 20 * 4];
@@ -1548,6 +1549,7 @@ fps = 0
     // ── render_cells ───────────────────────────────────────────────
 
     #[test]
+    #[allow(clippy::chunks_exact_to_as_chunks)]
     fn render_cells_empty_screen() {
         let rec = Recording {
             cols: 4,

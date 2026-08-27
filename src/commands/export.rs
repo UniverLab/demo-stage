@@ -40,11 +40,9 @@ pub fn run(args: ExportArgs) -> Result<()> {
     if let Some((new_w, new_h)) =
         resolve_export_resolution(&args, score.layout.width, score.layout.height)?
     {
+        let (old_w, old_h) = (score.layout.width, score.layout.height);
         rescale_layout(&mut score, new_w, new_h);
-        eprintln!(
-            "note: overriding resolution to {}x{} (capture was {}x{})",
-            new_w, new_h, score.layout.width, score.layout.height
-        );
+        eprintln!("{}", resolution_override_note(new_w, new_h, old_w, old_h));
     }
 
     if faithful {
@@ -194,6 +192,7 @@ fn rescale_layout(score: &mut Score, new_w: u32, new_h: u32) {
     }
     let scale_x = new_w as f64 / old_w as f64;
     let scale_y = new_h as f64 / old_h as f64;
+    let font_scale = scale_x.min(scale_y);
 
     score.layout.width = new_w;
     score.layout.height = new_h;
@@ -203,7 +202,19 @@ fn rescale_layout(score: &mut Score, new_w: u32, new_h: u32) {
         pane.y = (pane.y as f64 * scale_y).round() as u32;
         pane.width = (pane.width as f64 * scale_x).round() as u32;
         pane.height = (pane.height as f64 * scale_y).round() as u32;
+        if pane.kind == crate::model::PaneKind::Terminal {
+            if let Some(ref mut fs) = pane.font_size {
+                *fs = ((*fs as f64 * font_scale).round() as u32).max(1);
+            }
+        }
     }
+}
+
+fn resolution_override_note(new_w: u32, new_h: u32, old_w: u32, old_h: u32) -> String {
+    format!(
+        "note: overriding resolution to {}x{} (capture was {}x{})",
+        new_w, new_h, old_w, old_h
+    )
 }
 
 #[cfg(test)]
@@ -401,6 +412,107 @@ mod tests {
         assert_eq!(score.layout.height, 100);
         assert_eq!(score.layout.panes[0].width, 100);
         assert_eq!(score.layout.panes[0].height, 100);
+    }
+
+    #[test]
+    fn rescale_layout_scales_terminal_font_size_by_half() {
+        use crate::export::run::Recording;
+        let mut score: Score = toml::from_str(
+            r#"
+[demo]
+name = "t"
+[layout]
+width = 800
+height = 480
+  [[layout.panes]]
+  id = "c"
+  type = "terminal"
+  x = 0
+  y = 0
+  width = 800
+  height = 480
+  font_size = 20
+"#,
+        )
+        .unwrap();
+        let rec = Recording {
+            cols: 80,
+            rows: 24,
+            title: "t".into(),
+            events: vec![],
+            captions: vec![],
+            focuses: vec![],
+            duration: 0.0,
+        };
+        let plan_before = crate::export::raster::plan(&rec, &score);
+        rescale_layout(&mut score, 400, 240);
+        let plan_after = crate::export::raster::plan(&rec, &score);
+        assert_eq!(plan_after.width, plan_before.width / 2);
+        assert_eq!(plan_after.height, plan_before.height / 2);
+    }
+
+    #[test]
+    fn rescale_layout_non_square_picks_smaller_font_factor() {
+        let mut score: Score = toml::from_str(
+            r#"
+[demo]
+name = "t"
+[layout]
+width = 100
+height = 100
+  [[layout.panes]]
+  id = "c"
+  type = "terminal"
+  x = 0
+  y = 0
+  width = 100
+  height = 100
+  font_size = 20
+"#,
+        )
+        .unwrap();
+        rescale_layout(&mut score, 50, 200);
+        assert_eq!(score.layout.panes[0].font_size, Some(10));
+    }
+
+    #[test]
+    fn rescale_layout_font_size_floor_is_one() {
+        let mut score: Score = toml::from_str(
+            r#"
+[demo]
+name = "t"
+[layout]
+width = 100
+height = 100
+  [[layout.panes]]
+  id = "c"
+  type = "terminal"
+  x = 0
+  y = 0
+  width = 100
+  height = 100
+  font_size = 2
+"#,
+        )
+        .unwrap();
+        rescale_layout(&mut score, 10, 10);
+        assert_eq!(score.layout.panes[0].font_size, Some(1));
+    }
+
+    #[test]
+    fn rescale_layout_does_not_scale_browser_font_size() {
+        let mut score = test_score(100, 100);
+        score.layout.panes[1].font_size = Some(20);
+        rescale_layout(&mut score, 200, 200);
+        assert_eq!(score.layout.panes[1].font_size, Some(20));
+    }
+
+    #[test]
+    fn resolution_override_note_names_real_original_size() {
+        let note = resolution_override_note(1280, 720, 800, 480);
+        assert!(note.contains("capture was 800x480"));
+        assert!(!note.contains("capture was 1280x720"));
+        assert!(note.contains("overriding resolution to 1280x720"));
     }
 
     #[test]

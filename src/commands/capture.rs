@@ -79,27 +79,67 @@ fn ms(t0: Instant) -> u64 {
     t0.elapsed().as_millis() as u64
 }
 
+/// If muting has been on for more than 90 seconds, close the stranded mute span,
+/// emit a diagnostic, and return true. Otherwise return false.
+fn maybe_close_safety_valve(
+    muting: &AtomicBool,
+    mute_since: &Mutex<Instant>,
+    mute_start: &Mutex<Option<u64>>,
+    mute_spans: &Mutex<Vec<(u64, u64)>>,
+    t0: Instant,
+    debug: Option<&DebugLog>,
+) -> bool {
+    if !muting.load(Ordering::SeqCst) {
+        return false;
+    }
+    if mute_since.lock().unwrap().elapsed() <= Duration::from_secs(90) {
+        return false;
+    }
+    muting.store(false, Ordering::SeqCst);
+    if let Some(start) = mute_start.lock().unwrap().take() {
+        mute_spans.lock().unwrap().push((start, ms(t0)));
+    }
+    eprintln!(
+        "⚠ safety valve: mute span closed after 90s — a meta-command (demo focus/open) failed to report back"
+    );
+    if let Some(d) = debug {
+        d.note("safety valve: 90s mute span closed — meta-command did not report back");
+    }
+    true
+}
+
 /// Track the current terminal line and detect a secret prompt at each line
 /// boundary (`\r` redraw or `\n`) — crucially BEFORE the boundary clears the line.
 /// `inquire` emits the prompt immediately followed by `\r` (`Vault passphrase:\r…`),
 /// so checking only at the chunk end (after the `\r` cleared it) missed it and the
 /// secret leaked. Latches `sensitive` and records the prompt label when found.
+/// When a completed non-secret line is seen, sets `secret_prompt_cleared` to
+/// signal the input thread that the dedup guard can be cleared. Only set on
+/// completed lines (at `\n`/`\r`), not on partial lines at chunk boundaries,
+/// to avoid spurious clears when a prompt label is split across PTY reads.
 fn track_and_detect(
     line: &mut String,
     text: &str,
     sensitive: &AtomicBool,
     secret_prompt: &Mutex<Option<String>>,
+    secret_prompt_cleared: &AtomicBool,
 ) {
-    let check = |line: &str| {
+    let detect_secret = |line: &str| {
         if is_secret_prompt(line) {
             sensitive.store(true, Ordering::SeqCst);
             *secret_prompt.lock().unwrap() = Some(clean_prompt(line));
         }
     };
+    let mark_cleared = |line: &str| {
+        if !is_secret_prompt(line) && !line.is_empty() {
+            secret_prompt_cleared.store(true, Ordering::SeqCst);
+        }
+    };
     for ch in text.chars() {
         match ch {
             '\n' | '\r' => {
-                check(line);
+                detect_secret(line);
+                mark_cleared(line);
                 line.clear();
             }
             c if c.is_control() => {}
@@ -115,7 +155,8 @@ fn track_and_detect(
         }
     }
     // The prompt may sit at the chunk end with no trailing newline yet.
-    check(line);
+    // Only detect secrets here; don't set the cleared flag on partial lines.
+    detect_secret(line);
 }
 
 /// Longest a terminal line can be and still count as a secret prompt. Real
@@ -161,6 +202,34 @@ fn clean_prompt(s: &str) -> String {
         .trim_start_matches(['?', '>', '◆', '●', '*', ' '])
         .trim()
         .to_string()
+}
+
+/// Decide whether a submitted secret prompt should produce a `Secret` event.
+/// Returns true when the caller must record one.
+///
+/// `prompt_left_screen` is true when the output thread has observed a completed
+/// non-secret line since the last submission, meaning the prompt has left the
+/// screen and the dedup guard should be cleared before checking.
+///
+/// The dedup covers only redraws of the prompt currently being answered: once
+/// `prompt_left_screen` is true the guard is cleared, so the same prompt text
+/// detected later records a new event. Two consecutive detections of the same
+/// prompt with no submission in between still collapse into one.
+fn secret_step_on_submit(
+    last_secret_prompt: &mut Option<String>,
+    prompt_left_screen: bool,
+    prompt: &str,
+) -> bool {
+    if prompt_left_screen {
+        *last_secret_prompt = None;
+    }
+    let is_dup = last_secret_prompt.as_ref().map(|s| s.as_str()) == Some(prompt);
+    if !is_dup {
+        *last_secret_prompt = Some(prompt.to_string());
+        true
+    } else {
+        false
+    }
 }
 
 /// Heuristic: does this line look like a program prompting for a secret? Matches
@@ -648,8 +717,6 @@ struct RouteOutcome {
     /// A `demo open`/`demo stop`/`demo focus` was just entered — its echo and any
     /// wizard/confirmation must be excised from the recording.
     mute_command: bool,
-    /// A normal command was just entered — arm any pending `--after` reveal.
-    arm_after: bool,
 }
 
 /// Forward a keystroke chunk to the PTY and track the current command line so the
@@ -664,7 +731,6 @@ fn route_input_chunk(
 ) -> RouteOutcome {
     let mut to_pty: Vec<u8> = Vec::with_capacity(chunk.len());
     let mut mute_command = false;
-    let mut arm_after = false;
     let mut i = 0;
     let n = chunk.len();
     // Mark the start of a fresh command line at its first printable char, so a
@@ -681,8 +747,6 @@ fn route_input_chunk(
             let t = cmd_line.trim_start();
             if is_meta_command(t) {
                 mute_command = true;
-            } else if !t.is_empty() {
-                arm_after = true;
             }
             cmd_line.clear();
             *cmd_start = None;
@@ -721,7 +785,6 @@ fn route_input_chunk(
     RouteOutcome {
         to_pty,
         mute_command,
-        arm_after,
     }
 }
 
@@ -864,11 +927,16 @@ pub fn run(args: CaptureArgs) -> Result<()> {
     // captured so a `Secret` event can record WHICH secret was entered — never the
     // value. Set by the output thread, consumed by the input thread on Enter.
     let secret_prompt: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+    // Set by the output thread when a non-secret line is seen after a secret prompt
+    // was detected. The input thread reads this on Enter to decide whether to clear
+    // the dedup guard: if true, the prompt has left the screen and the same prompt
+    // text detected later should record a new Secret event.
+    let secret_prompt_cleared = Arc::new(AtomicBool::new(false));
     // Browser reveals armed by `demo open --when <pat>`, fired by the output
     // thread when the pattern appears.
     let pending_opens: PendingWhen = Arc::new(Mutex::new(Vec::new()));
-    // Reveals armed by `demo open --after`: fired once the next foreground command
-    // produces output and then goes quiet (back at the prompt). `after_running`
+    // Reveals armed by `demo open --after`: fired when the current foreground command
+    // finishes (produces output and then goes quiet, back at the prompt). `after_running`
     // tracks that such a command is in flight; `after_last_out` its last output.
     let after_opens: PendingAfter = Arc::new(Mutex::new(Vec::new()));
     let after_running = Arc::new(AtomicBool::new(false));
@@ -948,6 +1016,7 @@ pub fn run(args: CaptureArgs) -> Result<()> {
         let exited = shell_exited.clone();
         let sensitive = sensitive.clone();
         let secret_prompt = secret_prompt.clone();
+        let secret_prompt_cleared = secret_prompt_cleared.clone();
         let debug = debug.clone();
         let pending_opens = pending_opens.clone();
         let muting = muting.clone();
@@ -988,7 +1057,13 @@ pub fn run(args: CaptureArgs) -> Result<()> {
                         // Detect the secret prompt at each line boundary and LATCH
                         // the flag (only set here; the input thread clears it on
                         // Enter), so the masked redraws can't unset it mid-secret.
-                        track_and_detect(&mut line, &text, &sensitive, &secret_prompt);
+                        track_and_detect(
+                            &mut line,
+                            &text,
+                            &sensitive,
+                            &secret_prompt,
+                            &secret_prompt_cleared,
+                        );
                         // Pre-roll: discard prompt-setup output until the readiness
                         // marker; record only what follows it (the clean prompt).
                         if !ready.load(Ordering::SeqCst) {
@@ -1057,14 +1132,12 @@ pub fn run(args: CaptureArgs) -> Result<()> {
         let stop = stop.clone();
         let sensitive = sensitive.clone();
         let secret_prompt = secret_prompt.clone();
+        let secret_prompt_cleared = secret_prompt_cleared.clone();
         let debug = debug.clone();
         let muting = muting.clone();
         let mute_since = mute_since.clone();
         let mute_start = mute_start.clone();
         let ready = ready.clone();
-        let after_opens = after_opens.clone();
-        let after_running = after_running.clone();
-        let after_last_out = after_last_out.clone();
         thread::spawn(move || {
             let mut buf = [0u8; 1024];
             let mut stdin = std::io::stdin();
@@ -1095,12 +1168,6 @@ pub fn run(args: CaptureArgs) -> Result<()> {
                             if s.is_none() {
                                 *s = Some(saved_cmd_start.unwrap_or_else(|| ms(t0)));
                             }
-                        } else if outcome.arm_after
-                            && !after_opens.lock().unwrap().is_empty()
-                            && !after_running.load(Ordering::SeqCst)
-                        {
-                            *after_last_out.lock().unwrap() = Instant::now();
-                            after_running.store(true, Ordering::SeqCst);
                         }
                         if !outcome.to_pty.is_empty() {
                             if writer.write_all(&outcome.to_pty).is_err() {
@@ -1121,11 +1188,15 @@ pub fn run(args: CaptureArgs) -> Result<()> {
                         if masked {
                             if outcome.to_pty.iter().any(|b| *b == b'\r' || *b == b'\n') {
                                 sensitive.store(false, Ordering::SeqCst);
+                                let prompt_left_screen =
+                                    secret_prompt_cleared.swap(false, Ordering::SeqCst);
                                 let prompt =
                                     secret_prompt.lock().unwrap().take().unwrap_or_default();
-                                let is_dup = last_secret_prompt.as_ref() == Some(&prompt);
-                                if !is_dup {
-                                    last_secret_prompt = Some(prompt.clone());
+                                if secret_step_on_submit(
+                                    &mut last_secret_prompt,
+                                    prompt_left_screen,
+                                    &prompt,
+                                ) {
                                     events.lock().unwrap().push(RawEvent::Secret {
                                         t_ms: ms(t0),
                                         prompt,
@@ -1169,6 +1240,8 @@ pub fn run(args: CaptureArgs) -> Result<()> {
             &events,
             &pending_opens,
             &after_opens,
+            &after_running,
+            &after_last_out,
             &muting,
             &mute_start,
             &mute_spans,
@@ -1195,15 +1268,14 @@ pub fn run(args: CaptureArgs) -> Result<()> {
         }
         // Safety: an abandoned `demo open` (wizard cancelled, command never sent)
         // shouldn't mute the rest of the demo forever.
-        if muting.load(Ordering::SeqCst)
-            && mute_since.lock().unwrap().elapsed() > Duration::from_secs(90)
-        {
-            muting.store(false, Ordering::SeqCst);
-            // Close a stranded open span so it doesn't swallow the rest of the demo.
-            if let Some(start) = mute_start.lock().unwrap().take() {
-                mute_spans.lock().unwrap().push((start, ms(t0)));
-            }
-        }
+        maybe_close_safety_valve(
+            &muting,
+            &mute_since,
+            &mute_start,
+            &mute_spans,
+            t0,
+            debug.as_deref(),
+        );
         // Safety: if the readiness marker never arrives (odd shell), start
         // recording anyway rather than capturing nothing.
         if !ready.load(Ordering::SeqCst) && t0.elapsed() > Duration::from_secs(4) {
@@ -1214,6 +1286,23 @@ pub fn run(args: CaptureArgs) -> Result<()> {
         }
         thread::sleep(Duration::from_millis(100));
     };
+    // Final drain: the watchdog checks exit conditions *before* read_control,
+    // so a control line written in the last ≤100 ms before shell exit would
+    // otherwise be lost. One extra read picks it up without waiting.
+    let _ = read_control(
+        &control_abs,
+        &mut control_read,
+        &events,
+        &pending_opens,
+        &after_opens,
+        &after_running,
+        &after_last_out,
+        &muting,
+        &mute_start,
+        &mute_spans,
+        t0,
+        debug.as_deref(),
+    );
     if let Some(d) = &debug {
         d.note(&format!("stopping — reason: {reason}"));
     }
@@ -1226,6 +1315,45 @@ pub fn run(args: CaptureArgs) -> Result<()> {
     let _ = std::fs::remove_file(&control_abs);
     let _ = std::fs::remove_file(control_abs.with_file_name(control::SOURCES_FILE));
     let _ = std::fs::remove_file(control_abs.with_file_name(control::META_FILE));
+
+    let drain_summary = {
+        let mut evs = events.lock().unwrap();
+        let raw_for_cutoff = crate::model::RawMacro {
+            meta: crate::model::RawMeta {
+                shell: String::new(),
+                cols: 0,
+                rows: 0,
+                idle_timeout_ms: 0,
+                resolution: None,
+                fps: None,
+                stage: None,
+                mute_spans: Vec::new(),
+            },
+            events: evs.clone(),
+        };
+        let drain_ts = recording::stop_cutoff_ms(&raw_for_cutoff)
+            .map(|c| c.saturating_sub(1))
+            .unwrap_or_else(|| {
+                evs.iter()
+                    .filter_map(|e| match e {
+                        RawEvent::Output { t_ms, .. } => Some(*t_ms),
+                        _ => None,
+                    })
+                    .max()
+                    .unwrap_or(0)
+            });
+        drain_remaining_reveals(&after_opens, &pending_opens, &mut evs, drain_ts)
+    };
+    for pat in &drain_summary.when_unmatched {
+        eprintln!(
+            "warning: --when cue {pat:?} never matched during capture; reveal appended at end"
+        );
+    }
+    for summary in &drain_summary.after_summaries {
+        eprintln!(
+            "warning: --after reveal {summary} never fired during capture; reveal appended at end"
+        );
+    }
 
     let events = events.lock().unwrap().clone();
     let mut mute_spans = mute_spans.lock().unwrap().clone();
@@ -1421,6 +1549,39 @@ fn cue_matches(recent: &str, pattern: &str) -> bool {
     }
 }
 
+/// Summary of what the shutdown drain resolved from the pending queues.
+struct DrainSummary {
+    after_summaries: Vec<String>,
+    when_unmatched: Vec<String>,
+}
+
+/// Drain any remaining `--after` and `--when` queues at shutdown, emitting
+/// their reveals as events so they are recorded rather than silently dropped.
+/// Returns a summary of what was fired and which `--when` cues never matched.
+fn drain_remaining_reveals(
+    after_opens: &PendingAfter,
+    pending_opens: &PendingWhen,
+    events: &mut Vec<RawEvent>,
+    now: u64,
+) -> DrainSummary {
+    let after_remaining: Vec<Reveal> = after_opens.lock().unwrap().drain(..).collect();
+    let mut after_summaries = Vec::new();
+    for r in after_remaining {
+        after_summaries.push(r.summary());
+        events.push(r.to_event(now));
+    }
+    let mut when_unmatched = Vec::new();
+    let pending: Vec<(Reveal, String)> = pending_opens.lock().unwrap().drain(..).collect();
+    for (r, pat) in pending {
+        when_unmatched.push(pat.clone());
+        events.push(r.to_event(now));
+    }
+    DrainSummary {
+        after_summaries,
+        when_unmatched,
+    }
+}
+
 /// Read any new control-file commands (`demo focus`/`demo open`/`demo stop`).
 /// Records immediate reveals, arms `--when`/`--after` reveals, and returns
 /// `Some(reason)` on stop.
@@ -1431,6 +1592,8 @@ fn read_control(
     events: &Arc<Mutex<Vec<RawEvent>>>,
     pending: &PendingWhen,
     after: &PendingAfter,
+    after_running: &AtomicBool,
+    after_last_out: &Mutex<Instant>,
     muting: &Arc<AtomicBool>,
     mute_start: &Arc<Mutex<Option<u64>>>,
     mute_spans: &Arc<Mutex<Vec<(u64, u64)>>>,
@@ -1464,6 +1627,18 @@ fn read_control(
                 muting.store(false, Ordering::SeqCst);
                 stop = Some("demo stop");
             }
+            Some("reveal_cancel") => {
+                // A meta-command failed/was cancelled → close the mute span
+                // without recording a reveal (the command leaves no trace).
+                muting.store(false, Ordering::SeqCst);
+                let mute_span_start = mute_start.lock().unwrap().take();
+                if let Some(start) = mute_span_start {
+                    mute_spans.lock().unwrap().push((start, ms(t0)));
+                }
+                if let Some(d) = debug {
+                    d.note("reveal_cancel — meta-command failed or was cancelled");
+                }
+            }
             Some("reveal") => {
                 // The command finished → stop muting and close its excision span.
                 muting.store(false, Ordering::SeqCst);
@@ -1489,6 +1664,8 @@ fn read_control(
                         d.note(&format!("reveal armed: {} after command", reveal.summary()));
                     }
                     after.lock().unwrap().push(reveal);
+                    after_running.store(true, Ordering::SeqCst);
+                    *after_last_out.lock().unwrap() = Instant::now();
                 } else {
                     // Immediate reveal: use current time (when command finished)
                     if let Some(d) = debug {
@@ -1650,6 +1827,7 @@ mod tests {
         // detection must fire on the prompt BEFORE the `\r` clears the line.
         let sensitive = AtomicBool::new(false);
         let secret_prompt = Mutex::new(None);
+        let secret_prompt_cleared = AtomicBool::new(false);
         let mut line = String::new();
         // `\x1b` (ESC) is a control char; `[?25h` is the residue after it.
         track_and_detect(
@@ -1657,6 +1835,7 @@ mod tests {
             " Vault passphrase:\r\x1b[?25h",
             &sensitive,
             &secret_prompt,
+            &secret_prompt_cleared,
         );
         assert!(
             sensitive.load(Ordering::SeqCst),
@@ -1703,8 +1882,15 @@ mod tests {
 
         let sensitive = AtomicBool::new(false);
         let secret_prompt = Mutex::new(None);
+        let secret_prompt_cleared = AtomicBool::new(false);
         let mut line = String::new();
-        track_and_detect(&mut line, &huge, &sensitive, &secret_prompt);
+        track_and_detect(
+            &mut line,
+            &huge,
+            &sensitive,
+            &secret_prompt,
+            &secret_prompt_cleared,
+        );
         assert!(!sensitive.load(Ordering::SeqCst));
         assert!(secret_prompt.lock().unwrap().is_none());
         // And the tracker's memory stays bounded while the paint streams on.
@@ -2212,8 +2398,15 @@ mod tests {
     fn track_and_detect_multiple_lines() {
         let sensitive = AtomicBool::new(false);
         let secret_prompt = Mutex::new(None);
+        let secret_prompt_cleared = AtomicBool::new(false);
         let mut line = String::new();
-        track_and_detect(&mut line, "hello\nworld\n", &sensitive, &secret_prompt);
+        track_and_detect(
+            &mut line,
+            "hello\nworld\n",
+            &sensitive,
+            &secret_prompt,
+            &secret_prompt_cleared,
+        );
         assert!(!sensitive.load(Ordering::SeqCst));
         assert_eq!(line, "");
     }
@@ -2222,8 +2415,15 @@ mod tests {
     fn track_and_detect_partial_line() {
         let sensitive = AtomicBool::new(false);
         let secret_prompt = Mutex::new(None);
+        let secret_prompt_cleared = AtomicBool::new(false);
         let mut line = String::new();
-        track_and_detect(&mut line, "partial", &sensitive, &secret_prompt);
+        track_and_detect(
+            &mut line,
+            "partial",
+            &sensitive,
+            &secret_prompt,
+            &secret_prompt_cleared,
+        );
         assert!(!sensitive.load(Ordering::SeqCst));
         assert_eq!(line, "partial");
     }
@@ -2232,12 +2432,14 @@ mod tests {
     fn track_and_detect_csi_residue_in_line() {
         let sensitive = AtomicBool::new(false);
         let secret_prompt = Mutex::new(None);
+        let secret_prompt_cleared = AtomicBool::new(false);
         let mut line = String::new();
         track_and_detect(
             &mut line,
             "Vault passphrase:\r\x1b[?25h",
             &sensitive,
             &secret_prompt,
+            &secret_prompt_cleared,
         );
         assert!(sensitive.load(Ordering::SeqCst));
     }
@@ -2246,8 +2448,15 @@ mod tests {
     fn track_and_detect_control_chars_ignored() {
         let sensitive = AtomicBool::new(false);
         let secret_prompt = Mutex::new(None);
+        let secret_prompt_cleared = AtomicBool::new(false);
         let mut line = String::new();
-        track_and_detect(&mut line, "abc\x01\x02\x03def", &sensitive, &secret_prompt);
+        track_and_detect(
+            &mut line,
+            "abc\x01\x02\x03def",
+            &sensitive,
+            &secret_prompt,
+            &secret_prompt_cleared,
+        );
         assert_eq!(line, "abcdef");
     }
 
@@ -2517,8 +2726,15 @@ mod tests {
     fn track_and_detect_secret_at_newline_boundary() {
         let sensitive = AtomicBool::new(false);
         let secret_prompt = Mutex::new(None);
+        let secret_prompt_cleared = AtomicBool::new(false);
         let mut line = String::new();
-        track_and_detect(&mut line, "Password:\n", &sensitive, &secret_prompt);
+        track_and_detect(
+            &mut line,
+            "Password:\n",
+            &sensitive,
+            &secret_prompt,
+            &secret_prompt_cleared,
+        );
         assert!(sensitive.load(Ordering::SeqCst));
     }
 
@@ -2526,8 +2742,15 @@ mod tests {
     fn track_and_detect_no_secret_without_colon() {
         let sensitive = AtomicBool::new(false);
         let secret_prompt = Mutex::new(None);
+        let secret_prompt_cleared = AtomicBool::new(false);
         let mut line = String::new();
-        track_and_detect(&mut line, "Password\n", &sensitive, &secret_prompt);
+        track_and_detect(
+            &mut line,
+            "Password\n",
+            &sensitive,
+            &secret_prompt,
+            &secret_prompt_cleared,
+        );
         assert!(!sensitive.load(Ordering::SeqCst));
     }
 
@@ -2535,10 +2758,17 @@ mod tests {
     fn track_and_detect_long_line_not_truncated() {
         let sensitive = AtomicBool::new(false);
         let secret_prompt = Mutex::new(None);
+        let secret_prompt_cleared = AtomicBool::new(false);
         let mut line = String::new();
         // Line under MAX_PROMPT_LINE should be kept
         let short = "a".repeat(100);
-        track_and_detect(&mut line, &short, &sensitive, &secret_prompt);
+        track_and_detect(
+            &mut line,
+            &short,
+            &sensitive,
+            &secret_prompt,
+            &secret_prompt_cleared,
+        );
         assert_eq!(line.len(), 100);
     }
 
@@ -2546,10 +2776,17 @@ mod tests {
     fn track_and_detect_long_line_truncated() {
         let sensitive = AtomicBool::new(false);
         let secret_prompt = Mutex::new(None);
+        let secret_prompt_cleared = AtomicBool::new(false);
         let mut line = String::new();
         // Line over MAX_PROMPT_LINE should be truncated
         let long = "a".repeat(300);
-        track_and_detect(&mut line, &long, &sensitive, &secret_prompt);
+        track_and_detect(
+            &mut line,
+            &long,
+            &sensitive,
+            &secret_prompt,
+            &secret_prompt_cleared,
+        );
         assert!(line.len() <= MAX_PROMPT_LINE);
     }
 
@@ -2740,5 +2977,951 @@ mod tests {
         assert!(!is_meta_command(""));
         assert!(!is_meta_command("demo"));
         assert!(!is_meta_command("demo "));
+    }
+
+    #[test]
+    fn secret_step_on_submit_no_guard_records() {
+        let mut last: Option<String> = None;
+        assert!(secret_step_on_submit(&mut last, false, "Password:"));
+        assert_eq!(last.as_deref(), Some("Password:"));
+    }
+
+    #[test]
+    fn secret_step_on_submit_same_prompt_is_dup() {
+        let mut last = Some("Password:".to_string());
+        assert!(!secret_step_on_submit(&mut last, false, "Password:"));
+    }
+
+    #[test]
+    fn secret_step_on_submit_different_prompt_records() {
+        let mut last = Some("Password:".to_string());
+        assert!(secret_step_on_submit(&mut last, false, "Token:"));
+        assert_eq!(last.as_deref(), Some("Token:"));
+    }
+
+    #[test]
+    fn secret_step_on_submit_clears_guard_when_prompt_left_screen() {
+        let mut last = Some("Password:".to_string());
+        assert!(secret_step_on_submit(&mut last, true, "Password:"));
+        assert_eq!(last.as_deref(), Some("Password:"));
+    }
+
+    #[test]
+    fn secret_dedup_same_prompt_with_submission_produces_two_events() {
+        let sensitive = AtomicBool::new(false);
+        let secret_prompt = Mutex::new(None);
+        let secret_prompt_cleared = AtomicBool::new(false);
+        let mut last_secret_prompt: Option<String> = None;
+        let mut events = Vec::new();
+
+        let mut line = String::new();
+        track_and_detect(
+            &mut line,
+            "Password:\n",
+            &sensitive,
+            &secret_prompt,
+            &secret_prompt_cleared,
+        );
+        let prompt = secret_prompt.lock().unwrap().take().unwrap();
+        let cleared = secret_prompt_cleared.swap(false, Ordering::SeqCst);
+        if secret_step_on_submit(&mut last_secret_prompt, cleared, &prompt) {
+            events.push(prompt);
+        }
+        sensitive.store(false, Ordering::SeqCst);
+
+        let mut line = String::new();
+        track_and_detect(
+            &mut line,
+            "Welcome to sudo\n",
+            &sensitive,
+            &secret_prompt,
+            &secret_prompt_cleared,
+        );
+        assert!(secret_prompt_cleared.load(Ordering::SeqCst));
+
+        let mut line = String::new();
+        track_and_detect(
+            &mut line,
+            "Password:\n",
+            &sensitive,
+            &secret_prompt,
+            &secret_prompt_cleared,
+        );
+        let prompt = secret_prompt.lock().unwrap().take().unwrap();
+        let cleared = secret_prompt_cleared.swap(false, Ordering::SeqCst);
+        if secret_step_on_submit(&mut last_secret_prompt, cleared, &prompt) {
+            events.push(prompt);
+        }
+
+        assert_eq!(events.len(), 2);
+    }
+
+    #[test]
+    fn secret_dedup_same_prompt_no_submission_produces_one_event() {
+        let sensitive = AtomicBool::new(false);
+        let secret_prompt = Mutex::new(None);
+        let secret_prompt_cleared = AtomicBool::new(false);
+        let mut last_secret_prompt: Option<String> = None;
+        let mut events = Vec::new();
+
+        let mut line = String::new();
+        track_and_detect(
+            &mut line,
+            "Password:\n",
+            &sensitive,
+            &secret_prompt,
+            &secret_prompt_cleared,
+        );
+
+        let mut line = String::new();
+        track_and_detect(
+            &mut line,
+            "Password:\n",
+            &sensitive,
+            &secret_prompt,
+            &secret_prompt_cleared,
+        );
+
+        let prompt = secret_prompt.lock().unwrap().take().unwrap();
+        let cleared = secret_prompt_cleared.swap(false, Ordering::SeqCst);
+        if secret_step_on_submit(&mut last_secret_prompt, cleared, &prompt) {
+            events.push(prompt);
+        }
+
+        assert_eq!(events.len(), 1);
+    }
+
+    #[test]
+    fn secret_dedup_different_prompts_produce_two_events() {
+        let sensitive = AtomicBool::new(false);
+        let secret_prompt = Mutex::new(None);
+        let secret_prompt_cleared = AtomicBool::new(false);
+        let mut last_secret_prompt: Option<String> = None;
+        let mut events = Vec::new();
+
+        let mut line = String::new();
+        track_and_detect(
+            &mut line,
+            "Password:\n",
+            &sensitive,
+            &secret_prompt,
+            &secret_prompt_cleared,
+        );
+        let prompt = secret_prompt.lock().unwrap().take().unwrap();
+        let cleared = secret_prompt_cleared.swap(false, Ordering::SeqCst);
+        if secret_step_on_submit(&mut last_secret_prompt, cleared, &prompt) {
+            events.push(prompt);
+        }
+        sensitive.store(false, Ordering::SeqCst);
+
+        let mut line = String::new();
+        track_and_detect(
+            &mut line,
+            "Some output\n",
+            &sensitive,
+            &secret_prompt,
+            &secret_prompt_cleared,
+        );
+
+        let mut line = String::new();
+        track_and_detect(
+            &mut line,
+            "Token:\n",
+            &sensitive,
+            &secret_prompt,
+            &secret_prompt_cleared,
+        );
+        let prompt = secret_prompt.lock().unwrap().take().unwrap();
+        let cleared = secret_prompt_cleared.swap(false, Ordering::SeqCst);
+        if secret_step_on_submit(&mut last_secret_prompt, cleared, &prompt) {
+            events.push(prompt);
+        }
+
+        assert_eq!(events.len(), 2);
+    }
+
+    #[test]
+    fn secret_dedup_guard_must_be_cleared_by_prompt_leaving_screen() {
+        // Exercises the extracted helper directly: same prompt submitted twice
+        // with prompt_left_screen=true between them must produce two events.
+        // If the guard were capture-wide (prompt_left_screen ignored), the
+        // second call would return false and this test would fail.
+        let mut last: Option<String> = None;
+        assert!(secret_step_on_submit(&mut last, false, "Password:"));
+        assert!(secret_step_on_submit(&mut last, true, "Password:"));
+    }
+
+    #[test]
+    fn secret_dedup_immediate_redraw_after_enter_is_suppressed() {
+        let sensitive = AtomicBool::new(false);
+        let secret_prompt = Mutex::new(None);
+        let secret_prompt_cleared = AtomicBool::new(false);
+        let mut last_secret_prompt: Option<String> = None;
+        let mut events = Vec::new();
+
+        let mut line = String::new();
+        track_and_detect(
+            &mut line,
+            "Password:\n",
+            &sensitive,
+            &secret_prompt,
+            &secret_prompt_cleared,
+        );
+        let prompt = secret_prompt.lock().unwrap().take().unwrap();
+        let cleared = secret_prompt_cleared.swap(false, Ordering::SeqCst);
+        if secret_step_on_submit(&mut last_secret_prompt, cleared, &prompt) {
+            events.push(prompt);
+        }
+        sensitive.store(false, Ordering::SeqCst);
+
+        let mut line = String::new();
+        track_and_detect(
+            &mut line,
+            "Password:\n",
+            &sensitive,
+            &secret_prompt,
+            &secret_prompt_cleared,
+        );
+        let prompt = secret_prompt.lock().unwrap().take().unwrap();
+        let cleared = secret_prompt_cleared.swap(false, Ordering::SeqCst);
+        if secret_step_on_submit(&mut last_secret_prompt, cleared, &prompt) {
+            events.push(prompt);
+        }
+
+        assert_eq!(events.len(), 1);
+    }
+
+    #[test]
+    fn secret_prompt_cleared_not_set_on_partial_line() {
+        // A prompt split across PTY reads must not spuriously set the cleared
+        // flag: "[sudo] password for " at chunk end (no newline) is a partial
+        // line, not a completed non-secret line.
+        let sensitive = AtomicBool::new(false);
+        let secret_prompt = Mutex::new(None);
+        let secret_prompt_cleared = AtomicBool::new(false);
+        let mut line = String::new();
+        track_and_detect(
+            &mut line,
+            "[sudo] password for ",
+            &sensitive,
+            &secret_prompt,
+            &secret_prompt_cleared,
+        );
+        assert!(
+            !secret_prompt_cleared.load(Ordering::SeqCst),
+            "partial line at chunk end must not set secret_prompt_cleared"
+        );
+    }
+
+    fn test_reveal() -> Reveal {
+        Reveal {
+            panes: vec![RevealPane {
+                id: "main".into(),
+                url: Some("http://example.com".into()),
+                theme: None,
+            }],
+            orientation: Orientation::Horizontal,
+            hold_ms: None,
+            scroll: false,
+        }
+    }
+
+    #[test]
+    fn read_control_arms_after_running_when_queueing_after_reveal() {
+        let cpath = std::env::temp_dir().join(format!("demo-test-control-{}", std::process::id()));
+        let cmd = serde_json::json!({
+            "cmd": "reveal",
+            "after": true,
+            "panes": [{"id": "main", "url": "http://example.com"}],
+        });
+        std::fs::write(&cpath, serde_json::to_string(&cmd).unwrap()).unwrap();
+
+        let events: Arc<Mutex<Vec<RawEvent>>> = Arc::new(Mutex::new(Vec::new()));
+        let pending: PendingWhen = Arc::new(Mutex::new(Vec::new()));
+        let after: PendingAfter = Arc::new(Mutex::new(Vec::new()));
+        let after_running = AtomicBool::new(false);
+        let after_last_out = Mutex::new(Instant::now());
+        let muting = Arc::new(AtomicBool::new(false));
+        let mute_start: Arc<Mutex<Option<u64>>> = Arc::new(Mutex::new(None));
+        let mute_spans: Arc<Mutex<Vec<(u64, u64)>>> = Arc::new(Mutex::new(Vec::new()));
+        let t0 = Instant::now();
+        let mut read = 0u64;
+
+        let result = read_control(
+            &cpath,
+            &mut read,
+            &events,
+            &pending,
+            &after,
+            &after_running,
+            &after_last_out,
+            &muting,
+            &mute_start,
+            &mute_spans,
+            t0,
+            None,
+        );
+
+        assert!(result.is_none());
+        assert!(
+            after_running.load(Ordering::SeqCst),
+            "--after must arm after_running immediately so the current command is tracked"
+        );
+        assert_eq!(after.lock().unwrap().len(), 1);
+        assert!(events.lock().unwrap().is_empty(), "no immediate reveal");
+        let _ = std::fs::remove_file(&cpath);
+    }
+
+    #[test]
+    fn drain_remaining_reveals_emits_after_queue_as_events() {
+        let after: PendingAfter = Arc::new(Mutex::new(vec![test_reveal()]));
+        let pending: PendingWhen = Arc::new(Mutex::new(Vec::new()));
+        let mut events = Vec::new();
+
+        let summary = drain_remaining_reveals(&after, &pending, &mut events, 9999);
+
+        assert_eq!(summary.after_summaries.len(), 1);
+        assert!(summary.when_unmatched.is_empty());
+        assert_eq!(events.len(), 1);
+        assert!(after.lock().unwrap().is_empty());
+        match &events[0] {
+            RawEvent::Reveal { t_ms, .. } => assert_eq!(*t_ms, 9999),
+            other => panic!("expected Reveal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn drain_remaining_reveals_reports_unmatched_when_cues() {
+        let after: PendingAfter = Arc::new(Mutex::new(Vec::new()));
+        let pending: PendingWhen = Arc::new(Mutex::new(vec![(
+            test_reveal(),
+            "never-gonna-appear".into(),
+        )]));
+        let mut events = Vec::new();
+
+        let summary = drain_remaining_reveals(&after, &pending, &mut events, 5000);
+
+        assert_eq!(summary.after_summaries.len(), 0);
+        assert_eq!(
+            summary.when_unmatched,
+            vec!["never-gonna-appear".to_string()]
+        );
+        assert_eq!(events.len(), 1);
+        assert!(pending.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn drain_remaining_reveals_handles_both_queues_at_once() {
+        let after: PendingAfter = Arc::new(Mutex::new(vec![test_reveal()]));
+        let pending: PendingWhen = Arc::new(Mutex::new(vec![
+            (test_reveal(), "cue-alpha".into()),
+            (test_reveal(), "re:cue-beta".into()),
+        ]));
+        let mut events = Vec::new();
+
+        let summary = drain_remaining_reveals(&after, &pending, &mut events, 1000);
+
+        assert_eq!(summary.after_summaries.len(), 1);
+        assert_eq!(summary.when_unmatched.len(), 2);
+        assert_eq!(events.len(), 3);
+        assert!(after.lock().unwrap().is_empty());
+        assert!(pending.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn drained_reveal_survives_from_raw_after_demo_stop() {
+        let mut events = vec![
+            RawEvent::Output {
+                t_ms: 100,
+                data: "real output".into(),
+            },
+            RawEvent::Input {
+                t_ms: 2000,
+                bytes: "demo stop\r".into(),
+            },
+            RawEvent::Output {
+                t_ms: 2010,
+                data: "demo stop".into(),
+            },
+        ];
+        let after: PendingAfter = Arc::new(Mutex::new(vec![test_reveal()]));
+        let pending: PendingWhen =
+            Arc::new(Mutex::new(vec![(test_reveal(), "never-matched".into())]));
+        let raw_for_cutoff = crate::model::RawMacro {
+            meta: crate::model::RawMeta {
+                shell: String::new(),
+                cols: 0,
+                rows: 0,
+                idle_timeout_ms: 0,
+                resolution: None,
+                fps: None,
+                stage: None,
+                mute_spans: Vec::new(),
+            },
+            events: events.clone(),
+        };
+        let drain_ts = recording::stop_cutoff_ms(&raw_for_cutoff)
+            .map(|c| c.saturating_sub(1))
+            .unwrap_or_else(|| {
+                events
+                    .iter()
+                    .filter_map(|e| match e {
+                        RawEvent::Output { t_ms, .. } => Some(*t_ms),
+                        _ => None,
+                    })
+                    .max()
+                    .unwrap_or(0)
+            });
+        drain_remaining_reveals(&after, &pending, &mut events, drain_ts);
+        let raw = crate::model::RawMacro {
+            meta: crate::model::RawMeta {
+                shell: "/bin/bash".into(),
+                cols: 80,
+                rows: 24,
+                idle_timeout_ms: 0,
+                resolution: None,
+                fps: None,
+                stage: None,
+                mute_spans: Vec::new(),
+            },
+            events,
+        };
+        let (rec, layout, _) = recording::from_raw(&raw, "t");
+        assert!(
+            rec.events.iter().any(|(_, data)| data == "real output"),
+            "real output must survive"
+        );
+        assert!(
+            !layout.panes.is_empty(),
+            "drained reveal must survive normalization"
+        );
+        let has_browser = layout
+            .panes
+            .iter()
+            .any(|p| p.kind == crate::model::PaneKind::Browser);
+        assert!(
+            has_browser,
+            "drained --after reveal must produce a browser pane"
+        );
+    }
+
+    #[test]
+    fn reveal_cancel_closes_mute_span_without_recording_reveal() {
+        let cpath = std::env::temp_dir().join(format!("demo-test-cancel-{}", std::process::id()));
+        let cmd = serde_json::json!({ "cmd": "reveal_cancel" });
+        std::fs::write(&cpath, serde_json::to_string(&cmd).unwrap()).unwrap();
+
+        let events: Arc<Mutex<Vec<RawEvent>>> = Arc::new(Mutex::new(Vec::new()));
+        let pending: PendingWhen = Arc::new(Mutex::new(Vec::new()));
+        let after: PendingAfter = Arc::new(Mutex::new(Vec::new()));
+        let after_running = AtomicBool::new(false);
+        let after_last_out = Mutex::new(Instant::now());
+        let muting = Arc::new(AtomicBool::new(true));
+        let mute_start: Arc<Mutex<Option<u64>>> = Arc::new(Mutex::new(Some(1000)));
+        let mute_spans: Arc<Mutex<Vec<(u64, u64)>>> = Arc::new(Mutex::new(Vec::new()));
+        let t0 = Instant::now();
+        let mut read = 0u64;
+
+        let result = read_control(
+            &cpath,
+            &mut read,
+            &events,
+            &pending,
+            &after,
+            &after_running,
+            &after_last_out,
+            &muting,
+            &mute_start,
+            &mute_spans,
+            t0,
+            None,
+        );
+
+        assert!(result.is_none());
+        assert!(
+            !muting.load(Ordering::SeqCst),
+            "reveal_cancel must stop muting"
+        );
+        assert!(
+            mute_start.lock().unwrap().is_none(),
+            "reveal_cancel must take the mute_start"
+        );
+        assert_eq!(
+            mute_spans.lock().unwrap().len(),
+            1,
+            "reveal_cancel must close the span"
+        );
+        assert!(
+            events.lock().unwrap().is_empty(),
+            "reveal_cancel must not record a reveal event"
+        );
+        let _ = std::fs::remove_file(&cpath);
+    }
+
+    #[test]
+    fn reveal_closes_mute_span_and_records_event() {
+        let cpath =
+            std::env::temp_dir().join(format!("demo-test-reveal-close-{}", std::process::id()));
+        let cmd = serde_json::json!({
+            "cmd": "reveal",
+            "panes": [{"id": "main", "url": "http://example.com"}],
+        });
+        std::fs::write(&cpath, serde_json::to_string(&cmd).unwrap()).unwrap();
+
+        let events: Arc<Mutex<Vec<RawEvent>>> = Arc::new(Mutex::new(Vec::new()));
+        let pending: PendingWhen = Arc::new(Mutex::new(Vec::new()));
+        let after: PendingAfter = Arc::new(Mutex::new(Vec::new()));
+        let after_running = AtomicBool::new(false);
+        let after_last_out = Mutex::new(Instant::now());
+        let muting = Arc::new(AtomicBool::new(true));
+        let mute_start: Arc<Mutex<Option<u64>>> = Arc::new(Mutex::new(Some(1000)));
+        let mute_spans: Arc<Mutex<Vec<(u64, u64)>>> = Arc::new(Mutex::new(Vec::new()));
+        let t0 = Instant::now();
+        let mut read = 0u64;
+
+        let result = read_control(
+            &cpath,
+            &mut read,
+            &events,
+            &pending,
+            &after,
+            &after_running,
+            &after_last_out,
+            &muting,
+            &mute_start,
+            &mute_spans,
+            t0,
+            None,
+        );
+
+        assert!(result.is_none());
+        assert!(!muting.load(Ordering::SeqCst), "reveal must stop muting");
+        assert!(
+            mute_start.lock().unwrap().is_none(),
+            "reveal must take the mute_start"
+        );
+        assert_eq!(
+            mute_spans.lock().unwrap().len(),
+            1,
+            "reveal must close the span"
+        );
+        assert_eq!(
+            events.lock().unwrap().len(),
+            1,
+            "reveal must record a reveal event"
+        );
+        let _ = std::fs::remove_file(&cpath);
+    }
+
+    #[test]
+    fn double_close_is_safe() {
+        let cpath =
+            std::env::temp_dir().join(format!("demo-test-double-close-{}", std::process::id()));
+        // First cancel, then reveal — both try to close the same span.
+        let cmds = format!(
+            "{}\n{}",
+            serde_json::to_string(&serde_json::json!({ "cmd": "reveal_cancel" })).unwrap(),
+            serde_json::to_string(&serde_json::json!({
+                "cmd": "reveal",
+                "panes": [{"id": "main", "url": "http://example.com"}],
+            }))
+            .unwrap()
+        );
+        std::fs::write(&cpath, cmds).unwrap();
+
+        let events: Arc<Mutex<Vec<RawEvent>>> = Arc::new(Mutex::new(Vec::new()));
+        let pending: PendingWhen = Arc::new(Mutex::new(Vec::new()));
+        let after: PendingAfter = Arc::new(Mutex::new(Vec::new()));
+        let after_running = AtomicBool::new(false);
+        let after_last_out = Mutex::new(Instant::now());
+        let muting = Arc::new(AtomicBool::new(true));
+        let mute_start: Arc<Mutex<Option<u64>>> = Arc::new(Mutex::new(Some(1000)));
+        let mute_spans: Arc<Mutex<Vec<(u64, u64)>>> = Arc::new(Mutex::new(Vec::new()));
+        let t0 = Instant::now();
+        let mut read = 0u64;
+
+        let result = read_control(
+            &cpath,
+            &mut read,
+            &events,
+            &pending,
+            &after,
+            &after_running,
+            &after_last_out,
+            &muting,
+            &mute_start,
+            &mute_spans,
+            t0,
+            None,
+        );
+
+        assert!(result.is_none());
+        assert_eq!(
+            mute_spans.lock().unwrap().len(),
+            1,
+            "only the first close must record a span (second finds mute_start empty)"
+        );
+        assert_eq!(
+            events.lock().unwrap().len(),
+            1,
+            "reveal still records its event even after cancel closed the span"
+        );
+        let _ = std::fs::remove_file(&cpath);
+    }
+
+    #[test]
+    fn safety_valve_closes_span_and_emits_diagnostic() {
+        let t0 = Instant::now();
+        let muting = AtomicBool::new(true);
+        // Pretend muting started 91 seconds ago.
+        let mute_since = Mutex::new(t0 - Duration::from_secs(91));
+        let mute_start: Mutex<Option<u64>> = Mutex::new(Some(500));
+        let mute_spans: Mutex<Vec<(u64, u64)>> = Mutex::new(Vec::new());
+
+        let log_path = std::env::temp_dir().join(format!("demo-test-valve-{}", std::process::id()));
+        let debug = DebugLog::create(&log_path, t0).unwrap();
+
+        let fired = maybe_close_safety_valve(
+            &muting,
+            &mute_since,
+            &mute_start,
+            &mute_spans,
+            t0,
+            Some(&debug),
+        );
+
+        assert!(fired, "safety valve must report that it fired");
+        assert!(
+            !muting.load(Ordering::SeqCst),
+            "safety valve must stop muting"
+        );
+        assert!(
+            mute_start.lock().unwrap().is_none(),
+            "safety valve must take the mute_start"
+        );
+        assert_eq!(
+            mute_spans.lock().unwrap().len(),
+            1,
+            "safety valve must close the span into mute_spans"
+        );
+        let log_contents = std::fs::read_to_string(&log_path).unwrap();
+        assert!(
+            log_contents.contains("safety valve:"),
+            "safety valve must write its diagnostic to the debug log, got: {log_contents:?}"
+        );
+        let _ = std::fs::remove_file(&log_path);
+    }
+
+    #[test]
+    fn safety_valve_does_not_fire_before_90s() {
+        let t0 = Instant::now();
+        let muting = AtomicBool::new(true);
+        let mute_since = Mutex::new(t0 - Duration::from_secs(60));
+        let mute_start: Mutex<Option<u64>> = Mutex::new(Some(500));
+        let mute_spans: Mutex<Vec<(u64, u64)>> = Mutex::new(Vec::new());
+
+        let fired =
+            maybe_close_safety_valve(&muting, &mute_since, &mute_start, &mute_spans, t0, None);
+
+        assert!(!fired, "safety valve must not fire before 90s");
+        assert!(
+            muting.load(Ordering::SeqCst),
+            "muting must remain on when valve hasn't fired"
+        );
+        assert_eq!(
+            mute_spans.lock().unwrap().len(),
+            0,
+            "no span must be closed when valve hasn't fired"
+        );
+    }
+
+    #[allow(clippy::type_complexity)]
+    fn make_read_control_fixtures() -> (
+        std::path::PathBuf,
+        Arc<Mutex<Vec<RawEvent>>>,
+        PendingWhen,
+        PendingAfter,
+        AtomicBool,
+        Mutex<Instant>,
+        Arc<AtomicBool>,
+        Arc<Mutex<Option<u64>>>,
+        Arc<Mutex<Vec<(u64, u64)>>>,
+        Instant,
+    ) {
+        // Unique per CALL, not per process. `std::process::id()` alone is enough
+        // under nextest, which gives every test its own process — and useless
+        // under `cargo test`, which runs them as threads in one process, so two
+        // tests sharing this fixture raced over the same file. CI runs
+        // `cargo test`; a pid-keyed temp path is a test that only passes on the
+        // runner that isolates it for you.
+        static FIXTURE_SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let seq = FIXTURE_SEQ.fetch_add(1, Ordering::SeqCst);
+        let cpath = std::env::temp_dir().join(format!(
+            "demo-test-final-drain-{}-{seq}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&cpath);
+        let events: Arc<Mutex<Vec<RawEvent>>> = Arc::new(Mutex::new(Vec::new()));
+        let pending: PendingWhen = Arc::new(Mutex::new(Vec::new()));
+        let after: PendingAfter = Arc::new(Mutex::new(Vec::new()));
+        let after_running = AtomicBool::new(false);
+        let after_last_out = Mutex::new(Instant::now());
+        let muting = Arc::new(AtomicBool::new(false));
+        let mute_start: Arc<Mutex<Option<u64>>> = Arc::new(Mutex::new(None));
+        let mute_spans: Arc<Mutex<Vec<(u64, u64)>>> = Arc::new(Mutex::new(Vec::new()));
+        let t0 = Instant::now();
+        (
+            cpath,
+            events,
+            pending,
+            after,
+            after_running,
+            after_last_out,
+            muting,
+            mute_start,
+            mute_spans,
+            t0,
+        )
+    }
+
+    #[test]
+    fn final_drain_picks_up_control_line_appended_after_last_watchdog_read() {
+        let (
+            cpath,
+            events,
+            pending,
+            after,
+            after_running,
+            after_last_out,
+            muting,
+            mute_start,
+            mute_spans,
+            t0,
+        ) = make_read_control_fixtures();
+        let mut read = 0u64;
+
+        std::fs::write(&cpath, "").unwrap();
+        let _ = read_control(
+            &cpath,
+            &mut read,
+            &events,
+            &pending,
+            &after,
+            &after_running,
+            &after_last_out,
+            &muting,
+            &mute_start,
+            &mute_spans,
+            t0,
+            None,
+        );
+        assert_eq!(read, 0);
+
+        let reveal = serde_json::to_string(&serde_json::json!({
+            "cmd": "reveal",
+            "panes": [{"id": "main", "url": "http://example.com"}],
+        }))
+        .unwrap();
+        std::fs::write(&cpath, format!("{reveal}\n")).unwrap();
+
+        let _ = read_control(
+            &cpath,
+            &mut read,
+            &events,
+            &pending,
+            &after,
+            &after_running,
+            &after_last_out,
+            &muting,
+            &mute_start,
+            &mute_spans,
+            t0,
+            None,
+        );
+
+        assert_eq!(
+            events.lock().unwrap().len(),
+            1,
+            "final drain must process a reveal appended after the last watchdog pass"
+        );
+        let _ = std::fs::remove_file(&cpath);
+    }
+
+    #[test]
+    fn final_drain_on_empty_or_fully_consumed_file_is_noop() {
+        let (
+            cpath,
+            events,
+            pending,
+            after,
+            after_running,
+            after_last_out,
+            muting,
+            mute_start,
+            mute_spans,
+            t0,
+        ) = make_read_control_fixtures();
+        let mut read = 0u64;
+
+        std::fs::write(&cpath, "").unwrap();
+        let result = read_control(
+            &cpath,
+            &mut read,
+            &events,
+            &pending,
+            &after,
+            &after_running,
+            &after_last_out,
+            &muting,
+            &mute_start,
+            &mute_spans,
+            t0,
+            None,
+        );
+        assert!(result.is_none());
+        assert_eq!(read, 0);
+        assert!(events.lock().unwrap().is_empty());
+
+        let reveal = serde_json::to_string(&serde_json::json!({
+            "cmd": "reveal",
+            "panes": [{"id": "main", "url": "http://example.com"}],
+        }))
+        .unwrap();
+        std::fs::write(&cpath, format!("{reveal}\n")).unwrap();
+        let _ = read_control(
+            &cpath,
+            &mut read,
+            &events,
+            &pending,
+            &after,
+            &after_running,
+            &after_last_out,
+            &muting,
+            &mute_start,
+            &mute_spans,
+            t0,
+            None,
+        );
+        assert_eq!(events.lock().unwrap().len(), 1);
+        let offset_after_first = read;
+
+        let result = read_control(
+            &cpath,
+            &mut read,
+            &events,
+            &pending,
+            &after,
+            &after_running,
+            &after_last_out,
+            &muting,
+            &mute_start,
+            &mute_spans,
+            t0,
+            None,
+        );
+        assert!(result.is_none());
+        assert_eq!(
+            read, offset_after_first,
+            "offset must not change on empty re-read"
+        );
+        assert_eq!(events.lock().unwrap().len(), 1, "no duplicate events");
+        let _ = std::fs::remove_file(&cpath);
+    }
+
+    #[test]
+    fn byte_offset_never_rewinds_and_torn_line_is_not_double_consumed() {
+        let (
+            cpath,
+            events,
+            pending,
+            after,
+            after_running,
+            after_last_out,
+            muting,
+            mute_start,
+            mute_spans,
+            t0,
+        ) = make_read_control_fixtures();
+        let mut read = 0u64;
+
+        std::fs::write(&cpath, "tea").unwrap();
+        let _ = read_control(
+            &cpath,
+            &mut read,
+            &events,
+            &pending,
+            &after,
+            &after_running,
+            &after_last_out,
+            &muting,
+            &mute_start,
+            &mute_spans,
+            t0,
+            None,
+        );
+        let offset_after_partial = read;
+        assert_eq!(
+            offset_after_partial, 3,
+            "offset must advance past the partial bytes"
+        );
+
+        std::fs::write(&cpath, "tear\n").unwrap();
+        let offset_before = read;
+        let _ = read_control(
+            &cpath,
+            &mut read,
+            &events,
+            &pending,
+            &after,
+            &after_running,
+            &after_last_out,
+            &muting,
+            &mute_start,
+            &mute_spans,
+            t0,
+            None,
+        );
+        assert!(
+            read >= offset_before,
+            "offset must never rewind (was {offset_before}, now {read})"
+        );
+        assert!(
+            events.lock().unwrap().is_empty(),
+            "torn partial must not produce a phantom event"
+        );
+
+        let reveal = serde_json::to_string(&serde_json::json!({
+            "cmd": "reveal",
+            "panes": [{"id": "main", "url": "http://example.com"}],
+        }))
+        .unwrap();
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&cpath)
+            .unwrap();
+        use std::io::Write;
+        writeln!(file, "{reveal}").unwrap();
+        drop(file);
+
+        let _ = read_control(
+            &cpath,
+            &mut read,
+            &events,
+            &pending,
+            &after,
+            &after_running,
+            &after_last_out,
+            &muting,
+            &mute_start,
+            &mute_spans,
+            t0,
+            None,
+        );
+        assert_eq!(
+            events.lock().unwrap().len(),
+            1,
+            "reveal appended after the torn line must be processed exactly once"
+        );
+        let _ = std::fs::remove_file(&cpath);
     }
 }
