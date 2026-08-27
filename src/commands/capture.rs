@@ -3646,8 +3646,18 @@ mod tests {
         Arc<Mutex<Vec<(u64, u64)>>>,
         Instant,
     ) {
-        let cpath =
-            std::env::temp_dir().join(format!("demo-test-final-drain-{}", std::process::id()));
+        // Unique per CALL, not per process. `std::process::id()` alone is enough
+        // under nextest, which gives every test its own process — and useless
+        // under `cargo test`, which runs them as threads in one process, so two
+        // tests sharing this fixture raced over the same file. CI runs
+        // `cargo test`; a pid-keyed temp path is a test that only passes on the
+        // runner that isolates it for you.
+        static FIXTURE_SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let seq = FIXTURE_SEQ.fetch_add(1, Ordering::SeqCst);
+        let cpath = std::env::temp_dir().join(format!(
+            "demo-test-final-drain-{}-{seq}",
+            std::process::id()
+        ));
         let _ = std::fs::remove_file(&cpath);
         let events: Arc<Mutex<Vec<RawEvent>>> = Arc::new(Mutex::new(Vec::new()));
         let pending: PendingWhen = Arc::new(Mutex::new(Vec::new()));
