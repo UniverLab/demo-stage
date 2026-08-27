@@ -4,7 +4,7 @@
 //! covers printable ASCII, ANSI colours, and every other glyph the capture
 //! actually prints (banners, box-drawing, arrows) as long as the font has it.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use fontdue::{Font, Metrics};
 use vt100::{Color, Parser};
@@ -15,33 +15,6 @@ use crate::fonts;
 use crate::model::Score;
 
 const DEFAULT_FG: [u8; 3] = [200, 200, 200];
-
-/// Non-ASCII glyphs cached on top of printable ASCII so they render on the pixel
-/// targets — a green-arrow prompt (`❯`), a few common symbols people use in
-/// prompts and captions, and the full block/box-drawing/Geometric ranges that
-/// MapSCII and similar TUIs rely on.
-const EXTRA_GLYPHS: &[char] = &[
-    // Prompt / caption symbols
-    '❯', '❮', '›', '‹', '»', '«', '→', '←', '▶', '▸', '●', '•', '★', '✓', '✗', 'λ',
-    // Block Elements (U+2580–U+259F) — MapSCII uses these heavily
-    '▀', '▁', '▂', '▃', '▄', '▅', '▆', '▇', '█', '▉', '▊', '▋', '▌', '▍', '▎', '▏', '▐', '▕', '▖',
-    '▗', '▘', '▙', '▚', '▛', '▜', '▝', '▞', '▟',
-    // Box Drawing (U+2500–U+257F) — TUI borders
-    '─', '━', '│', '┃', '┌', '┍', '┎', '┏', '┐', '┑', '┒', '┓', '└', '┕', '┖', '┗', '┘', '┙', '┚',
-    '┛', '├', '┝', '┠', '┣', '┤', '┥', '┨', '┫', '┬', '┯', '┰', '┳', '┴', '┷', '┸', '┻', '┼', '┿',
-    '╀', '╁', '╂', '╃', '╄', '╅', '╆', '╇', '╈', '╉', '╊', '╋',
-    // Geometric Shapes (U+25A0–U+25FF)
-    '■', '□', '▢', '▣', '▤', '▥', '▦', '▧', '▨', '▩', '▪', '▫', '▬', '▭', '▮', '▯', '▰', '▱', '▲',
-    '△', '▴', '▵', '▷', '◃', '►', '▻', '▼', '▽', '▾', '▿', '◁', '◂', '◄', '◅', '◆', '◇', '◈', '◉',
-    '◊', '○', '◌', '◍', '◎', '●', '◐', '◑', '◒', '◓', '◔', '◕', '◖', '◗', '◘', '◙', '◚', '◛', '◜',
-    '◝', '◞', '◟', '◠', '◡', '◢', '◣', '◤', '◥', '◦', '◧', '◨', '◩', '◪', '◫', '◬', '◭', '◮', '◯',
-    '◰', '◱', '◲', '◳', '◴', '◵', '◶', '◷', '◸', '◹', '◺', '◻',
-    // Braille Patterns (U+2800–U+28FF) — used by some TUIs
-    '⠀', '⠁', '⠂', '⠃', '⠄', '⠅', '⠆', '⠇', '⠈', '⠉', '⠊', '⠋', '⠌', '⠍', '⠎', '⠏', '⠐', '⠑', '⠒',
-    '⠓', '⠔', '⠕', '⠖', '⠗', '⠘', '⠙', '⠚', '⠛', '⠜', '⠝', '⠞', '⠟', '⠠', '⠡', '⠢', '⠣', '⠤', '⠥',
-    '⠦', '⠧', '⠨', '⠩', '⠪', '⠫', '⠬', '⠭', '⠮', '⠯', '⠰', '⠱', '⠲', '⠳', '⠴', '⠵', '⠶', '⠷', '⠸',
-    '⠹', '⠺', '⠻', '⠼', '⠽', '⠾', '⠿',
-];
 
 /// Standard xterm 16-colour ANSI palette.
 const ANSI16: [[u8; 3]; 16] = [
@@ -68,6 +41,73 @@ pub struct Plan {
     pub width: usize,
     pub height: usize,
     pub fps: u32,
+}
+
+/// Records which characters needed fallback during an export, and which
+/// characters no bundled font could draw.
+#[derive(Default)]
+pub struct FallbackReport {
+    primary_font_name: String,
+    fallen_back: BTreeMap<char, &'static str>,
+    unresolved: BTreeSet<char>,
+}
+
+impl FallbackReport {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn with_primary_name(name: &str) -> Self {
+        Self {
+            primary_font_name: name.to_owned(),
+            fallen_back: BTreeMap::new(),
+            unresolved: BTreeSet::new(),
+        }
+    }
+
+    fn record_fallback(&mut self, ch: char, font_name: &'static str) {
+        if (ch as u32) < 0x2800 || (ch as u32) > 0x28ff {
+            self.fallen_back.entry(ch).or_insert(font_name);
+        }
+    }
+
+    fn record_unresolved(&mut self, ch: char) {
+        if (ch as u32) < 0x2800 || (ch as u32) > 0x28ff {
+            self.unresolved.insert(ch);
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.fallen_back.is_empty() && self.unresolved.is_empty()
+    }
+
+    pub fn format(&self, demo_name: &str) -> Vec<String> {
+        let mut lines = Vec::new();
+        if !self.fallen_back.is_empty() {
+            let chars: String = self.fallen_back.keys().collect();
+            let fonts: BTreeSet<&str> = self.fallen_back.values().copied().collect();
+            let font_list = fonts.into_iter().collect::<Vec<_>>().join(", ");
+            let primary = if self.primary_font_name.is_empty() {
+                "primary font".to_owned()
+            } else {
+                self.primary_font_name.clone()
+            };
+            lines.push(format!(
+                "{demo_name}: {} character{} not in {primary}, drawn with {font_list}: {chars}",
+                self.fallen_back.len(),
+                if self.fallen_back.len() == 1 { "" } else { "s" }
+            ));
+        }
+        if !self.unresolved.is_empty() {
+            let chars: String = self.unresolved.iter().collect();
+            lines.push(format!(
+                "{demo_name}: {} character{} no bundled font can draw, rendered blank: {chars}",
+                self.unresolved.len(),
+                if self.unresolved.len() == 1 { "" } else { "s" }
+            ));
+        }
+        lines
+    }
 }
 
 fn cell_size(score: &Score) -> (usize, usize) {
@@ -101,6 +141,7 @@ pub struct FrameSource<'a> {
     rec: &'a Recording,
     font: Font,
     emoji_font: Font,
+    last_resort_font: Font,
     px: f32,
     glyphs: HashMap<char, (Metrics, Vec<u8>)>,
     cols: usize,
@@ -115,6 +156,7 @@ pub struct FrameSource<'a> {
     frame: usize,
     n_frames: usize,
     caption: Option<CaptionOverlay>,
+    fallback_report: FallbackReport,
 }
 
 impl<'a> FrameSource<'a> {
@@ -126,6 +168,7 @@ impl<'a> FrameSource<'a> {
             .unwrap_or(fonts::DEFAULT_FONT);
         let font = fonts::load(font_name);
         let emoji_font = fonts::load_emoji();
+        let last_resort_font = fonts::load_last_resort();
         let px = score
             .layout
             .panes
@@ -144,6 +187,7 @@ impl<'a> FrameSource<'a> {
             .map(|m| m.ascent)
             .unwrap_or(px * 0.8);
 
+        let mut fallback_report = FallbackReport::with_primary_name(font_name);
         let mut glyphs = HashMap::new();
         for code in 0x21u8..=0x7e {
             let ch = code as char;
@@ -156,9 +200,16 @@ impl<'a> FrameSource<'a> {
         for (_, chunk) in &rec.events {
             for ch in chunk.chars() {
                 if !ch.is_control() && !ch.is_whitespace() {
-                    glyphs
-                        .entry(ch)
-                        .or_insert_with(|| rasterize_with_fallback(&font, &emoji_font, ch, px));
+                    glyphs.entry(ch).or_insert_with(|| {
+                        rasterize_with_fallback(
+                            &font,
+                            &emoji_font,
+                            &last_resort_font,
+                            ch,
+                            px,
+                            &mut fallback_report,
+                        )
+                    });
                 }
             }
         }
@@ -176,6 +227,7 @@ impl<'a> FrameSource<'a> {
                 18.0,
                 font_name,
                 emoji_font.clone(),
+                last_resort_font.clone(),
             )?)
         };
 
@@ -183,6 +235,7 @@ impl<'a> FrameSource<'a> {
             rec,
             font,
             emoji_font,
+            last_resort_font,
             px,
             glyphs,
             cols: rec.cols as usize,
@@ -197,6 +250,7 @@ impl<'a> FrameSource<'a> {
             frame: 0,
             n_frames,
             caption,
+            fallback_report,
         })
     }
 
@@ -225,6 +279,7 @@ impl<'a> FrameSource<'a> {
             &mut self.glyphs,
             &self.font,
             &self.emoji_font,
+            &self.last_resort_font,
             self.px,
             self.cols,
             self.rows,
@@ -232,6 +287,7 @@ impl<'a> FrameSource<'a> {
             self.cell_h,
             self.ascent,
             self.default_bg,
+            &mut self.fallback_report,
         );
         // For a single-terminal score the pane frame is the whole canvas, so the
         // caption is drawn here. (The stage clears captions from its terminal
@@ -242,23 +298,31 @@ impl<'a> FrameSource<'a> {
                 self.cols * self.cell_w,
                 self.rows * self.cell_h,
                 t,
+                &mut self.fallback_report,
             );
         }
         Some(img)
     }
+
+    /// Take the fallback report, leaving an empty one in its place.
+    pub fn take_fallback_report(&mut self) -> FallbackReport {
+        std::mem::take(&mut self.fallback_report)
+    }
 }
 
 /// Render every frame, invoking `on_frame` with each RGBA buffer in order.
+/// Returns the plan and the fallback report.
 pub fn render_frames(
     rec: &Recording,
     score: &Score,
     mut on_frame: impl FnMut(&[u8]),
-) -> Result<Plan> {
+) -> Result<(Plan, FallbackReport)> {
     let mut source = FrameSource::new(rec, score)?;
     while let Some(frame) = source.next_frame() {
         on_frame(&frame);
     }
-    Ok(plan(rec, score))
+    let report = source.take_fallback_report();
+    Ok((plan(rec, score), report))
 }
 
 /// Coverage (0–255 per pixel, row-major) for a block-element, box-drawing, or
@@ -271,14 +335,45 @@ fn solid_cell(ch: char, w: usize, h: usize) -> Option<Vec<u8>> {
 }
 
 /// Rasterize `ch` using `primary`, falling back to `emoji` when the primary
-/// font returns a zero-width (`.notdef`) glyph.
-fn rasterize_with_fallback(primary: &Font, emoji: &Font, ch: char, px: f32) -> (Metrics, Vec<u8>) {
-    let (m, cov) = primary.rasterize(ch, px);
-    if m.width == 0 || m.height == 0 {
-        emoji.rasterize(ch, px)
-    } else {
-        (m, cov)
+/// font lacks the glyph, then to `last_resort` when both before it lack it.
+/// Records the outcome in `report`.
+fn rasterize_with_fallback(
+    primary: &Font,
+    emoji: &Font,
+    last_resort: &Font,
+    ch: char,
+    px: f32,
+    report: &mut FallbackReport,
+) -> (Metrics, Vec<u8>) {
+    if primary.has_glyph(ch) {
+        return primary.rasterize(ch, px);
     }
+    if emoji.has_glyph(ch) {
+        report.record_fallback(ch, "Noto Emoji");
+        return emoji.rasterize(ch, px);
+    }
+    if last_resort.has_glyph(ch) {
+        report.record_fallback(ch, "DejaVu Sans Mono");
+        return last_resort.rasterize(ch, px);
+    }
+    report.record_unresolved(ch);
+    (
+        Metrics {
+            xmin: 0,
+            ymin: 0,
+            width: 0,
+            height: 0,
+            advance_width: 0.0,
+            advance_height: 0.0,
+            bounds: fontdue::OutlineBounds {
+                xmin: 0.0,
+                ymin: 0.0,
+                width: 0.0,
+                height: 0.0,
+            },
+        },
+        vec![],
+    )
 }
 
 /// Braille patterns (U+2800–U+28FF): a 2-column × 4-row dot matrix encoded in the
@@ -459,6 +554,7 @@ fn render_cells(
     glyphs: &mut HashMap<char, (Metrics, Vec<u8>)>,
     font: &Font,
     emoji_font: &Font,
+    last_resort_font: &Font,
     px: f32,
     cols: usize,
     rows: usize,
@@ -466,6 +562,7 @@ fn render_cells(
     cell_h: usize,
     ascent: f32,
     default_bg: [u8; 3],
+    fallback_report: &mut FallbackReport,
 ) -> Vec<u8> {
     let (w, h) = (cols * cell_w, rows * cell_h);
     let mut img = vec![0u8; w * h * 4];
@@ -518,9 +615,16 @@ fn render_cells(
             }
             // On-demand rasterization: if the glyph isn't cached yet, rasterize
             // it now so any Unicode character the font supports renders correctly.
-            let (m, cov) = glyphs
-                .entry(chr)
-                .or_insert_with(|| rasterize_with_fallback(font, emoji_font, chr, px));
+            let (m, cov) = glyphs.entry(chr).or_insert_with(|| {
+                rasterize_with_fallback(
+                    font,
+                    emoji_font,
+                    last_resort_font,
+                    chr,
+                    px,
+                    fallback_report,
+                )
+            });
             if m.width == 0 || m.height == 0 {
                 continue;
             }
@@ -629,6 +733,7 @@ pub struct CaptionOverlay {
     captions: Vec<(f64, String)>,
     font: Font,
     emoji_font: Font,
+    last_resort_font: Font,
     glyphs: HashMap<char, (Metrics, Vec<u8>)>,
     px: f32,
     cell_w: usize,
@@ -640,20 +745,24 @@ impl CaptionOverlay {
         px: f32,
         font_name: &str,
         emoji_font: Font,
+        last_resort_font: Font,
     ) -> Result<Self> {
         let font = fonts::load(font_name);
+        // Printable ASCII only: every bundled font covers it, so it can be cached
+        // straight from the primary face. Everything else is rasterized on demand
+        // in `draw`, through the fallback chain — pre-caching a fixed symbol table
+        // here would fill the cache behind `entry().or_insert_with()` and silently
+        // bypass both the fallback and the report.
         let mut glyphs = HashMap::new();
         for code in 0x20u8..=0x7e {
             let ch = code as char;
-            glyphs.insert(ch, font.rasterize(ch, px));
-        }
-        for &ch in EXTRA_GLYPHS {
             glyphs.insert(ch, font.rasterize(ch, px));
         }
         Ok(CaptionOverlay {
             captions,
             font,
             emoji_font,
+            last_resort_font,
             glyphs,
             px,
             cell_w: (px * 0.6).round().max(1.0) as usize,
@@ -674,7 +783,14 @@ impl CaptionOverlay {
     }
 
     /// Draw the active caption onto `img` (`w`×`h` RGBA) at time `t`.
-    pub fn draw(&mut self, img: &mut [u8], w: usize, h: usize, t: f64) {
+    pub fn draw(
+        &mut self,
+        img: &mut [u8],
+        w: usize,
+        h: usize,
+        t: f64,
+        fallback_report: &mut FallbackReport,
+    ) {
         let Some(text) = self.active(t).map(str::to_owned) else {
             return;
         };
@@ -700,7 +816,14 @@ impl CaptionOverlay {
         for ch in text.chars() {
             // On-demand rasterization for caption characters.
             let (m, cov) = self.glyphs.entry(ch).or_insert_with(|| {
-                rasterize_with_fallback(&self.font, &self.emoji_font, ch, self.px)
+                rasterize_with_fallback(
+                    &self.font,
+                    &self.emoji_font,
+                    &self.last_resort_font,
+                    ch,
+                    self.px,
+                    fallback_report,
+                )
             });
             let ox = cx as i32 + ((self.cell_w as i32 - m.width as i32) / 2).max(0);
             let top = baseline as i32 - (m.height as i32 + m.ymin);
@@ -765,6 +888,7 @@ mod tests {
             18.0,
             fonts::DEFAULT_FONT,
             fonts::load_emoji(),
+            fonts::load_last_resort(),
         )
         .unwrap();
         assert_eq!(c.active(0.0), Some("step 1"));
@@ -864,6 +988,7 @@ mod tests {
             18.0,
             fonts::DEFAULT_FONT,
             fonts::load_emoji(),
+            fonts::load_last_resort(),
         )
         .unwrap();
         assert_eq!(c.active(0.5), None);
@@ -872,8 +997,14 @@ mod tests {
 
     #[test]
     fn caption_active_empty_list() {
-        let c =
-            CaptionOverlay::new(vec![], 18.0, fonts::DEFAULT_FONT, fonts::load_emoji()).unwrap();
+        let c = CaptionOverlay::new(
+            vec![],
+            18.0,
+            fonts::DEFAULT_FONT,
+            fonts::load_emoji(),
+            fonts::load_last_resort(),
+        )
+        .unwrap();
         assert_eq!(c.active(0.0), None);
     }
 
@@ -1048,6 +1179,39 @@ fps = 0
         assert!(p.fps >= 1);
     }
 
+    /// A caption drawn with a font that lacks the character must still render it
+    /// through the fallback chain AND report it. This is the caption-side twin of
+    /// the terminal path: a fixed symbol table pre-cached in `new` used to fill the
+    /// map behind `entry().or_insert_with()`, so `✗` came out blank and silent.
+    #[test]
+    fn caption_falls_back_and_reports_a_char_the_primary_font_lacks() {
+        assert!(
+            !fonts::load("IBM Plex Mono").has_glyph('\u{2717}'),
+            "premise: IBM Plex Mono has no U+2717"
+        );
+        let mut c = CaptionOverlay::new(
+            vec![(0.0, "\u{2717}".into())],
+            18.0,
+            "IBM Plex Mono",
+            fonts::load_emoji(),
+            fonts::load_last_resort(),
+        )
+        .unwrap();
+        let (w, h) = (200, 100);
+        let mut img = vec![0u8; w * h * 4];
+        let mut report = FallbackReport::with_primary_name("IBM Plex Mono");
+        c.draw(&mut img, w, h, 0.0, &mut report);
+
+        assert!(!report.is_empty(), "the fallback went unreported");
+        let lines = report.format("demo");
+        assert!(
+            lines.iter().any(|l| l.contains('\u{2717}')),
+            "report does not name the character: {lines:?}"
+        );
+        let (m, cov) = c.glyphs.get(&'\u{2717}').expect("glyph was never cached");
+        assert!(m.width > 0 && !cov.is_empty(), "rendered blank");
+    }
+
     #[test]
     fn caption_draw_does_not_panic_on_small_image() {
         let mut c = CaptionOverlay::new(
@@ -1055,11 +1219,13 @@ fps = 0
             18.0,
             fonts::DEFAULT_FONT,
             fonts::load_emoji(),
+            fonts::load_last_resort(),
         )
         .unwrap();
         // Very small image — bar_h > h, so draw is a no-op
         let mut img = vec![0u8; 10 * 10 * 4];
-        c.draw(&mut img, 10, 10, 0.5);
+        let mut report = FallbackReport::new();
+        c.draw(&mut img, 10, 10, 0.5, &mut report);
     }
 
     #[test]
@@ -1069,12 +1235,14 @@ fps = 0
             18.0,
             fonts::DEFAULT_FONT,
             fonts::load_emoji(),
+            fonts::load_last_resort(),
         )
         .unwrap();
         let w = 200;
         let h = 100;
         let mut img = vec![0u8; w * h * 4];
-        c.draw(&mut img, w, h, 0.5);
+        let mut report = FallbackReport::new();
+        c.draw(&mut img, w, h, 0.5, &mut report);
         // Some pixels should have been modified (the caption bar darkens existing pixels)
         assert!(img.iter().any(|&p| p != 0));
     }
@@ -1086,11 +1254,13 @@ fps = 0
             18.0,
             fonts::DEFAULT_FONT,
             fonts::load_emoji(),
+            fonts::load_last_resort(),
         )
         .unwrap();
         let mut img = vec![128u8; 100 * 50 * 4];
         let before = img.clone();
-        c.draw(&mut img, 100, 50, 0.5);
+        let mut report = FallbackReport::new();
+        c.draw(&mut img, 100, 50, 0.5, &mut report);
         assert_eq!(img, before);
     }
 
@@ -1290,8 +1460,18 @@ fps = 0
         blit_glyph(&mut img_clipped, 20, 20, 0, -4, &m, &cov, [0, 255, 0]);
         // top = 0 draws the full glyph
         blit_glyph(&mut img_full, 20, 20, 0, 0, &m, &cov, [0, 255, 0]);
-        let clipped_pixels: usize = img_clipped.chunks_exact(4).filter(|p| p[1] == 255).count();
-        let full_pixels: usize = img_full.chunks_exact(4).filter(|p| p[1] == 255).count();
+        let clipped_pixels: usize = img_clipped
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .filter(|p| p[1] == 255)
+            .count();
+        let full_pixels: usize = img_full
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .filter(|p| p[1] == 255)
+            .count();
         assert!(
             clipped_pixels < full_pixels,
             "clipped glyph should have fewer green pixels"
@@ -1402,7 +1582,7 @@ height = 100
         // Should produce a valid RGBA buffer
         assert_eq!(frame.len(), 4 * 10 * 2 * 19 * 4);
         // All pixels should be the default background color
-        for px in frame.chunks_exact(4) {
+        for px in frame.as_chunks::<4>().0 {
             assert_eq!(px[3], 255);
         }
     }
@@ -1489,5 +1669,153 @@ height = 100
         let v = braille_cell('\u{28FF}', 10, 16).unwrap();
         let filled = v.iter().filter(|&&p| p > 0).count();
         assert!(filled > 30, "all dots should fill many pixels");
+    }
+
+    // ── Fallback chain tests ───────────────────────────────────────
+
+    #[test]
+    fn fallback_chain_three_level_coverage() {
+        let ibm_plex = fonts::load("IBM Plex Mono");
+        let emoji = fonts::load_emoji();
+        let dejavu = fonts::load_last_resort();
+        let px = 16.0;
+
+        assert!(!ibm_plex.has_glyph('✗'), "✗ must not be in IBM Plex Mono");
+
+        let mut report = FallbackReport::new();
+        let (m, _) = rasterize_with_fallback(&ibm_plex, &emoji, &dejavu, '✗', px, &mut report);
+        assert!(m.width > 0, "✗ must be non-zero after the change");
+        assert_eq!(
+            report.fallen_back.get(&'✗'),
+            Some(&"DejaVu Sans Mono"),
+            "✗ must fall back to DejaVu Sans Mono"
+        );
+
+        let mut report = FallbackReport::new();
+        let (m, _) = rasterize_with_fallback(&ibm_plex, &emoji, &dejavu, '😀', px, &mut report);
+        assert!(m.width > 0, "😀 must be non-zero");
+        assert_eq!(
+            report.fallen_back.get(&'😀'),
+            Some(&"Noto Emoji"),
+            "😀 must come from the emoji font"
+        );
+
+        let mut report = FallbackReport::new();
+        let (m, _) = rasterize_with_fallback(&ibm_plex, &emoji, &dejavu, 'A', px, &mut report);
+        assert!(m.width > 0, "A must be non-zero");
+        assert!(
+            !report.fallen_back.contains_key(&'A'),
+            "A must never appear in fallen_back"
+        );
+        assert!(
+            !report.unresolved.contains(&'A'),
+            "A must not be unresolved"
+        );
+    }
+
+    #[test]
+    fn fallback_chain_primary_wins_over_dejavu() {
+        // A character present in both IBM Plex Mono and DejaVu should be drawn
+        // by the primary font (IBM Plex Mono), not DejaVu.
+        let ibm_plex = fonts::load("IBM Plex Mono");
+        let emoji = fonts::load_emoji();
+        let dejavu = fonts::load_last_resort();
+        let px = 16.0;
+
+        // '→' (U+2192) is present in both IBM Plex Mono and DejaVu
+        let (m_primary, _) = ibm_plex.rasterize('→', px);
+        assert!(m_primary.width > 0, "→ should be in IBM Plex Mono");
+
+        let (m_dejavu, _) = dejavu.rasterize('→', px);
+        assert!(m_dejavu.width > 0, "→ should be in DejaVu");
+
+        // The fallback chain should use the primary font
+        let mut report = FallbackReport::new();
+        let (m, _) = rasterize_with_fallback(&ibm_plex, &emoji, &dejavu, '→', px, &mut report);
+        assert!(m.width > 0, "→ should be non-zero");
+        assert!(
+            !report.fallen_back.contains_key(&'→'),
+            "→ should not fall back (primary has it)"
+        );
+    }
+
+    #[test]
+    fn fallback_chain_unresolved_character() {
+        let ibm_plex = fonts::load("IBM Plex Mono");
+        let emoji = fonts::load_emoji();
+        let dejavu = fonts::load_last_resort();
+        let px = 16.0;
+
+        let ch = '\u{1D518}';
+
+        assert!(
+            !ibm_plex.has_glyph(ch),
+            "precondition: primary must lack this glyph"
+        );
+        assert!(
+            !emoji.has_glyph(ch),
+            "precondition: emoji must lack this glyph"
+        );
+        assert!(
+            !dejavu.has_glyph(ch),
+            "precondition: dejavu must lack this glyph"
+        );
+
+        let mut report = FallbackReport::new();
+        let (m, _) = rasterize_with_fallback(&ibm_plex, &emoji, &dejavu, ch, px, &mut report);
+        assert_eq!(
+            m.width, 0,
+            "all three fonts lack this glyph, so output must be zero-width"
+        );
+        assert!(
+            report.unresolved.contains(&ch),
+            "character absent from all three must land in unresolved"
+        );
+        assert!(
+            !report.fallen_back.contains_key(&ch),
+            "unresolved character must not appear in fallen_back"
+        );
+    }
+
+    #[test]
+    fn fallback_report_excludes_braille() {
+        // Braille characters are handled procedurally and should never appear
+        // in the fallback report.
+        let ibm_plex = fonts::load("IBM Plex Mono");
+        let emoji = fonts::load_emoji();
+        let dejavu = fonts::load_last_resort();
+        let px = 16.0;
+
+        let mut report = FallbackReport::new();
+        // Braille patterns are procedural, but if they went through the font path
+        // they should not be recorded (the report filters them out).
+        let _ = rasterize_with_fallback(&ibm_plex, &emoji, &dejavu, '⠁', px, &mut report);
+        assert!(
+            !report.fallen_back.contains_key(&'⠁'),
+            "braille should not be in fallen_back"
+        );
+        assert!(
+            !report.unresolved.contains(&'⠁'),
+            "braille should not be in unresolved"
+        );
+    }
+
+    #[test]
+    fn fallback_report_format_names_actual_primary_font() {
+        let mut report = FallbackReport::with_primary_name("IBM Plex Mono");
+        report.record_fallback('✗', "DejaVu Sans Mono");
+        report.record_fallback('▸', "DejaVu Sans Mono");
+        let lines = report.format("demo");
+        assert_eq!(lines.len(), 1);
+        assert!(
+            lines[0].contains("not in IBM Plex Mono"),
+            "format must name the actual primary font, got: {}",
+            lines[0]
+        );
+        assert!(
+            !lines[0].contains("primary font,"),
+            "format must not contain the literal 'primary font', got: {}",
+            lines[0]
+        );
     }
 }

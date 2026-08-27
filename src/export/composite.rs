@@ -19,7 +19,7 @@ pub struct Layer<'a> {
 #[allow(clippy::chunks_exact_to_as_chunks)]
 pub fn composite(canvas_w: usize, canvas_h: usize, bg: [u8; 3], layers: &[Layer]) -> Vec<u8> {
     let mut img = vec![0u8; canvas_w * canvas_h * 4];
-    for px in img.chunks_exact_mut(4) {
+    for px in img.as_chunks_mut::<4>().0 {
         px[0] = bg[0];
         px[1] = bg[1];
         px[2] = bg[2];

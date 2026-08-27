@@ -2,7 +2,7 @@
 //! it replays a recording (a `.cast` from `demo record`, or a raw `capture`)
 //! and never executes the demo.
 
-use crate::cli::{all_targets, ExportArgs};
+use crate::cli::{all_targets, parse_speed, ExportArgs, Target};
 use crate::error::{Error, Result};
 use crate::export::{
     ensure_local_server, recording, render, rewrite_local_urls, scale_pane_windows, scale_recording,
@@ -29,8 +29,12 @@ pub fn run(args: ExportArgs) -> Result<()> {
         )));
     }
 
-    scale_recording(&mut rec, args.speed);
-    scale_pane_windows(&mut score, args.speed);
+    // The command line wins; the score is what the demo says about itself; 1x is
+    // the fallback. Without the middle term the multiplier a demo is published at
+    // survives only in whoever typed the command.
+    let speed = resolve_speed(args.speed, score.demo.speed.as_deref())?;
+    scale_recording(&mut rec, speed);
+    scale_pane_windows(&mut score, speed);
 
     // Apply resolution override if specified
     if let Some((new_w, new_h)) =
@@ -56,13 +60,49 @@ pub fn run(args: ExportArgs) -> Result<()> {
         score
     };
 
-    // No target given → build every supported format.
-    let targets = args.targets.map(|t| t.0).unwrap_or_else(all_targets);
+    // Same precedence as the speed: the command line, then the score, then all.
+    let targets = match args.targets.map(|t| t.0) {
+        Some(t) => t,
+        None => resolve_targets(score.demo.targets.as_deref())?,
+    };
     for target in targets {
-        let path = render(&rec, &score, target)?;
+        let path = render(&rec, &score, target, speed)?;
         println!("exported {} → {}", args.input.display(), path.display());
     }
     Ok(())
+}
+
+/// Resolve the export speed: `--speed`, else the score's `[demo] speed`, else 1x.
+fn resolve_speed(flag: Option<f64>, from_score: Option<&str>) -> Result<f64> {
+    if let Some(v) = flag {
+        return Ok(v);
+    }
+    match from_score {
+        Some(raw) => {
+            parse_speed(raw).map_err(|e| Error::Export(format!("[demo] speed in the score: {e}")))
+        }
+        None => Ok(1.0),
+    }
+}
+
+/// Resolve the export targets: the score's `[demo] targets`, else every format.
+fn resolve_targets(from_score: Option<&[String]>) -> Result<Vec<Target>> {
+    let Some(names) = from_score else {
+        return Ok(all_targets());
+    };
+    if names.is_empty() {
+        return Ok(all_targets());
+    }
+    names
+        .iter()
+        .map(|n| match n.trim().to_ascii_lowercase().as_str() {
+            "gif" => Ok(Target::Gif),
+            "mp4" => Ok(Target::Mp4),
+            other => Err(Error::Export(format!(
+                "[demo] targets in the score: unknown format '{other}' (expected gif or mp4)"
+            ))),
+        })
+        .collect()
 }
 
 /// Compute the export resolution from flags, or `None` to keep the capture-time resolution.
@@ -179,6 +219,45 @@ fn resolution_override_note(new_w: u32, new_h: u32, old_w: u32, old_h: u32) -> S
 
 #[cfg(test)]
 mod tests {
+    /// The multiplier a demo is published at used to survive only in whoever ran
+    /// the command. Recovering it from the published assets on 2026-08-27 (the
+    /// five UniverLab demos: four at 2x, canopy at 3x) is what motivated this.
+    #[test]
+    fn the_score_supplies_the_speed_when_the_flag_does_not() {
+        assert_eq!(resolve_speed(None, Some("2x")).unwrap(), 2.0);
+        assert_eq!(resolve_speed(None, Some("3x")).unwrap(), 3.0);
+        assert_eq!(resolve_speed(None, None).unwrap(), 1.0);
+    }
+
+    #[test]
+    fn the_flag_beats_the_score() {
+        assert_eq!(resolve_speed(Some(1.0), Some("3x")).unwrap(), 1.0);
+    }
+
+    #[test]
+    fn a_bad_speed_in_the_score_is_an_error_naming_the_score() {
+        let err = resolve_speed(None, Some("fast")).unwrap_err().to_string();
+        assert!(err.contains("[demo] speed"), "unhelpful message: {err}");
+    }
+
+    #[test]
+    fn the_score_supplies_the_targets_when_the_argument_does_not() {
+        assert_eq!(
+            resolve_targets(Some(&["gif".to_string()])).unwrap(),
+            vec![Target::Gif]
+        );
+        assert_eq!(resolve_targets(None).unwrap(), all_targets());
+        assert_eq!(resolve_targets(Some(&[])).unwrap(), all_targets());
+    }
+
+    #[test]
+    fn an_unknown_target_in_the_score_is_an_error() {
+        let err = resolve_targets(Some(&["webm".to_string()]))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("webm"), "unhelpful message: {err}");
+    }
+
     use super::*;
 
     fn test_score(w: u32, h: u32) -> Score {
@@ -187,6 +266,8 @@ mod tests {
                 name: "test".into(),
                 output_dir: "./dist".into(),
                 prompt: None,
+                speed: None,
+                targets: None,
             },
             env: None,
             typing: None,
@@ -213,6 +294,7 @@ mod tests {
                         theme: None,
                         reveal_at: None,
                         hide_at: None,
+                        ignore_speed: false,
                     },
                     crate::model::Pane {
                         id: "browser".into(),
@@ -227,6 +309,7 @@ mod tests {
                         theme: None,
                         reveal_at: None,
                         hide_at: None,
+                        ignore_speed: false,
                     },
                 ],
             },
@@ -440,7 +523,7 @@ height = 100
             resolution: Some("800x600".into()),
             aspect: None,
             quality: None,
-            speed: 1.0,
+            speed: Some(1.0),
             force: false,
         };
         let r = resolve_export_resolution(&args, 1920, 1080).unwrap();
@@ -455,7 +538,7 @@ height = 100
             resolution: None,
             aspect: Some("16:9".into()),
             quality: Some("hd".into()),
-            speed: 1.0,
+            speed: Some(1.0),
             force: false,
         };
         let r = resolve_export_resolution(&args, 1920, 1080).unwrap();
@@ -470,7 +553,7 @@ height = 100
             resolution: None,
             aspect: None,
             quality: Some("fullhd".into()),
-            speed: 1.0,
+            speed: Some(1.0),
             force: false,
         };
         let r = resolve_export_resolution(&args, 1920, 1080).unwrap();
@@ -485,7 +568,7 @@ height = 100
             resolution: None,
             aspect: None,
             quality: None,
-            speed: 1.0,
+            speed: Some(1.0),
             force: false,
         };
         let r = resolve_export_resolution(&args, 1920, 1080).unwrap();

@@ -15,7 +15,23 @@ the typing parameters, the canvas layout, and the timeline.
 [demo]
 name = "my-demo"          # used for the output filename
 output_dir = "./dist"     # default
+speed = "2x"              # how this demo is published; omit for 1x
+targets = ["gif", "mp4"]  # formats to build; omit for every supported format
 # prompt = "\[\e[32m\]❯\[\e[0m\] "   # custom prompt; omit for the default `$ `
+```
+
+`speed` and `targets` say **how this demo is meant to be exported**, so the next
+person to rebuild it gets the same result without knowing which flags you used.
+A demo is usually recorded at a comfortable pace and published faster, and
+without this the multiplier survives nowhere: the published file's duration is
+the only remaining evidence of it.
+
+Both are defaults, not locks — `--speed` and a positional target still win:
+
+```sh
+demo export demo.rec              # 2x and gif+mp4, per the score above
+demo export gif demo.rec          # 2x, gif only
+demo export demo.rec --speed 1x   # the recorded pace, both formats
 ```
 
 `prompt` is bash `PS1` syntax, so colours (`\[\e[36m\]…\[\e[0m\]`) and escapes
@@ -118,6 +134,23 @@ always-on background and each browser pane overlays it only inside its window �
 this is what a live `demo focus` records, and how switching views (or going back
 to the terminal) renders.
 
+`ignore_speed` (browser panes, optional, default `false`) exempts a pane from the
+export speed multiplier. A PDF pane with `ignore_speed = true` pans at the 1x cap
+(1200 px/s) regardless of `--speed`, while the rest of the demo still accelerates.
+Use it for a document that should remain readable at any export speed.
+
+```toml
+  [[layout.panes]]
+  id = "pdf-r1"
+  type = "browser"
+  x = 0
+  y = 0
+  width = 960
+  height = 1080
+  url = "file:///tmp/demo-sandbox/output.pdf"
+  ignore_speed = true   # pan at the 1x cap even when the demo is exported at 2x
+```
+
 `line_height` (optional, default `1.2`) is the line spacing as a multiple of the
 font size. `1.0` makes box-drawing characters (`│ ─ ┌ ┘ …`) join into continuous
 lines for TUIs; raise it (e.g. `1.25`) for airier, prose-style spacing.
@@ -137,7 +170,7 @@ Steps share one timeline, each tagged by `action`:
 | `wait_for_screen` | `match`, `timeout_ms?` | Block until a pattern is visible on the rendered screen. |
 | `caption` | `text` | Show an on-canvas step label (empty `text` clears it). Rendered on `gif`/`mp4`. |
 | `secret` | `prompt` | Re-supply a secret at this point on `demo record` (the value is asked for, never stored). |
-| `scroll` | `direction`, `velocity?`, `duration_ms`, `pane?` | Scroll a browser pane. |
+| `scroll` | `direction`, `velocity?`, `duration_ms`, `pane?` | Scroll a browser pane. `direction` is `up` or `down` (default `down`); `up` starts at the bottom and pans to the top. `velocity` is `constant` (linear, default) or `ease_in_out` (smooth acceleration/deceleration). When several scroll steps target the same pane, the first wins. |
 | `terminate` | — | End the demo. |
 
 ```toml

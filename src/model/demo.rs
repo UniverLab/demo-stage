@@ -62,6 +62,17 @@ pub struct DemoMeta {
     /// `"$ "` for a bare prompt or `"\[\e[32m\]❯\[\e[0m\] "` for a green arrow.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt: Option<String>,
+    /// How this demo is meant to be exported: the speed multiplier, in the same
+    /// syntax as `--speed` (`"2x"`, `"3x"`, `"0.5x"`, or a bare number). A demo
+    /// recorded at a comfortable pace is usually published faster, and without
+    /// this the multiplier lives only in whoever ran the command — the published
+    /// assets are the only remaining evidence of it. `--speed` still wins.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub speed: Option<String>,
+    /// Which formats this demo publishes (`["gif", "mp4"]`). Absent → every
+    /// supported format. A positional target on the command line still wins.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub targets: Option<Vec<String>>,
 }
 
 fn default_output_dir() -> PathBuf {
@@ -209,6 +220,11 @@ pub struct Pane {
     /// switched away). `None` = stays to the end.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hide_at: Option<f64>,
+    /// When true, this pane's pan (for a PDF) ignores the export speed multiplier
+    /// and pans at the 1x cap. The rest of the demo still accelerates. Useful for
+    /// a document that should remain readable at any export speed.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub ignore_speed: bool,
 }
 
 /// The kind of renderer backing a pane.
@@ -300,6 +316,7 @@ pub enum ScrollDirection {
 pub enum Velocity {
     #[default]
     Constant,
+    EaseInOut,
 }
 
 #[cfg(test)]
@@ -762,5 +779,89 @@ height = 1080
         assert_eq!(web.theme.as_deref(), Some("dark"));
         assert_eq!(web.reveal_at, Some(1.0));
         assert_eq!(web.hide_at, Some(5.0));
+    }
+
+    #[test]
+    fn velocity_ease_in_out_round_trips() {
+        let toml_str = r#"
+[demo]
+name = "test"
+[layout]
+width = 800
+height = 600
+  [[layout.panes]]
+  id = "b"
+  type = "browser"
+  x = 0
+  y = 0
+  width = 800
+  height = 600
+  url = "file:///x.pdf"
+[[timeline]]
+action = "scroll"
+direction = "down"
+velocity = "ease_in_out"
+duration_ms = 1000
+"#;
+        let score: Score = toml::from_str(toml_str).unwrap();
+        let rendered = score.to_toml().unwrap();
+        let reparsed: Score = toml::from_str(&rendered).unwrap();
+        assert_eq!(score, reparsed);
+        if let Step::Scroll { velocity, .. } = &reparsed.timeline[0] {
+            assert_eq!(*velocity, Velocity::EaseInOut);
+        } else {
+            panic!("expected Scroll step");
+        }
+    }
+
+    /// A score with ignore_speed = true round-trips through serialization.
+    #[test]
+    fn ignore_speed_round_trips_through_serialization() {
+        let toml_str = r#"
+[demo]
+name = "test"
+[layout]
+width = 800
+height = 600
+  [[layout.panes]]
+  id = "b"
+  type = "browser"
+  x = 0
+  y = 0
+  width = 800
+  height = 600
+  url = "file:///x.pdf"
+  ignore_speed = true
+"#;
+        let score: Score = toml::from_str(toml_str).unwrap();
+        assert!(score.layout.panes[0].ignore_speed);
+        let rendered = score.to_toml().unwrap();
+        assert!(rendered.contains("ignore_speed = true"));
+        let reparsed: Score = toml::from_str(&rendered).unwrap();
+        assert_eq!(score, reparsed);
+    }
+
+    /// ignore_speed defaults to false and is absent from serialization when false.
+    #[test]
+    fn ignore_speed_defaults_to_false_and_is_absent_when_false() {
+        let toml_str = r#"
+[demo]
+name = "test"
+[layout]
+width = 800
+height = 600
+  [[layout.panes]]
+  id = "b"
+  type = "browser"
+  x = 0
+  y = 0
+  width = 800
+  height = 600
+  url = "file:///x.pdf"
+"#;
+        let score: Score = toml::from_str(toml_str).unwrap();
+        assert!(!score.layout.panes[0].ignore_speed);
+        let rendered = score.to_toml().unwrap();
+        assert!(!rendered.contains("ignore_speed"));
     }
 }

@@ -71,8 +71,9 @@ pub fn rewrite_local_urls(score: &Score, server_port: u16) -> Score {
 
 /// Render an already-captured `recording` to `target`, returning the path
 /// written. Pure playback — it never executes the demo. `score` carries the
-/// layout/styling (its timeline is unused here).
-pub fn render(rec: &Recording, score: &Score, target: Target) -> Result<PathBuf> {
+/// layout/styling (its timeline is unused here). `speed` is the resolved export
+/// speed multiplier, threaded through to the PDF pan path.
+pub fn render(rec: &Recording, score: &Score, target: Target, speed: f64) -> Result<PathBuf> {
     let problems = validate(score);
     if !problems.is_empty() {
         return Err(Error::Validation(problems.join("\n")));
@@ -97,54 +98,88 @@ pub fn render(rec: &Recording, score: &Score, target: Target) -> Result<PathBuf>
         Target::Gif => {
             let path = resolve_output(&score, "gif");
             ensure_parent(&path)?;
+            let mut report = raster::FallbackReport::new();
             if staged {
                 let mut n = 0usize;
+                let mut browser_reports = Vec::new();
                 gif::encode(&path, cw, ch, fps, |emit| {
-                    stage::render_stage(rec, &score, |f| {
+                    let r = stage::render_stage(rec, &score, speed, |f| {
                         n += 1;
                         progress_bar("exporting gif", n, total_frames);
                         emit(f);
-                    })
+                    })?;
+                    report = r.0;
+                    browser_reports = r.1;
+                    Ok(())
                 })?;
                 progress_clear();
+                for br in &browser_reports {
+                    eprintln!(
+                        "demo: browser pane '{}' — {} frames captured in {:.1}s",
+                        br.pane_id,
+                        br.frame_count,
+                        br.elapsed.as_secs_f64()
+                    );
+                }
             } else {
                 let mut n = 0usize;
                 gif::encode(&path, cw, ch, fps, |emit| {
-                    raster::render_frames(rec, &score, |f| {
+                    let (_plan, r) = raster::render_frames(rec, &score, |f| {
                         n += 1;
                         progress_bar("exporting gif", n, total_frames);
                         emit(f);
-                    })
-                    .map(|_| ())
+                    })?;
+                    report = r;
+                    Ok(())
                 })?;
                 progress_clear();
+            }
+            for line in report.format(&score.demo.name) {
+                eprintln!("{line}");
             }
             Ok(path)
         }
         Target::Mp4 => {
             let path = resolve_output(&score, "mp4");
             ensure_parent(&path)?;
+            let mut report = raster::FallbackReport::new();
             if staged {
                 let mut n = 0usize;
+                let mut browser_reports = Vec::new();
                 mp4::encode(&path, cw, ch, fps, |emit| {
-                    stage::render_stage(rec, &score, |f| {
+                    let r = stage::render_stage(rec, &score, speed, |f| {
                         n += 1;
                         progress_bar("exporting mp4", n, total_frames);
                         emit(f);
-                    })
+                    })?;
+                    report = r.0;
+                    browser_reports = r.1;
+                    Ok(())
                 })?;
                 progress_clear();
+                for br in &browser_reports {
+                    eprintln!(
+                        "demo: browser pane '{}' — {} frames captured in {:.1}s",
+                        br.pane_id,
+                        br.frame_count,
+                        br.elapsed.as_secs_f64()
+                    );
+                }
             } else {
                 let mut n = 0usize;
                 mp4::encode(&path, cw, ch, fps, |emit| {
-                    raster::render_frames(rec, &score, |f| {
+                    let (_plan, r) = raster::render_frames(rec, &score, |f| {
                         n += 1;
                         progress_bar("exporting mp4", n, total_frames);
                         emit(f);
-                    })
-                    .map(|_| ())
+                    })?;
+                    report = r;
+                    Ok(())
                 })?;
                 progress_clear();
+            }
+            for line in report.format(&score.demo.name) {
+                eprintln!("{line}");
             }
             Ok(path)
         }
@@ -174,6 +209,10 @@ pub fn scale_recording(rec: &mut Recording, speed: f64) {
 /// times on the same clock as the recording, so a `--speed` export must scale
 /// them together with [`scale_recording`] — otherwise a pane's window can slide
 /// past the (shortened) playback and the pane never shows.
+///
+/// Also retimes every `Step::Scroll`'s `duration_ms`, so the whole timeline is
+/// in one unit (output seconds). A pane with `ignore_speed` is exempt: its
+/// scroll duration stays in recording seconds, so it pans at the 1x cap.
 pub fn scale_pane_windows(score: &mut Score, speed: f64) {
     if speed == 1.0 {
         return;
@@ -184,6 +223,33 @@ pub fn scale_pane_windows(score: &mut Score, speed: f64) {
         }
         if let Some(t) = &mut pane.hide_at {
             *t /= speed;
+        }
+    }
+    let ignore_speed_pane_ids: Vec<String> = score
+        .layout
+        .panes
+        .iter()
+        .filter(|p| p.ignore_speed)
+        .map(|p| p.id.clone())
+        .collect();
+    let mut focused: Option<&str> = None;
+    for step in &mut score.timeline {
+        match step {
+            crate::model::Step::Focus { pane } => {
+                focused = pane.as_deref();
+            }
+            crate::model::Step::Scroll {
+                duration_ms, pane, ..
+            } => {
+                let target = pane.as_deref().or(focused);
+                let is_exempt = target
+                    .and_then(|id| ignore_speed_pane_ids.iter().find(|eid| eid.as_str() == id))
+                    .is_some();
+                if !is_exempt {
+                    *duration_ms = (*duration_ms as f64 / speed).round() as u64;
+                }
+            }
+            _ => {}
         }
     }
 }
@@ -670,5 +736,97 @@ height = 100
         ensure_parent(&file).unwrap();
         assert!(dir.is_dir());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A scroll step's duration_ms is scaled by scale_pane_windows for a normal
+    /// pane and left alone for an exempt one (ignore_speed = true).
+    #[test]
+    fn scale_pane_windows_scales_scroll_duration_for_normal_pane() {
+        let mut score: Score = toml::from_str(
+            r#"
+[demo]
+name = "t"
+[layout]
+width = 200
+height = 100
+  [[layout.panes]]
+  id = "c"
+  type = "terminal"
+  x = 0
+  y = 0
+  width = 100
+  height = 100
+  [[layout.panes]]
+  id = "p"
+  type = "browser"
+  x = 100
+  y = 0
+  width = 100
+  height = 100
+  url = "file:///x.pdf"
+[[timeline]]
+action = "focus"
+pane = "p"
+[[timeline]]
+action = "scroll"
+direction = "down"
+duration_ms = 8000
+pane = "p"
+"#,
+        )
+        .unwrap();
+        scale_pane_windows(&mut score, 2.0);
+        if let crate::model::Step::Scroll { duration_ms, .. } = &score.timeline[1] {
+            assert_eq!(*duration_ms, 4000, "duration_ms should be halved at 2x");
+        } else {
+            panic!("expected Scroll step");
+        }
+    }
+
+    #[test]
+    fn scale_pane_windows_leaves_scroll_duration_for_ignore_speed_pane() {
+        let mut score: Score = toml::from_str(
+            r#"
+[demo]
+name = "t"
+[layout]
+width = 200
+height = 100
+  [[layout.panes]]
+  id = "c"
+  type = "terminal"
+  x = 0
+  y = 0
+  width = 100
+  height = 100
+  [[layout.panes]]
+  id = "p"
+  type = "browser"
+  x = 100
+  y = 0
+  width = 100
+  height = 100
+  url = "file:///x.pdf"
+  ignore_speed = true
+[[timeline]]
+action = "focus"
+pane = "p"
+[[timeline]]
+action = "scroll"
+direction = "down"
+duration_ms = 8000
+pane = "p"
+"#,
+        )
+        .unwrap();
+        scale_pane_windows(&mut score, 2.0);
+        if let crate::model::Step::Scroll { duration_ms, .. } = &score.timeline[1] {
+            assert_eq!(
+                *duration_ms, 8000,
+                "duration_ms should be unchanged for ignore_speed pane"
+            );
+        } else {
+            panic!("expected Scroll step");
+        }
     }
 }
