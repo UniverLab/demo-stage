@@ -1286,6 +1286,23 @@ pub fn run(args: CaptureArgs) -> Result<()> {
         }
         thread::sleep(Duration::from_millis(100));
     };
+    // Final drain: the watchdog checks exit conditions *before* read_control,
+    // so a control line written in the last ≤100 ms before shell exit would
+    // otherwise be lost. One extra read picks it up without waiting.
+    let _ = read_control(
+        &control_abs,
+        &mut control_read,
+        &events,
+        &pending_opens,
+        &after_opens,
+        &after_running,
+        &after_last_out,
+        &muting,
+        &mute_start,
+        &mute_spans,
+        t0,
+        debug.as_deref(),
+    );
     if let Some(d) = &debug {
         d.note(&format!("stopping — reason: {reason}"));
     }
@@ -3614,5 +3631,285 @@ mod tests {
             0,
             "no span must be closed when valve hasn't fired"
         );
+    }
+
+    #[allow(clippy::type_complexity)]
+    fn make_read_control_fixtures() -> (
+        std::path::PathBuf,
+        Arc<Mutex<Vec<RawEvent>>>,
+        PendingWhen,
+        PendingAfter,
+        AtomicBool,
+        Mutex<Instant>,
+        Arc<AtomicBool>,
+        Arc<Mutex<Option<u64>>>,
+        Arc<Mutex<Vec<(u64, u64)>>>,
+        Instant,
+    ) {
+        let cpath =
+            std::env::temp_dir().join(format!("demo-test-final-drain-{}", std::process::id()));
+        let _ = std::fs::remove_file(&cpath);
+        let events: Arc<Mutex<Vec<RawEvent>>> = Arc::new(Mutex::new(Vec::new()));
+        let pending: PendingWhen = Arc::new(Mutex::new(Vec::new()));
+        let after: PendingAfter = Arc::new(Mutex::new(Vec::new()));
+        let after_running = AtomicBool::new(false);
+        let after_last_out = Mutex::new(Instant::now());
+        let muting = Arc::new(AtomicBool::new(false));
+        let mute_start: Arc<Mutex<Option<u64>>> = Arc::new(Mutex::new(None));
+        let mute_spans: Arc<Mutex<Vec<(u64, u64)>>> = Arc::new(Mutex::new(Vec::new()));
+        let t0 = Instant::now();
+        (
+            cpath,
+            events,
+            pending,
+            after,
+            after_running,
+            after_last_out,
+            muting,
+            mute_start,
+            mute_spans,
+            t0,
+        )
+    }
+
+    #[test]
+    fn final_drain_picks_up_control_line_appended_after_last_watchdog_read() {
+        let (
+            cpath,
+            events,
+            pending,
+            after,
+            after_running,
+            after_last_out,
+            muting,
+            mute_start,
+            mute_spans,
+            t0,
+        ) = make_read_control_fixtures();
+        let mut read = 0u64;
+
+        std::fs::write(&cpath, "").unwrap();
+        let _ = read_control(
+            &cpath,
+            &mut read,
+            &events,
+            &pending,
+            &after,
+            &after_running,
+            &after_last_out,
+            &muting,
+            &mute_start,
+            &mute_spans,
+            t0,
+            None,
+        );
+        assert_eq!(read, 0);
+
+        let reveal = serde_json::to_string(&serde_json::json!({
+            "cmd": "reveal",
+            "panes": [{"id": "main", "url": "http://example.com"}],
+        }))
+        .unwrap();
+        std::fs::write(&cpath, format!("{reveal}\n")).unwrap();
+
+        let _ = read_control(
+            &cpath,
+            &mut read,
+            &events,
+            &pending,
+            &after,
+            &after_running,
+            &after_last_out,
+            &muting,
+            &mute_start,
+            &mute_spans,
+            t0,
+            None,
+        );
+
+        assert_eq!(
+            events.lock().unwrap().len(),
+            1,
+            "final drain must process a reveal appended after the last watchdog pass"
+        );
+        let _ = std::fs::remove_file(&cpath);
+    }
+
+    #[test]
+    fn final_drain_on_empty_or_fully_consumed_file_is_noop() {
+        let (
+            cpath,
+            events,
+            pending,
+            after,
+            after_running,
+            after_last_out,
+            muting,
+            mute_start,
+            mute_spans,
+            t0,
+        ) = make_read_control_fixtures();
+        let mut read = 0u64;
+
+        std::fs::write(&cpath, "").unwrap();
+        let result = read_control(
+            &cpath,
+            &mut read,
+            &events,
+            &pending,
+            &after,
+            &after_running,
+            &after_last_out,
+            &muting,
+            &mute_start,
+            &mute_spans,
+            t0,
+            None,
+        );
+        assert!(result.is_none());
+        assert_eq!(read, 0);
+        assert!(events.lock().unwrap().is_empty());
+
+        let reveal = serde_json::to_string(&serde_json::json!({
+            "cmd": "reveal",
+            "panes": [{"id": "main", "url": "http://example.com"}],
+        }))
+        .unwrap();
+        std::fs::write(&cpath, format!("{reveal}\n")).unwrap();
+        let _ = read_control(
+            &cpath,
+            &mut read,
+            &events,
+            &pending,
+            &after,
+            &after_running,
+            &after_last_out,
+            &muting,
+            &mute_start,
+            &mute_spans,
+            t0,
+            None,
+        );
+        assert_eq!(events.lock().unwrap().len(), 1);
+        let offset_after_first = read;
+
+        let result = read_control(
+            &cpath,
+            &mut read,
+            &events,
+            &pending,
+            &after,
+            &after_running,
+            &after_last_out,
+            &muting,
+            &mute_start,
+            &mute_spans,
+            t0,
+            None,
+        );
+        assert!(result.is_none());
+        assert_eq!(
+            read, offset_after_first,
+            "offset must not change on empty re-read"
+        );
+        assert_eq!(events.lock().unwrap().len(), 1, "no duplicate events");
+        let _ = std::fs::remove_file(&cpath);
+    }
+
+    #[test]
+    fn byte_offset_never_rewinds_and_torn_line_is_not_double_consumed() {
+        let (
+            cpath,
+            events,
+            pending,
+            after,
+            after_running,
+            after_last_out,
+            muting,
+            mute_start,
+            mute_spans,
+            t0,
+        ) = make_read_control_fixtures();
+        let mut read = 0u64;
+
+        std::fs::write(&cpath, "tea").unwrap();
+        let _ = read_control(
+            &cpath,
+            &mut read,
+            &events,
+            &pending,
+            &after,
+            &after_running,
+            &after_last_out,
+            &muting,
+            &mute_start,
+            &mute_spans,
+            t0,
+            None,
+        );
+        let offset_after_partial = read;
+        assert_eq!(
+            offset_after_partial, 3,
+            "offset must advance past the partial bytes"
+        );
+
+        std::fs::write(&cpath, "tear\n").unwrap();
+        let offset_before = read;
+        let _ = read_control(
+            &cpath,
+            &mut read,
+            &events,
+            &pending,
+            &after,
+            &after_running,
+            &after_last_out,
+            &muting,
+            &mute_start,
+            &mute_spans,
+            t0,
+            None,
+        );
+        assert!(
+            read >= offset_before,
+            "offset must never rewind (was {offset_before}, now {read})"
+        );
+        assert!(
+            events.lock().unwrap().is_empty(),
+            "torn partial must not produce a phantom event"
+        );
+
+        let reveal = serde_json::to_string(&serde_json::json!({
+            "cmd": "reveal",
+            "panes": [{"id": "main", "url": "http://example.com"}],
+        }))
+        .unwrap();
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&cpath)
+            .unwrap();
+        use std::io::Write;
+        writeln!(file, "{reveal}").unwrap();
+        drop(file);
+
+        let _ = read_control(
+            &cpath,
+            &mut read,
+            &events,
+            &pending,
+            &after,
+            &after_running,
+            &after_last_out,
+            &muting,
+            &mute_start,
+            &mute_spans,
+            t0,
+            None,
+        );
+        assert_eq!(
+            events.lock().unwrap().len(),
+            1,
+            "reveal appended after the torn line must be processed exactly once"
+        );
+        let _ = std::fs::remove_file(&cpath);
     }
 }
