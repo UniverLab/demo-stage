@@ -58,6 +58,15 @@ pub fn run(args: OpenArgs) -> Result<()> {
         let _ = control::send(serde_json::json!({ "cmd": "reveal_begin" }));
     }
 
+    let result = run_inner(args, in_session);
+    if result.is_err() && in_session {
+        // Close the mute span so a failure doesn't leave 90s of black.
+        let _ = control::send(serde_json::json!({ "cmd": "reveal_cancel" }));
+    }
+    result
+}
+
+fn run_inner(args: OpenArgs, in_session: bool) -> Result<()> {
     let r = resolve(args, in_session)?;
 
     if r.view {

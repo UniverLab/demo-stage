@@ -2,7 +2,7 @@
 //! it replays a recording (a `.cast` from `demo record`, or a raw `capture`)
 //! and never executes the demo.
 
-use crate::cli::{all_targets, ExportArgs};
+use crate::cli::{all_targets, parse_speed, ExportArgs, Target};
 use crate::error::{Error, Result};
 use crate::export::{
     ensure_local_server, recording, render, rewrite_local_urls, scale_pane_windows, scale_recording,
@@ -29,18 +29,20 @@ pub fn run(args: ExportArgs) -> Result<()> {
         )));
     }
 
-    scale_recording(&mut rec, args.speed);
-    scale_pane_windows(&mut score, args.speed);
+    // The command line wins; the score is what the demo says about itself; 1x is
+    // the fallback. Without the middle term the multiplier a demo is published at
+    // survives only in whoever typed the command.
+    let speed = resolve_speed(args.speed, score.demo.speed.as_deref())?;
+    scale_recording(&mut rec, speed);
+    scale_pane_windows(&mut score, speed);
 
     // Apply resolution override if specified
     if let Some((new_w, new_h)) =
         resolve_export_resolution(&args, score.layout.width, score.layout.height)?
     {
+        let (old_w, old_h) = (score.layout.width, score.layout.height);
         rescale_layout(&mut score, new_w, new_h);
-        eprintln!(
-            "note: overriding resolution to {}x{} (capture was {}x{})",
-            new_w, new_h, score.layout.width, score.layout.height
-        );
+        eprintln!("{}", resolution_override_note(new_w, new_h, old_w, old_h));
     }
 
     if faithful {
@@ -58,13 +60,49 @@ pub fn run(args: ExportArgs) -> Result<()> {
         score
     };
 
-    // No target given → build every supported format.
-    let targets = args.targets.map(|t| t.0).unwrap_or_else(all_targets);
+    // Same precedence as the speed: the command line, then the score, then all.
+    let targets = match args.targets.map(|t| t.0) {
+        Some(t) => t,
+        None => resolve_targets(score.demo.targets.as_deref())?,
+    };
     for target in targets {
-        let path = render(&rec, &score, target)?;
+        let path = render(&rec, &score, target, speed)?;
         println!("exported {} → {}", args.input.display(), path.display());
     }
     Ok(())
+}
+
+/// Resolve the export speed: `--speed`, else the score's `[demo] speed`, else 1x.
+fn resolve_speed(flag: Option<f64>, from_score: Option<&str>) -> Result<f64> {
+    if let Some(v) = flag {
+        return Ok(v);
+    }
+    match from_score {
+        Some(raw) => {
+            parse_speed(raw).map_err(|e| Error::Export(format!("[demo] speed in the score: {e}")))
+        }
+        None => Ok(1.0),
+    }
+}
+
+/// Resolve the export targets: the score's `[demo] targets`, else every format.
+fn resolve_targets(from_score: Option<&[String]>) -> Result<Vec<Target>> {
+    let Some(names) = from_score else {
+        return Ok(all_targets());
+    };
+    if names.is_empty() {
+        return Ok(all_targets());
+    }
+    names
+        .iter()
+        .map(|n| match n.trim().to_ascii_lowercase().as_str() {
+            "gif" => Ok(Target::Gif),
+            "mp4" => Ok(Target::Mp4),
+            other => Err(Error::Export(format!(
+                "[demo] targets in the score: unknown format '{other}' (expected gif or mp4)"
+            ))),
+        })
+        .collect()
 }
 
 /// Compute the export resolution from flags, or `None` to keep the capture-time resolution.
@@ -154,6 +192,7 @@ fn rescale_layout(score: &mut Score, new_w: u32, new_h: u32) {
     }
     let scale_x = new_w as f64 / old_w as f64;
     let scale_y = new_h as f64 / old_h as f64;
+    let font_scale = scale_x.min(scale_y);
 
     score.layout.width = new_w;
     score.layout.height = new_h;
@@ -163,11 +202,62 @@ fn rescale_layout(score: &mut Score, new_w: u32, new_h: u32) {
         pane.y = (pane.y as f64 * scale_y).round() as u32;
         pane.width = (pane.width as f64 * scale_x).round() as u32;
         pane.height = (pane.height as f64 * scale_y).round() as u32;
+        if pane.kind == crate::model::PaneKind::Terminal {
+            if let Some(ref mut fs) = pane.font_size {
+                *fs = ((*fs as f64 * font_scale).round() as u32).max(1);
+            }
+        }
     }
+}
+
+fn resolution_override_note(new_w: u32, new_h: u32, old_w: u32, old_h: u32) -> String {
+    format!(
+        "note: overriding resolution to {}x{} (capture was {}x{})",
+        new_w, new_h, old_w, old_h
+    )
 }
 
 #[cfg(test)]
 mod tests {
+    /// The multiplier a demo is published at used to survive only in whoever ran
+    /// the command. Recovering it from the published assets on 2026-08-27 (the
+    /// five UniverLab demos: four at 2x, canopy at 3x) is what motivated this.
+    #[test]
+    fn the_score_supplies_the_speed_when_the_flag_does_not() {
+        assert_eq!(resolve_speed(None, Some("2x")).unwrap(), 2.0);
+        assert_eq!(resolve_speed(None, Some("3x")).unwrap(), 3.0);
+        assert_eq!(resolve_speed(None, None).unwrap(), 1.0);
+    }
+
+    #[test]
+    fn the_flag_beats_the_score() {
+        assert_eq!(resolve_speed(Some(1.0), Some("3x")).unwrap(), 1.0);
+    }
+
+    #[test]
+    fn a_bad_speed_in_the_score_is_an_error_naming_the_score() {
+        let err = resolve_speed(None, Some("fast")).unwrap_err().to_string();
+        assert!(err.contains("[demo] speed"), "unhelpful message: {err}");
+    }
+
+    #[test]
+    fn the_score_supplies_the_targets_when_the_argument_does_not() {
+        assert_eq!(
+            resolve_targets(Some(&["gif".to_string()])).unwrap(),
+            vec![Target::Gif]
+        );
+        assert_eq!(resolve_targets(None).unwrap(), all_targets());
+        assert_eq!(resolve_targets(Some(&[])).unwrap(), all_targets());
+    }
+
+    #[test]
+    fn an_unknown_target_in_the_score_is_an_error() {
+        let err = resolve_targets(Some(&["webm".to_string()]))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("webm"), "unhelpful message: {err}");
+    }
+
     use super::*;
 
     fn test_score(w: u32, h: u32) -> Score {
@@ -176,6 +266,8 @@ mod tests {
                 name: "test".into(),
                 output_dir: "./dist".into(),
                 prompt: None,
+                speed: None,
+                targets: None,
             },
             env: None,
             typing: None,
@@ -202,6 +294,7 @@ mod tests {
                         theme: None,
                         reveal_at: None,
                         hide_at: None,
+                        ignore_speed: false,
                     },
                     crate::model::Pane {
                         id: "browser".into(),
@@ -216,6 +309,7 @@ mod tests {
                         theme: None,
                         reveal_at: None,
                         hide_at: None,
+                        ignore_speed: false,
                     },
                 ],
             },
@@ -321,6 +415,107 @@ mod tests {
     }
 
     #[test]
+    fn rescale_layout_scales_terminal_font_size_by_half() {
+        use crate::export::run::Recording;
+        let mut score: Score = toml::from_str(
+            r#"
+[demo]
+name = "t"
+[layout]
+width = 800
+height = 480
+  [[layout.panes]]
+  id = "c"
+  type = "terminal"
+  x = 0
+  y = 0
+  width = 800
+  height = 480
+  font_size = 20
+"#,
+        )
+        .unwrap();
+        let rec = Recording {
+            cols: 80,
+            rows: 24,
+            title: "t".into(),
+            events: vec![],
+            captions: vec![],
+            focuses: vec![],
+            duration: 0.0,
+        };
+        let plan_before = crate::export::raster::plan(&rec, &score);
+        rescale_layout(&mut score, 400, 240);
+        let plan_after = crate::export::raster::plan(&rec, &score);
+        assert_eq!(plan_after.width, plan_before.width / 2);
+        assert_eq!(plan_after.height, plan_before.height / 2);
+    }
+
+    #[test]
+    fn rescale_layout_non_square_picks_smaller_font_factor() {
+        let mut score: Score = toml::from_str(
+            r#"
+[demo]
+name = "t"
+[layout]
+width = 100
+height = 100
+  [[layout.panes]]
+  id = "c"
+  type = "terminal"
+  x = 0
+  y = 0
+  width = 100
+  height = 100
+  font_size = 20
+"#,
+        )
+        .unwrap();
+        rescale_layout(&mut score, 50, 200);
+        assert_eq!(score.layout.panes[0].font_size, Some(10));
+    }
+
+    #[test]
+    fn rescale_layout_font_size_floor_is_one() {
+        let mut score: Score = toml::from_str(
+            r#"
+[demo]
+name = "t"
+[layout]
+width = 100
+height = 100
+  [[layout.panes]]
+  id = "c"
+  type = "terminal"
+  x = 0
+  y = 0
+  width = 100
+  height = 100
+  font_size = 2
+"#,
+        )
+        .unwrap();
+        rescale_layout(&mut score, 10, 10);
+        assert_eq!(score.layout.panes[0].font_size, Some(1));
+    }
+
+    #[test]
+    fn rescale_layout_does_not_scale_browser_font_size() {
+        let mut score = test_score(100, 100);
+        score.layout.panes[1].font_size = Some(20);
+        rescale_layout(&mut score, 200, 200);
+        assert_eq!(score.layout.panes[1].font_size, Some(20));
+    }
+
+    #[test]
+    fn resolution_override_note_names_real_original_size() {
+        let note = resolution_override_note(1280, 720, 800, 480);
+        assert!(note.contains("capture was 800x480"));
+        assert!(!note.contains("capture was 1280x720"));
+        assert!(note.contains("overriding resolution to 1280x720"));
+    }
+
+    #[test]
     fn resolve_export_resolution_from_resolution() {
         let args = ExportArgs {
             input: "test.toml".into(),
@@ -328,7 +523,7 @@ mod tests {
             resolution: Some("800x600".into()),
             aspect: None,
             quality: None,
-            speed: 1.0,
+            speed: Some(1.0),
             force: false,
         };
         let r = resolve_export_resolution(&args, 1920, 1080).unwrap();
@@ -343,7 +538,7 @@ mod tests {
             resolution: None,
             aspect: Some("16:9".into()),
             quality: Some("hd".into()),
-            speed: 1.0,
+            speed: Some(1.0),
             force: false,
         };
         let r = resolve_export_resolution(&args, 1920, 1080).unwrap();
@@ -358,7 +553,7 @@ mod tests {
             resolution: None,
             aspect: None,
             quality: Some("fullhd".into()),
-            speed: 1.0,
+            speed: Some(1.0),
             force: false,
         };
         let r = resolve_export_resolution(&args, 1920, 1080).unwrap();
@@ -373,7 +568,7 @@ mod tests {
             resolution: None,
             aspect: None,
             quality: None,
-            speed: 1.0,
+            speed: Some(1.0),
             force: false,
         };
         let r = resolve_export_resolution(&args, 1920, 1080).unwrap();

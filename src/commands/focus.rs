@@ -37,6 +37,21 @@ pub fn run(args: FocusArgs) -> Result<()> {
     control::find()?;
     let sources = control::read_sources();
 
+    // Whether we're running inside the captured shell — if so, the capture's
+    // input thread opened a mute span when it saw `demo focus` typed, and we
+    // must close it on every exit path (success or failure).
+    let in_session = in_session();
+
+    let result = run_inner(args, &sources, in_session);
+    if result.is_err() && in_session {
+        // Close the mute span that the input thread opened when it saw the
+        // command typed, so a failure doesn't leave 90s of black.
+        let _ = control::send(serde_json::json!({ "cmd": "reveal_cancel" }));
+    }
+    result
+}
+
+fn run_inner(args: FocusArgs, sources: &[Source], in_session: bool) -> Result<()> {
     let wizard_out = if args.sources.is_empty() {
         if !std::io::stdin().is_terminal() {
             return Err(Error::Export(
@@ -44,7 +59,7 @@ pub fn run(args: FocusArgs) -> Result<()> {
                     .to_string(),
             ));
         }
-        Some(wizard(&sources, &args)?)
+        Some(wizard(sources, &args)?)
     } else {
         None
     };
@@ -76,11 +91,11 @@ pub fn run(args: FocusArgs) -> Result<()> {
     }
 
     // Resolve each id to a reveal pane (terminal, or a browser source's URL).
-    let panes = build_panes(&chosen, split_with_main, &sources, args.theme.as_deref())?;
+    let panes = build_panes(&chosen, split_with_main, sources, args.theme.as_deref())?;
 
     // In-session, mute this command's echo/wizard from now (from another terminal
     // there's nothing in the captured shell to mute).
-    if in_session() {
+    if in_session {
         let _ = control::send(serde_json::json!({ "cmd": "reveal_begin" }));
     }
 
